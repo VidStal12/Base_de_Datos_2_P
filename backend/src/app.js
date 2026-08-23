@@ -6,6 +6,7 @@ const metodoPagoRoutes = require('./routes/metodoPagoRoutes');
 const categoriaRoutes = require('./routes/categoriaRoutes');
 const productoRoutes = require('./routes/productoRoutes');
 const checkoutRoutes = require('./routes/checkoutRoutes');
+const compraRoutes = require('./routes/compraRoutes');
 
 const app = express();
 
@@ -33,6 +34,8 @@ app.get('/', (req, res) => {
       'POST /api/productos (requiere token, rol vendedor/administrador)',
       'PATCH /api/productos/:id/inventario (requiere token, rol vendedor/administrador)',
       'POST /api/checkout (requiere token)',
+      'GET /api/compras (requiere token — pedidos del usuario autenticado)',
+      'GET /api/compras/:id (requiere token)',
     ],
   });
 });
@@ -43,5 +46,6 @@ app.use('/api/metodos-pago', metodoPagoRoutes);
 app.use('/api/categorias', categoriaRoutes);
 app.use('/api/productos', productoRoutes);
 app.use('/api/checkout', checkoutRoutes);
+app.use('/api/compras', compraRoutes);
 
 module.exports = app;

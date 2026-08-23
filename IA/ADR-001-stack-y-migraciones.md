@@ -77,4 +77,30 @@ Prisma Migrate could not create the shadow database...
 Original error: P1010 — User was denied access on the database `prisma_migrate_shadow_db_...`
 ```
 
-Se resolvió otorgando el privilegio mínimo necesario (`CREATE, DROP` a nivel global, no acceso administrativo completo) mediante un script de inicialización del contenedor: [docker/mysql-init/01-grant-shadow-db.sql](../docker/mysql-init/01-grant-shadow-db.sql), montado en `docker-entrypoint-initdb.d` desde `docker-compose.yml`. Ese directorio solo se ejecuta la primera vez que el volumen de datos de MySQL se inicializa — un contenedor que ya existía antes de este cambio necesita el `GRANT` aplicado a mano una vez (ya se hizo sobre el contenedor de desarrollo actual); un `docker compose up -d` sobre un volumen nuevo (o de un teammate clonando el repo por primera vez) lo aplica solo.
+**Actualización (2026-08-23):** `CREATE, DROP` a nivel global alcanza para que Prisma cree y borre la *cáscara* de la shadow database, pero no para replayear las migraciones existentes adentro de ella — eso implica DDL real (`ALTER TABLE` para foreign keys) y, si alguna migración incluye backfill de datos (ver la migración `add_producto_vendedor` más abajo), también DML (`UPDATE`). Sin esos privilegios, `prisma migrate dev` falla en la segunda migración en adelante con:
+
+```
+Error: P3006 (la migración anterior no se pudo re-aplicar en la shadow database)
+Database error: ALTER command denied to user 'tiendaya'@'...' for table '...'
+-- o, con backfill de por medio:
+Database error: UPDATE command denied to user 'tiendaya'@'...' for table '...'
+```
+
+La solución definitiva no es seguir ampliando privilegios globales uno por uno: es darle a `tiendaya` privilegios completos (DDL + DML) **solo sobre bases que calcen con el patrón de nombre de la shadow database** (`prisma_migrate_shadow_db_%`), dejando `CREATE, DROP` como los únicos privilegios verdaderamente globales — necesarios porque la shadow database todavía no existe en el momento en que se necesitaría un privilegio más acotado sobre ella:
+
+```sql
+GRANT CREATE, DROP ON *.* TO 'tiendaya'@'%';
+GRANT ALL PRIVILEGES ON `prisma_migrate_shadow_db_%`.* TO 'tiendaya'@'%';
+```
+
+Esto quedó actualizado en [docker/mysql-init/01-grant-shadow-db.sql](../docker/mysql-init/01-grant-shadow-db.sql) (se ejecuta solo, una vez, en un volumen nuevo) y aplicado a mano sobre el contenedor de desarrollo actual.
+
+**Patrón para agregar una columna obligatoria a una tabla con filas existentes:** Prisma se niega a generar automáticamente un `ALTER TABLE ... ADD COLUMN ... NOT NULL` sin default cuando la tabla ya tiene datos (lo señala como "not possible to execute"). La migración `add_producto_vendedor` (agrega `producto.id_vendedor`) es el primer caso real en este proyecto; se resolvió con `prisma migrate dev --create-only` (genera el archivo sin aplicarlo) y editando el SQL a mano con el patrón de 3 pasos:
+
+```sql
+ALTER TABLE `producto` ADD COLUMN `id_vendedor` INTEGER NULL;   -- 1. nullable
+UPDATE `producto` SET `id_vendedor` = 2 WHERE `id_vendedor` IS NULL;  -- 2. backfill
+ALTER TABLE `producto` MODIFY COLUMN `id_vendedor` INTEGER NOT NULL; -- 3. ahora sí, obligatoria
+```
+
+Vale para cualquier columna `NOT NULL` futura sobre una tabla ya poblada.

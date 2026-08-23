@@ -29,7 +29,7 @@ async function main() {
     include: { direcciones: true, metodos_pago: true },
   });
 
-  await prisma.usuarios.create({
+  const luis = await prisma.usuarios.create({
     data: {
       rol_id: vendedor.id,
       nombres: 'Luis',
@@ -65,6 +65,7 @@ async function main() {
 
   const camiseta = await prisma.producto.create({
     data: {
+      id_vendedor: luis.id_usuario,
       descripcion: 'Camiseta básica de algodón',
       imagen_url: 'https://picsum.photos/seed/camiseta/400',
       estado: 'activo',
@@ -81,6 +82,7 @@ async function main() {
 
   const smartphone = await prisma.producto.create({
     data: {
+      id_vendedor: luis.id_usuario,
       descripcion: 'Smartphone X100',
       imagen_url: 'https://picsum.photos/seed/smartphone/400',
       estado: 'activo',

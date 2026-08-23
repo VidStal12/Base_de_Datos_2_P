@@ -13,6 +13,7 @@ async function listar({ categoriaId, subcategoriaId } = {}) {
     where,
     include: {
       inventario: true,
+      vendedor: { select: { id_usuario: true, nombres: true, apellidos: true } },
       categoria_productos: { include: { subcategoria: true } },
     },
   });
@@ -23,6 +24,7 @@ async function obtener(id) {
     where: { id },
     include: {
       inventario: true,
+      vendedor: { select: { id_usuario: true, nombres: true, apellidos: true } },
       categoria_productos: { include: { subcategoria: true } },
       atributos_producto: { include: { atributo_categoria: true } },
     },
@@ -31,9 +33,10 @@ async function obtener(id) {
   return producto;
 }
 
+// vendedor: { id_usuario, rol } — sale del token, nunca del body (ver requireAuth).
 // atributos: [{ id_atributo_categoria, valor }] — opcional, valores concretos
 // para los atributos que la subcategoría define (p. ej. Talla: "M").
-async function crear({ descripcion, imagen_url, estado, subcategoriaId, precio, cantidad, atributos }) {
+async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId, precio, cantidad, atributos }) {
   if (!descripcion) throw new Error('La descripción es obligatoria');
   if (!esEnteroPositivo(subcategoriaId)) throw new Error('subcategoriaId inválido');
   if (typeof precio !== 'number' || precio <= 0) throw new Error('El precio debe ser un número positivo');
@@ -44,6 +47,7 @@ async function crear({ descripcion, imagen_url, estado, subcategoriaId, precio, 
 
   return prisma.producto.create({
     data: {
+      id_vendedor: vendedor.id_usuario,
       descripcion,
       imagen_url: imagen_url || '',
       estado: estado || 'activo',
@@ -58,7 +62,25 @@ async function crear({ descripcion, imagen_url, estado, subcategoriaId, precio, 
   });
 }
 
-async function actualizarInventario(productoId, { precio, cantidad }) {
+// Un vendedor solo puede tocar su propio producto; un administrador puede tocar cualquiera.
+async function verificarPermiso(vendedor, productoId) {
+  const producto = await prisma.producto.findUnique({ where: { id: productoId } });
+  if (!producto) {
+    const err = new Error('Producto no encontrado');
+    err.status = 404;
+    throw err;
+  }
+  if (producto.id_vendedor !== vendedor.id_usuario && vendedor.rol !== 'administrador') {
+    const err = new Error('No podés modificar un producto que no te pertenece');
+    err.status = 403;
+    throw err;
+  }
+  return producto;
+}
+
+async function actualizarInventario(vendedor, productoId, { precio, cantidad }) {
+  await verificarPermiso(vendedor, productoId);
+
   const inventario = await prisma.inventario.findUnique({ where: { id_producto: productoId } });
   if (!inventario) throw new Error('Este producto no tiene inventario asociado');
 

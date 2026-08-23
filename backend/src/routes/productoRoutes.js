@@ -20,7 +20,7 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
-    const producto = await productoService.crear(req.body);
+    const producto = await productoService.crear(req.usuario, req.body);
     res.status(201).json(producto);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -29,10 +29,10 @@ router.post('/', requireAuth, requireRole('vendedor', 'administrador'), async (r
 
 router.patch('/:id/inventario', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
-    const inventario = await productoService.actualizarInventario(Number(req.params.id), req.body);
+    const inventario = await productoService.actualizarInventario(req.usuario, Number(req.params.id), req.body);
     res.json(inventario);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 

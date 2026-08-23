@@ -86,6 +86,10 @@ curl -s http://localhost:3000/api/metodos-pago -H "Authorization: Bearer $TOKEN"
 curl -X POST http://localhost:3000/api/checkout \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"direccionId":1,"metodoPagoId":1,"items":[{"productoId":1,"cantidad":2}]}'
+
+# 4. Ver el historial de pedidos propio (nunca el de otro usuario, aunque se adivine el ID)
+curl -s http://localhost:3000/api/compras -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:3000/api/compras/1 -H "Authorization: Bearer $TOKEN"
 ```
 
 (Requiere `jq`; si no lo tenés, copiá el `token` del JSON de login a mano. Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados.)
@@ -93,6 +97,8 @@ curl -X POST http://localhost:3000/api/checkout \
 ## Catálogo
 
 `GET /api/categorias` y `GET /api/productos` son públicos (no requieren token). Crear o editar catálogo requiere estar autenticado **y** tener rol `vendedor` o `administrador` — un `comprador` recibe `403`. La lista completa de endpoints (con cuáles requieren token/rol) está en `GET /` del servidor corriendo.
+
+Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor` solo puede editar sus propios productos (`403` si intenta tocar uno ajeno); un `administrador` puede editar cualquiera. No hay endpoint público para crear cuentas `vendedor`/`administrador` — el auto-registro siempre asigna `comprador` (ver [ADR-001](IA/ADR-001-stack-y-migraciones.md)); esas cuentas se crean a mano/por seed por ahora.
 
 ```bash
 VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \

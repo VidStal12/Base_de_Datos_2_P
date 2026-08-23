@@ -30,6 +30,7 @@ model usuarios {
   metodos_pago metodo_pago[]
   compras      compra[]
   carritos     carrito[]
+  productos    producto[]
 }
 
 model direcciones {
@@ -74,12 +75,17 @@ model subcategoria {
   categoria_productos categoria_producto[]
 }
 
+// id_vendedor: cada producto pertenece a un único vendedor (agregado a pedido del
+// equipo — el modelo original del ERD no distinguía qué vendedor gestiona qué
+// producto, así que cualquier "vendedor" podía editar el catálogo de cualquier otro).
 model producto {
   id          Int    @id @default(autoincrement())
+  id_vendedor Int
   descripcion String
   imagen_url  String
   estado      String
 
+  vendedor            usuarios             @relation(fields: [id_vendedor], references: [id_usuario])
   inventario          inventario?
   categoria_productos categoria_producto[]
   atributos_producto  atributo_producto[]

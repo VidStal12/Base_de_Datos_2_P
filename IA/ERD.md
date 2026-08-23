@@ -31,7 +31,7 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 | `rol_usuario` | id | — | tipo_rol |
 | `direcciones` | id | id_usuario | pais, direccion, codigo_postal (**decimal** ⚠) |
 | `metodo_pago` | id | id_usuario | titular (varchar), token_pasarela (varchar), ultimos_4_digitos (varchar), marca (varchar) |
-| `producto` | id | — | descripcion, imagen_url, estado |
+| `producto` | id | id_vendedor | descripcion, imagen_url, estado |
 | `categoria` | id | — | categoria |
 | `subcategoria` | id | id_categoria | subcategoria |
 | `inventario` | id | id_producto | precio (decimal), cantidad (int) |
@@ -77,6 +77,7 @@ erDiagram
     }
     PRODUCTO {
         int id PK
+        int id_vendedor FK
         varchar descripcion
         varchar imagen_url
         varchar estado
@@ -148,6 +149,7 @@ erDiagram
     USUARIOS ||--o{ METODO_PAGO : registra
     USUARIOS ||--o{ COMPRA : realiza
     USUARIOS ||--o{ CARRITO : posee
+    USUARIOS ||--o{ PRODUCTO : vende
     DIRECCIONES ||--o{ COMPRA : recibe_en
     CATEGORIA ||--o{ SUBCATEGORIA : contiene
     SUBCATEGORIA ||--o{ ATRIBUTO_CATEGORIA : define
@@ -184,6 +186,8 @@ Todo lo anterior se extrajo de los datos estructurados del `.json` (figuras, cam
 6. **Cardinalidad `inventario`↔`producto` y `carrito`↔`producto`.** El archivo dibuja ambas con `producto` del lado "muchos", pero `inventario.id_producto` y `carrito.id_producto` son FK — lo esperable es lo contrario (`producto` del lado "uno"). Si el inventario es estrictamente 1:1 por producto, conviene una restricción `UNIQUE` sobre `inventario.id_producto`; si se planea inventario por bodega o lote, falta una columna que distinga esa dimensión (p. ej. `almacen_id`).
 
 7. **Varios conectores muestran "uno a uno" en ambos extremos** (`usuarios`–`rol_usuario`, `atributo_categoria`–`atributo_producto`, `usuarios`–`carrito`) donde la FK sugiere "uno a muchos". Vale la pena revisar las puntas de flecha directamente en Lucidchart antes de darlo por definitivo.
+
+8. ~~`producto` no tenía dueño.~~ **Resuelto (2026-08-23):** ni Página 1 ni Página 2 modelaban qué vendedor gestiona qué producto (Página 2 tenía un campo `detalles_vendedor` en `producto`, pero era texto libre, no una relación) — con eso, cualquier usuario con rol `vendedor` podía editar el catálogo de cualquier otro. Se agregó `producto.id_vendedor` (FK a `usuarios`), con el backend exigiendo que un `vendedor` solo edite sus propios productos (un `administrador` sí puede editar cualquiera). Los 3 productos que ya existían en la base de desarrollo se migraron a nombre del vendedor sembrado por el seed — ver [ADR-001](ADR-001-stack-y-migraciones.md), patrón de migración con backfill.
 
 ---
 
