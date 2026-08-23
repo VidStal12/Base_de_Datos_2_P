@@ -2,9 +2,9 @@
 
 Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construido de forma incremental sobre una arquitectura políglota de bases de datos. Contexto completo, alcance por entrega y rúbricas en [IA/PRD.md](IA/PRD.md); el modelo de datos de la Fase Inicial está documentado en [IA/ERD.md](IA/ERD.md) y las decisiones de stack en [IA/ADR-001-stack-y-migraciones.md](IA/ADR-001-stack-y-migraciones.md). Para un resumen de qué se construyó y en qué estado está el proyecto, ver [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
 
-## Estado actual: Fase Inicial completa, Entrega 1 en curso
+## Estado actual: Fase Inicial completa, Entrega 1 con los requerimientos técnicos implementados
 
-Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Detalle de qué está hecho y qué falta en [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
+Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Los 6 requerimientos técnicos de Entrega 1 (PRD §5) están implementados y verificados — ver [IA/ENTREGA-1-TRAZABILIDAD.md](IA/ENTREGA-1-TRAZABILIDAD.md) para el detalle punto por punto con referencias al código, o [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md) para el resumen general de qué está hecho y qué falta.
 
 ## Requisitos
 
@@ -78,13 +78,19 @@ npm run verificar:checkout
 
 El script corre un checkout válido y luego uno que pide más unidades de las que hay en stock, confirmando que este segundo caso se rechaza por completo **sin** dejar el inventario parcialmente descontado.
 
-También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body:
+También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body.
+
+Los ejemplos de este README extraen campos de las respuestas JSON con una función `campo()` basada en Node (no en `jq`, que no viene instalado por defecto en Windows/Git Bash). Node ya es un requisito del proyecto, así que no agrega nada nuevo — definila una vez por sesión de terminal:
+
+```bash
+campo() { node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d)['$1'])}catch(e){console.log('')}})"; }
+```
 
 ```bash
 # 1. Login (el usuario de ejemplo lo crea el seed)
 TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"correo":"ana.gomez@example.com","contrasena":"Password123!"}' | jq -r .token)
+  -d '{"correo":"ana.gomez@example.com","contrasena":"Password123!"}' | campo token)
 
 # 2. Listar sus direcciones y métodos de pago para obtener los IDs
 curl -s http://localhost:3000/api/direcciones -H "Authorization: Bearer $TOKEN"
@@ -100,7 +106,7 @@ curl -s http://localhost:3000/api/compras -H "Authorization: Bearer $TOKEN"
 curl -s http://localhost:3000/api/compras/1 -H "Authorization: Bearer $TOKEN"
 ```
 
-(Requiere `jq`; si no lo tenés, copiá el `token` del JSON de login a mano. Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados.)
+(Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados. Si preferís `jq`, `-r .token` funciona igual de bien.)
 
 ## Catálogo
 
@@ -117,11 +123,11 @@ Los ids de categoría/subcategoría son ObjectId de Mongo (strings), no enteros 
 ```bash
 VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"correo":"luis.ramirez@example.com","contrasena":"Password123!"}' | jq -r .token)
+  -d '{"correo":"luis.ramirez@example.com","contrasena":"Password123!"}' | campo token)
 
 # categoría -> subcategoría -> atributo (define qué atributos aplican a esa subcategoría)
-CAT_ID=$(curl -s -X POST http://localhost:3000/api/categorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"categoria":"Hogar"}' | jq -r .id)
-SUB_ID=$(curl -s -X POST http://localhost:3000/api/categorias/$CAT_ID/subcategorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"subcategoria":"Cocina"}' | jq -r .id)
+CAT_ID=$(curl -s -X POST http://localhost:3000/api/categorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"categoria":"Hogar"}' | campo id)
+SUB_ID=$(curl -s -X POST http://localhost:3000/api/categorias/$CAT_ID/subcategorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"subcategoria":"Cocina"}' | campo id)
 curl -s -X POST http://localhost:3000/api/categorias/subcategorias/$SUB_ID/atributos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"atributo":"Material"}'
 
 # producto con inventario y valor concreto del atributo (por nombre, no por id)

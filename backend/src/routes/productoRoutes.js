@@ -9,6 +9,14 @@ router.get('/', async (req, res) => {
   res.json(productos);
 });
 
+// Antes de "/:id" a propósito — si no, Express intenta leer "estadisticas"
+// como un id numérico y nunca llega acá.
+router.get('/estadisticas/ediciones', async (req, res) => {
+  const desde = req.query.desde ? new Date(req.query.desde) : undefined;
+  const estadisticas = await productoService.estadisticasEdiciones({ desde });
+  res.json(estadisticas);
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const producto = await productoService.obtener(Number(req.params.id));

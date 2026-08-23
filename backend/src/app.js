@@ -31,6 +31,7 @@ app.get('/', (req, res) => {
       'POST /api/categorias/:id/subcategorias (requiere token, rol vendedor/administrador)',
       'POST /api/categorias/subcategorias/:id/atributos (requiere token, rol vendedor/administrador)',
       'GET /api/productos (filtros: ?categoriaId=, ?subcategoriaId=, ?q=, ?vendedorId=)',
+      'GET /api/productos/estadisticas/ediciones (agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
       'GET /api/productos/:id',
       'GET /api/productos/:id/historial (?fecha=AAAA-MM-DD para reconstrucción; sin fecha, línea de tiempo completa)',
       'POST /api/productos (requiere token, rol vendedor/administrador)',

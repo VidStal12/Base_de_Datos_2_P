@@ -245,4 +245,38 @@ async function historialCompleto(productoId) {
   return ProductoEvento.find({ producto_id: productoId }).sort({ fecha: -1 }).lean();
 }
 
-module.exports = { listar, obtener, crear, actualizar, historialEnFecha, historialCompleto };
+// Consulta de agregación (requerimiento técnico de Entrega 1, ver PRD §5 y
+// ADR-003 §3.4): qué productos acumulan más ediciones (opcionalmente desde una
+// fecha) — mapea al patrón "actividad de catálogo" que usaría un panel de
+// vendedor/administrador para priorizar revisión. Corre sobre producto_eventos,
+// la misma colección que ya tiene el índice compuesto {producto_id, fecha}
+// (ver models/mongo/ProductoEvento.js), que es justamente lo que hace rápido
+// el $match por fecha de acá.
+async function estadisticasEdiciones({ desde } = {}) {
+  await conectar();
+  const pipeline = [];
+  if (desde) pipeline.push({ $match: { fecha: { $gte: desde } } });
+  pipeline.push(
+    {
+      $group: {
+        _id: '$producto_id',
+        total_eventos: { $sum: 1 },
+        ultima_edicion: { $max: '$fecha' },
+        version_actual: { $max: '$version' },
+      },
+    },
+    { $sort: { total_eventos: -1, ultima_edicion: -1 } },
+    {
+      $project: {
+        _id: 0,
+        producto_id: '$_id',
+        total_eventos: 1,
+        ultima_edicion: 1,
+        version_actual: 1,
+      },
+    }
+  );
+  return ProductoEvento.aggregate(pipeline);
+}
+
+module.exports = { listar, obtener, crear, actualizar, historialEnFecha, historialCompleto, estadisticasEdiciones };
