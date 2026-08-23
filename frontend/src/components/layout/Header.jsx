@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
 import { categoriasApi } from '../../api/productos';
+import { CategoryMenu } from './CategoryMenu';
 
 function CartIcon(props) {
   return (
@@ -50,25 +51,28 @@ export function Header() {
             Tienda<span className="text-accent-400">Ya</span>
           </Link>
 
-          <form onSubmit={handleSearch} className="order-3 flex w-full min-w-0 flex-1 sm:order-none">
-            <input
-              type="search"
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar productos..."
-              className="w-full min-w-0 rounded-l-lg border-0 px-4 py-2.5 text-neutral-900 placeholder-neutral-400 focus:outline-2 focus:outline-accent-500"
-            />
-            <button
-              type="submit"
-              aria-label="Buscar"
-              className="flex shrink-0 items-center justify-center rounded-r-lg bg-accent-500 px-4 text-white transition-colors hover:bg-accent-600"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="size-5">
-                <circle cx="11" cy="11" r="7" />
-                <path strokeLinecap="round" d="m21 21-4.3-4.3" />
-              </svg>
-            </button>
-          </form>
+          <div className="order-3 flex w-full min-w-0 flex-1 sm:order-none">
+            <CategoryMenu categorias={categorias} />
+            <form onSubmit={handleSearch} className="flex min-w-0 flex-1">
+              <input
+                type="search"
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar productos..."
+                className="w-full min-w-0 border-0 border-l border-brand-600 px-4 py-2.5 text-neutral-900 placeholder-neutral-400 focus:outline-2 focus:outline-accent-500"
+              />
+              <button
+                type="submit"
+                aria-label="Buscar"
+                className="flex shrink-0 items-center justify-center rounded-r-lg bg-accent-500 px-4 text-white transition-colors hover:bg-accent-600"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="size-5">
+                  <circle cx="11" cy="11" r="7" />
+                  <path strokeLinecap="round" d="m21 21-4.3-4.3" />
+                </svg>
+              </button>
+            </form>
+          </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-4 text-sm sm:ml-0">
             {estaAutenticado ? (
