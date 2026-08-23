@@ -56,5 +56,25 @@ No se recomienda TypeORM (fricción con JS puro) ni Drizzle (comunidad/madurez t
 - Ninguna de las dos opciones fue probada aún contra el contenedor real de MySQL del equipo; se recomienda validar con una migración simple (p. ej. crear `usuarios`) antes de construir el esquema completo del PRD.
 
 **Pendiente:**
-- Que el equipo ratifique Prisma vs. Sequelize.
-- Definir el framework HTTP del backend (Express, Fastify, etc.), que todavía no se ha especificado.
+- ~~Que el equipo ratifique Prisma vs. Sequelize.~~ Se avanzó con Prisma (sin objeción del equipo) para arrancar la Fase Inicial; ver notas de implementación abajo.
+- ~~Definir el framework HTTP del backend~~ Se usó **Express** (la opción más estándar y documentada para Node + JS plano) al armar el primer esqueleto del backend. No se evaluaron alternativas a fondo porque no había ningún requisito específico que las favoreciera — es una elección por defecto, no una decisión reñida; cambiarla más adelante no debería tocar el modelo de datos.
+
+## Notas de implementación (2026-08-22)
+
+Al montar el proyecto se instaló **Prisma 7**, que cambió el mecanismo de conexión respecto a lo que se conocía al escribir este ADR:
+
+- `datasource.url` ya **no se declara en `schema.prisma`** — Prisma 7 lo elimina. La URL de conexión vive en `prisma.config.js` (usada por el CLI: migrate, seed, studio) y, para el cliente en tiempo de ejecución, se pasa explícitamente como un **driver adapter** al construir `PrismaClient`.
+- Para MySQL el adapter correcto es `@prisma/adapter-mariadb` (el driver `mariadb` es compatible con el protocolo de MySQL): `new PrismaClient({ adapter: new PrismaMariaDb(process.env.DATABASE_URL) })`. No existe un paquete `@prisma/adapter-mysql`/`mysql2` separado.
+- El generador **por defecto** de `prisma generate` en v7 (`provider = "prisma-client"`) emite un cliente en **TypeScript/ESM puro** (usa `import.meta.url`, extensiones `.ts`), pensado para proyectos TS o con bundler — no es requerible con `require()` en un proyecto JS plano como este. Se usa en su lugar el generador clásico `provider = "prisma-client-js"`, que sí compila a CommonJS y se importa con `require('@prisma/client')` como es habitual.
+
+Esto no cambia la decisión (Prisma sigue siendo la opción recomendada), pero si alguien regenera el cliente y ve errores de `import.meta` o módulos no encontrados, es por haber vuelto al generador nuevo — revisar `generator client` en `backend/prisma/schema.prisma`.
+
+**Shadow database y permisos del usuario de MySQL (P3014):** la sección "Limitaciones asumidas" de este ADR asumía que, al ser un contenedor propio, el usuario de MySQL tendría permisos suficientes para que Prisma gestionara la shadow database sola. En la práctica, el usuario `tiendaya` que crea la imagen oficial de MySQL vía `MYSQL_USER`/`MYSQL_PASSWORD` solo recibe privilegios sobre su propia base (`tiendaya`.*), no privilegios globales de `CREATE`/`DROP` — y `prisma migrate dev` los necesita para crear y borrar la shadow database en cada corrida. Sin ese grant, falla con:
+
+```
+Error: P3014
+Prisma Migrate could not create the shadow database...
+Original error: P1010 — User was denied access on the database `prisma_migrate_shadow_db_...`
+```
+
+Se resolvió otorgando el privilegio mínimo necesario (`CREATE, DROP` a nivel global, no acceso administrativo completo) mediante un script de inicialización del contenedor: [docker/mysql-init/01-grant-shadow-db.sql](../docker/mysql-init/01-grant-shadow-db.sql), montado en `docker-entrypoint-initdb.d` desde `docker-compose.yml`. Ese directorio solo se ejecuta la primera vez que el volumen de datos de MySQL se inicializa — un contenedor que ya existía antes de este cambio necesita el `GRANT` aplicado a mano una vez (ya se hizo sobre el contenedor de desarrollo actual); un `docker compose up -d` sobre un volumen nuevo (o de un teammate clonando el repo por primera vez) lo aplica solo.

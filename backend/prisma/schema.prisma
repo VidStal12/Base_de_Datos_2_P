@@ -1,0 +1,181 @@
+// Esquema relacional — Fase Inicial (TiendaYa)
+// Fuente de diseño: IA/ERD.md (Página 1, confirmada como base del proyecto)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model rol_usuario {
+  id       Int        @id @default(autoincrement())
+  tipo_rol String
+
+  usuarios usuarios[]
+}
+
+model usuarios {
+  id_usuario       Int      @id @default(autoincrement())
+  rol_id           Int
+  nombres          String
+  apellidos        String
+  correo           String   @unique
+  contrasena       String
+  fecha_nacimiento DateTime @db.Date
+
+  rol          rol_usuario   @relation(fields: [rol_id], references: [id])
+  direcciones  direcciones[]
+  metodos_pago metodo_pago[]
+  compras      compra[]
+  carritos     carrito[]
+}
+
+model direcciones {
+  id            Int    @id @default(autoincrement())
+  id_usuario    Int
+  pais          String
+  direccion     String
+  codigo_postal String
+
+  usuario usuarios @relation(fields: [id_usuario], references: [id_usuario])
+  compras compra[]
+}
+
+// El número completo de la tarjeta nunca se guarda aquí: lo custodia la pasarela
+// de pago, que devuelve un token de referencia (ver IA/ERD.md, observación 1.4.2).
+model metodo_pago {
+  id                Int    @id @default(autoincrement())
+  id_usuario        Int
+  titular           String
+  token_pasarela    String
+  ultimos_4_digitos String @db.VarChar(4)
+  marca             String @db.VarChar(30)
+
+  usuario usuarios @relation(fields: [id_usuario], references: [id_usuario])
+  pagos   pago[]
+}
+
+model categoria {
+  id        Int    @id @default(autoincrement())
+  categoria String
+
+  subcategorias subcategoria[]
+}
+
+model subcategoria {
+  id            Int    @id @default(autoincrement())
+  id_categoria  Int
+  subcategoria  String
+
+  categoria           categoria            @relation(fields: [id_categoria], references: [id])
+  atributos_categoria atributo_categoria[]
+  categoria_productos categoria_producto[]
+}
+
+model producto {
+  id          Int    @id @default(autoincrement())
+  descripcion String
+  imagen_url  String
+  estado      String
+
+  inventario          inventario?
+  categoria_productos categoria_producto[]
+  atributos_producto  atributo_producto[]
+  carritos            carrito[]
+  compra_detalles     compra_detalle[]
+}
+
+// 1:1 con producto (ver IA/ERD.md, observación 1.4.6). Si más adelante se necesita
+// inventario por bodega/lote, quitar el @unique y agregar una dimensión (p. ej. almacen_id).
+model inventario {
+  id          Int     @id @default(autoincrement())
+  id_producto Int     @unique
+  precio      Decimal @db.Decimal(10, 2)
+  cantidad    Int
+
+  producto producto @relation(fields: [id_producto], references: [id])
+}
+
+model atributo_categoria {
+  id              Int    @id @default(autoincrement())
+  id_subcategoria Int
+  atributo        String
+
+  subcategoria       subcategoria        @relation(fields: [id_subcategoria], references: [id])
+  atributos_producto atributo_producto[]
+}
+
+// El campo "valor" fue agregado en el análisis del ERD (observación 1.4.3): sin él
+// no había forma de registrar el valor concreto del atributo para un producto dado.
+model atributo_producto {
+  id                    Int    @id @default(autoincrement())
+  id_producto           Int
+  id_atributo_categoria Int
+  valor                 String
+
+  producto           producto            @relation(fields: [id_producto], references: [id])
+  atributo_categoria atributo_categoria  @relation(fields: [id_atributo_categoria], references: [id])
+}
+
+model categoria_producto {
+  id              Int @id @default(autoincrement())
+  id_subcategoria Int
+  id_producto     Int
+
+  subcategoria subcategoria @relation(fields: [id_subcategoria], references: [id])
+  producto     producto     @relation(fields: [id_producto], references: [id])
+}
+
+model carrito {
+  id          Int    @id @default(autoincrement())
+  id_usuario  Int
+  id_producto Int
+  cantidad    Int
+  estado      String
+
+  usuario  usuarios @relation(fields: [id_usuario], references: [id_usuario])
+  producto producto @relation(fields: [id_producto], references: [id])
+}
+
+model compra {
+  id           Int      @id @default(autoincrement())
+  id_usuario   Int
+  id_direccion Int
+  total        Decimal  @db.Decimal(10, 2)
+  fecha        DateTime @default(now())
+
+  usuario         usuarios         @relation(fields: [id_usuario], references: [id_usuario])
+  direccion       direcciones      @relation(fields: [id_direccion], references: [id])
+  compra_detalles compra_detalle[]
+  pagos           pago[]
+}
+
+// Agregada en el análisis del ERD (observación 1.4.1): separa el instrumento guardado
+// (metodo_pago) del cobro real de cada compra. Una compra puede tener varios pagos
+// (reintentos, reembolsos).
+model pago {
+  id                      Int      @id @default(autoincrement())
+  id_compra               Int
+  id_metodo_pago          Int
+  monto                   Decimal  @db.Decimal(10, 2)
+  estado                  String
+  fecha_pago              DateTime @default(now())
+  referencia_transaccion  String?
+
+  compra      compra      @relation(fields: [id_compra], references: [id])
+  metodo_pago metodo_pago @relation(fields: [id_metodo_pago], references: [id])
+}
+
+model compra_detalle {
+  id           Int     @id @default(autoincrement())
+  id_compra    Int
+  id_producto  Int
+  precio_final Decimal @db.Decimal(10, 2)
+  descuento    Decimal @db.Decimal(10, 2) @default(0)
+  estado       String
+
+  compra   compra   @relation(fields: [id_compra], references: [id])
+  producto producto @relation(fields: [id_producto], references: [id])
+}
