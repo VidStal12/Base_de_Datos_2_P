@@ -1,6 +1,9 @@
 const prisma = require('../config/prisma');
 
 async function crear(usuarioId, { pais, direccion, codigo_postal }) {
+  if (!pais || !direccion || !codigo_postal) {
+    throw new Error('pais, direccion y codigo_postal son obligatorios');
+  }
   return prisma.direcciones.create({
     data: { id_usuario: usuarioId, pais, direccion, codigo_postal },
   });

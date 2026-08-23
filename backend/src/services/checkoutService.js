@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { esEnteroPositivo } = require('../utils/validation');
 
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
@@ -7,6 +8,17 @@ const prisma = require('../config/prisma');
 async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
   if (!items || items.length === 0) {
     throw new Error('El carrito no puede estar vacío');
+  }
+  if (!esEnteroPositivo(direccionId) || !esEnteroPositivo(metodoPagoId)) {
+    throw new Error('direccionId y metodoPagoId deben ser enteros positivos');
+  }
+  // Sin esto, una cantidad negativa pasaba la validación de stock (cualquier
+  // stock es "mayor" que un negativo) y luego el decrement de inventario con un
+  // número negativo terminaba SUMANDO stock en vez de restarlo.
+  for (const { productoId, cantidad } of items) {
+    if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
+      throw new Error('Cada item necesita productoId y cantidad como enteros positivos');
+    }
   }
 
   return prisma.$transaction(async (tx) => {

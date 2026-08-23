@@ -90,6 +90,29 @@ curl -X POST http://localhost:3000/api/checkout \
 
 (Requiere `jq`; si no lo tenés, copiá el `token` del JSON de login a mano. Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados.)
 
+## Catálogo
+
+`GET /api/categorias` y `GET /api/productos` son públicos (no requieren token). Crear o editar catálogo requiere estar autenticado **y** tener rol `vendedor` o `administrador` — un `comprador` recibe `403`. La lista completa de endpoints (con cuáles requieren token/rol) está en `GET /` del servidor corriendo.
+
+```bash
+VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"correo":"luis.ramirez@example.com","contrasena":"Password123!"}' | jq -r .token)
+
+# categoría -> subcategoría -> atributo (define qué atributos aplican a esa subcategoría)
+curl -s -X POST http://localhost:3000/api/categorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"categoria":"Hogar"}'
+curl -s -X POST http://localhost:3000/api/categorias/1/subcategorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"subcategoria":"Cocina"}'
+curl -s -X POST http://localhost:3000/api/categorias/subcategorias/1/atributos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"atributo":"Material"}'
+
+# producto con inventario y valor concreto del atributo
+curl -s -X POST http://localhost:3000/api/productos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" \
+  -d '{"descripcion":"Sartén 26cm","subcategoriaId":1,"precio":249.5,"cantidad":20,"atributos":[{"id_atributo_categoria":1,"valor":"Aluminio"}]}'
+
+# navegar el catálogo (sin token)
+curl -s "http://localhost:3000/api/productos?subcategoriaId=1"
+curl -s http://localhost:3000/api/productos/1
+```
+
 ## Estructura del repositorio
 
 ```

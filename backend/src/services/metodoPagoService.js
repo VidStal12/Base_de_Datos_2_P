@@ -1,6 +1,12 @@
 const prisma = require('../config/prisma');
 
 async function crear(usuarioId, { titular, token_pasarela, ultimos_4_digitos, marca }) {
+  if (!titular || !token_pasarela || !marca) {
+    throw new Error('titular, token_pasarela y marca son obligatorios');
+  }
+  if (!/^\d{4}$/.test(ultimos_4_digitos || '')) {
+    throw new Error('ultimos_4_digitos debe ser exactamente 4 dígitos');
+  }
   return prisma.metodo_pago.create({
     data: { id_usuario: usuarioId, titular, token_pasarela, ultimos_4_digitos, marca },
   });
