@@ -32,7 +32,7 @@ app.get('/', (req, res) => {
       'GET /api/productos (filtros: ?categoriaId= o ?subcategoriaId=)',
       'GET /api/productos/:id',
       'POST /api/productos (requiere token, rol vendedor/administrador)',
-      'PATCH /api/productos/:id/inventario (requiere token, rol vendedor/administrador)',
+      'PATCH /api/productos/:id (requiere token, rol vendedor/administrador — dueño del producto o administrador)',
       'POST /api/checkout (requiere token)',
       'GET /api/compras (requiere token — pedidos del usuario autenticado)',
       'GET /api/compras/:id (requiere token)',

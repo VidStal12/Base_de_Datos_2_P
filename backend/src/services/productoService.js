@@ -1,12 +1,22 @@
 const prisma = require('../config/prisma');
 const { esEnteroPositivo } = require('../utils/validation');
 
-async function listar({ categoriaId, subcategoriaId } = {}) {
+// Filtro de texto simple (LIKE sobre descripcion) — no confundir con el buscador
+// de texto libre con tolerancia ortográfica que pide el PRD para Entrega 3
+// (Elasticsearch). Esto es solo lo mínimo para que la barra de búsqueda del
+// catálogo actual devuelva algo razonable.
+async function listar({ categoriaId, subcategoriaId, q, vendedorId } = {}) {
   const where = {};
   if (subcategoriaId) {
     where.categoria_productos = { some: { id_subcategoria: Number(subcategoriaId) } };
   } else if (categoriaId) {
     where.categoria_productos = { some: { subcategoria: { id_categoria: Number(categoriaId) } } };
+  }
+  if (q) {
+    where.descripcion = { contains: q };
+  }
+  if (vendedorId) {
+    where.id_vendedor = Number(vendedorId);
   }
 
   return prisma.producto.findMany({
@@ -78,23 +88,52 @@ async function verificarPermiso(vendedor, productoId) {
   return producto;
 }
 
-async function actualizarInventario(vendedor, productoId, { precio, cantidad }) {
+// Edición completa: campos propios, inventario y valores de atributo, todo opcional
+// (se actualiza solo lo que venga en el body). atributos: [{ id_atributo_categoria, valor }]
+// — con el @@unique de atributo_producto, upsert crea el valor si no existía o lo
+// corrige si ya estaba (p. ej. arreglar "Talla: L" a "Talla: M").
+async function actualizar(vendedor, productoId, { descripcion, imagen_url, estado, precio, cantidad, atributos }) {
   await verificarPermiso(vendedor, productoId);
 
-  const inventario = await prisma.inventario.findUnique({ where: { id_producto: productoId } });
-  if (!inventario) throw new Error('Este producto no tiene inventario asociado');
-
-  const data = {};
-  if (precio !== undefined) {
-    if (typeof precio !== 'number' || precio <= 0) throw new Error('El precio debe ser un número positivo');
-    data.precio = precio;
+  const datosProducto = {};
+  if (descripcion !== undefined) {
+    if (!descripcion) throw new Error('La descripción no puede estar vacía');
+    datosProducto.descripcion = descripcion;
   }
-  if (cantidad !== undefined) {
-    if (!Number.isInteger(cantidad) || cantidad < 0) throw new Error('La cantidad debe ser un entero mayor o igual a 0');
-    data.cantidad = cantidad;
+  if (imagen_url !== undefined) datosProducto.imagen_url = imagen_url;
+  if (estado !== undefined) datosProducto.estado = estado;
+
+  if (Object.keys(datosProducto).length > 0) {
+    await prisma.producto.update({ where: { id: productoId }, data: datosProducto });
   }
 
-  return prisma.inventario.update({ where: { id_producto: productoId }, data });
+  if (precio !== undefined || cantidad !== undefined) {
+    const datosInventario = {};
+    if (precio !== undefined) {
+      if (typeof precio !== 'number' || precio <= 0) throw new Error('El precio debe ser un número positivo');
+      datosInventario.precio = precio;
+    }
+    if (cantidad !== undefined) {
+      if (!Number.isInteger(cantidad) || cantidad < 0) throw new Error('La cantidad debe ser un entero mayor o igual a 0');
+      datosInventario.cantidad = cantidad;
+    }
+    await prisma.inventario.update({ where: { id_producto: productoId }, data: datosInventario });
+  }
+
+  if (atributos && atributos.length) {
+    for (const { id_atributo_categoria, valor } of atributos) {
+      if (!esEnteroPositivo(id_atributo_categoria) || !valor) {
+        throw new Error('Cada atributo necesita id_atributo_categoria y valor');
+      }
+      await prisma.atributo_producto.upsert({
+        where: { id_producto_id_atributo_categoria: { id_producto: productoId, id_atributo_categoria } },
+        update: { valor },
+        create: { id_producto: productoId, id_atributo_categoria, valor },
+      });
+    }
+  }
+
+  return obtener(productoId);
 }
 
-module.exports = { listar, obtener, crear, actualizarInventario };
+module.exports = { listar, obtener, crear, actualizar };

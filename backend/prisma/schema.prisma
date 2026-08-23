@@ -123,6 +123,10 @@ model atributo_producto {
 
   producto           producto            @relation(fields: [id_producto], references: [id])
   atributo_categoria atributo_categoria  @relation(fields: [id_atributo_categoria], references: [id])
+
+  // Un producto no puede tener dos valores para el mismo atributo. También es lo
+  // que permite hacer upsert al editar (crear el valor si no existía, actualizarlo si sí).
+  @@unique([id_producto, id_atributo_categoria])
 }
 
 model categoria_producto {
@@ -174,10 +178,14 @@ model pago {
   metodo_pago metodo_pago @relation(fields: [id_metodo_pago], references: [id])
 }
 
+// cantidad: faltaba en el ERD original (Página 1) — sin ella, precio_final (el
+// total de la línea) no se puede desglosar en precio unitario × unidades, así
+// que ni el historial de pedidos podía mostrar cuántas unidades se compraron.
 model compra_detalle {
   id           Int     @id @default(autoincrement())
   id_compra    Int
   id_producto  Int
+  cantidad     Int
   precio_final Decimal @db.Decimal(10, 2)
   descuento    Decimal @db.Decimal(10, 2) @default(0)
   estado       String

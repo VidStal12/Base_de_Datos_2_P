@@ -27,10 +27,10 @@ router.post('/', requireAuth, requireRole('vendedor', 'administrador'), async (r
   }
 });
 
-router.patch('/:id/inventario', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
+router.patch('/:id', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
-    const inventario = await productoService.actualizarInventario(req.usuario, Number(req.params.id), req.body);
-    res.json(inventario);
+    const producto = await productoService.actualizar(req.usuario, Number(req.params.id), req.body);
+    res.json(producto);
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }

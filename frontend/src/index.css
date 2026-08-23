@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/*
+  Paleta basada en teoría del color para transmitir confianza y calma:
+  - brand (azul): es el color más asociado en psicología del color con confianza,
+    seguridad y calma — la elección estándar en banca/fintech (y por eso se usa
+    acá en vez del naranja de Amazon, que comunica urgencia/energía, lo opuesto
+    a "relajación").
+  - accent (verde azulado): refuerza la calma (asociación con naturaleza) y
+    funciona como color de acción positiva (agregar al carrito, disponible,
+    confirmación) sin la urgencia que transmitiría un rojo/naranja saturado.
+  - neutral: grises fríos y desaturados — mantienen la interfaz limpia y con
+    espacio en blanco generoso, que reduce la carga visual (menos "ruido" = más
+    relajación) y deja que las fotos de producto sean el foco, como en Amazon.
+*/
+@theme {
+  --color-brand-50: #eef5fb;
+  --color-brand-100: #d6e8f5;
+  --color-brand-200: #aed0eb;
+  --color-brand-300: #7fb3de;
+  --color-brand-400: #4c93ce;
+  --color-brand-500: #2e77b5;
+  --color-brand-600: #205e93;
+  --color-brand-700: #1a4a75;
+  --color-brand-800: #163c5f;
+  --color-brand-900: #10293f;
+
+  --color-accent-50: #eaf7f3;
+  --color-accent-100: #cbeee1;
+  --color-accent-200: #99dec4;
+  --color-accent-300: #66cda7;
+  --color-accent-400: #3db98d;
+  --color-accent-500: #1fa379;
+  --color-accent-600: #17835f;
+  --color-accent-700: #13684c;
+  --color-accent-800: #10513d;
+  --color-accent-900: #0b3a2b;
+
+  --color-neutral-50: #f7f9fa;
+  --color-neutral-100: #eef1f3;
+  --color-neutral-200: #e1e6ea;
+  --color-neutral-300: #c7cfd6;
+  --color-neutral-400: #9aa6b2;
+  --color-neutral-500: #6b7785;
+  --color-neutral-600: #4e5964;
+  --color-neutral-700: #37404a;
+  --color-neutral-800: #242b33;
+  --color-neutral-900: #14181d;
+
+  --color-danger-500: #d64545;
+  --color-danger-600: #b93838;
+  --color-warning-500: #e0a83e;
+
+  --font-sans: 'Segoe UI', system-ui, Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-neutral-50);
+  color: var(--color-neutral-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}

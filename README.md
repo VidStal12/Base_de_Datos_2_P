@@ -4,7 +4,7 @@ Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construi
 
 ## Estado actual: Fase Inicial
 
-Backend en Node.js (JavaScript) + Express, MySQL en contenedor Docker, ORM/migraciones con Prisma.
+Backend en Node.js (JavaScript) + Express, MySQL en contenedor Docker, ORM/migraciones con Prisma. Frontend en React (Vite) + Tailwind CSS.
 
 ## Requisitos
 
@@ -100,6 +100,8 @@ curl -s http://localhost:3000/api/compras/1 -H "Authorization: Bearer $TOKEN"
 
 Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor` solo puede editar sus propios productos (`403` si intenta tocar uno ajeno); un `administrador` puede editar cualquiera. No hay endpoint público para crear cuentas `vendedor`/`administrador` — el auto-registro siempre asigna `comprador` (ver [ADR-001](IA/ADR-001-stack-y-migraciones.md)); esas cuentas se crean a mano/por seed por ahora.
 
+**Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
+
 ```bash
 VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
@@ -119,6 +121,23 @@ curl -s "http://localhost:3000/api/productos?subcategoriaId=1"
 curl -s http://localhost:3000/api/productos/1
 ```
 
+## Frontend
+
+Storefront en React con el patrón de layout de Amazon (header oscuro con búsqueda, franja de categorías, grilla de productos) pero con una paleta propia basada en teoría del color: **azul** (confianza/calma — la elección estándar en apps financieras) como color principal, y **verde azulado** como acento para acciones positivas (agregar al carrito, confirmaciones) — a propósito distinto del naranja de Amazon, que comunica urgencia. Paleta completa y el porqué en `frontend/src/index.css`.
+
+El carrito vive en el navegador (localStorage), no en el backend — no hay endpoints de carrito porque esa pieza se migra a Redis en Entrega 2 (ver PRD), así que no tenía sentido construir una versión relacional completa ahora. El checkout sigue pasando por el backend igual.
+
+```bash
+cd frontend
+npm install
+cp .env.example .env      # apunta a http://localhost:3000/api por defecto
+npm run dev
+```
+
+Corre en `http://localhost:5173`. Necesita el backend (`cd backend && npm run dev`) y MySQL (`docker compose up -d`) corriendo en paralelo.
+
+Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.com` (comprador) y `luis.ramirez@example.com` (vendedor), ambos con contraseña `Password123!`. No hay forma de crear una cuenta `vendedor`/`administrador` desde el registro público — es intencional, ver la sección Catálogo arriba.
+
 ## Estructura del repositorio
 
 ```
@@ -135,6 +154,13 @@ backend/
     services/              Lógica de negocio (auth, checkout)
     routes/                 Endpoints Express
     app.js / server.js
+frontend/
+  src/
+    api/                   Cliente HTTP hacia el backend
+    context/               Auth (token/sesión) y Cart (carrito en localStorage)
+    components/            Layout (Header/Footer), tarjetas de producto, UI común
+    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos...)
+    index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL
 docker-compose.yml     Contenedor de MySQL para desarrollo

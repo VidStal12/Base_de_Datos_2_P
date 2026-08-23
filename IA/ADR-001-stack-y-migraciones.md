@@ -104,3 +104,5 @@ ALTER TABLE `producto` MODIFY COLUMN `id_vendedor` INTEGER NOT NULL; -- 3. ahora
 ```
 
 Vale para cualquier columna `NOT NULL` futura sobre una tabla ya poblada.
+
+**`prisma migrate dev` y shells no interactivos:** además del caso de arriba, cualquier cambio que Prisma considere "podría fallar" (p. ej. un `@@unique` nuevo, aunque ya se haya verificado a mano que no hay filas duplicadas) hace que tanto `migrate dev` como `migrate dev --create-only` se nieguen a correr con `Error: ... environment is non-interactive, which is not supported` — no hay flag para decir "sí, ya sé, dale". La salida es la misma que los otros dos casos: escribir la carpeta/archivo de migración a mano (mismo formato `YYYYMMDDHHMMSS_nombre/migration.sql`) y aplicarla con `prisma migrate deploy`, que sí corre sin prompts. `prisma migrate status` después confirma si el SQL escrito a mano quedó alineado con el schema ("Database schema is up to date!") o si quedó desincronizado.

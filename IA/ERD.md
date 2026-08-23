@@ -41,7 +41,7 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 | `carrito` | id | id_usuario, id_producto | cantidad, estado |
 | `compra` | id | id_usuario, id_direccion | total (decimal), fecha (date) |
 | `pago` | id | id_compra, id_metodo_pago | monto (decimal), estado (varchar), fecha_pago (date), referencia_transaccion (varchar) |
-| `compra_detalle` | id | id_compra, id_producto | precio_final, descuento, estado |
+| `compra_detalle` | id | id_compra, id_producto | cantidad (int), precio_final, descuento, estado |
 
 ### 1.2 Diagrama
 
@@ -130,6 +130,7 @@ erDiagram
         int id PK
         int id_compra FK
         int id_producto FK
+        int cantidad
         decimal precio_final
         decimal descuento
         varchar estado
@@ -188,6 +189,8 @@ Todo lo anterior se extrajo de los datos estructurados del `.json` (figuras, cam
 7. **Varios conectores muestran "uno a uno" en ambos extremos** (`usuarios`–`rol_usuario`, `atributo_categoria`–`atributo_producto`, `usuarios`–`carrito`) donde la FK sugiere "uno a muchos". Vale la pena revisar las puntas de flecha directamente en Lucidchart antes de darlo por definitivo.
 
 8. ~~`producto` no tenía dueño.~~ **Resuelto (2026-08-23):** ni Página 1 ni Página 2 modelaban qué vendedor gestiona qué producto (Página 2 tenía un campo `detalles_vendedor` en `producto`, pero era texto libre, no una relación) — con eso, cualquier usuario con rol `vendedor` podía editar el catálogo de cualquier otro. Se agregó `producto.id_vendedor` (FK a `usuarios`), con el backend exigiendo que un `vendedor` solo edite sus propios productos (un `administrador` sí puede editar cualquiera). Los 3 productos que ya existían en la base de desarrollo se migraron a nombre del vendedor sembrado por el seed — ver [ADR-001](ADR-001-stack-y-migraciones.md), patrón de migración con backfill.
+
+9. ~~`compra_detalle` no registraba la cantidad comprada.~~ **Resuelto (2026-08-23):** tenía `precio_final` (el total de la línea) pero ningún campo para las unidades — imposible mostrar "2 × Camiseta" en un historial de pedidos, solo el total de esa línea. Se detectó recién al construir la vista de detalle de pedido del frontend. Se agregó `compra_detalle.cantidad` (int); las 5 filas de prueba que ya existían se rellenaron con `1` (son datos de desarrollo, no había forma confiable de reconstruir la cantidad real).
 
 ---
 

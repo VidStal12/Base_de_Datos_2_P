@@ -54,6 +54,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
 
       detalles.push({
         id_producto: productoId,
+        cantidad,
         precio_final: precioFinal,
         descuento: 0,
         estado: 'pendiente',
