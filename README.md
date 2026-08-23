@@ -110,6 +110,8 @@ Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor`
 
 **Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
 
+**Panel de administrador** (`frontend/src/pages/admin/`): con sesión `administrador` aparece "Panel admin" en el header → `/admin` lista el catálogo completo de **todos** los vendedores (filtro por categoría + búsqueda), con acceso de edición a cualquier producto — reutiliza el mismo formulario del panel de vendedor. Incluye un botón "Sincronizar con MongoDB" (`POST /api/admin/sync-catalogo`) que agrega a Mongo lo que exista en MySQL y todavía no tenga documento — nunca borra ni sobrescribe lo ya sincronizado, a propósito distinto del script `scripts/etlCatalogoAMongo.js` (que sí reconstruye todo desde cero y solo es seguro para el bootstrap inicial, ver [ADR-002 §8](IA/ADR-002-migracion-catalogo-documental.md#8-notas-de-implementación-2026-08-23)).
+
 Los ids de categoría/subcategoría son ObjectId de Mongo (strings), no enteros — hay que usar el que devuelva cada `POST`, no un valor fijo:
 
 ```bash
@@ -176,8 +178,8 @@ backend/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout, catálogo, historial)
-    routes/                 Endpoints Express
+    services/              Lógica de negocio (auth, checkout, catálogo, historial, sync admin)
+    routes/                 Endpoints Express (incluye adminRoutes.js)
     app.js / server.js
 frontend/
   src/
@@ -186,6 +188,7 @@ frontend/
     components/            Layout (Header/Footer), tarjetas de producto, UI común
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos...)
     pages/seller/            Panel de vendedor (alta/edición de productos)
+    pages/admin/             Panel de administrador (catálogo de todos los vendedores + sync)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL

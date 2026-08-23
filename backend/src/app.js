@@ -7,6 +7,7 @@ const categoriaRoutes = require('./routes/categoriaRoutes');
 const productoRoutes = require('./routes/productoRoutes');
 const checkoutRoutes = require('./routes/checkoutRoutes');
 const compraRoutes = require('./routes/compraRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 const app = express();
 
@@ -37,6 +38,7 @@ app.get('/', (req, res) => {
       'POST /api/checkout (requiere token)',
       'GET /api/compras (requiere token — pedidos del usuario autenticado)',
       'GET /api/compras/:id (requiere token)',
+      'POST /api/admin/sync-catalogo (requiere token, rol administrador — agrega a Mongo lo que falte, no destructivo)',
     ],
   });
 });
@@ -48,5 +50,6 @@ app.use('/api/categorias', categoriaRoutes);
 app.use('/api/productos', productoRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/compras', compraRoutes);
+app.use('/api/admin', adminRoutes);
 
 module.exports = app;

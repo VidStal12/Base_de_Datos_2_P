@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { productosApi, categoriasApi } from '../../api/productos';
 import { Field, Input } from '../../components/common/Input';
@@ -48,6 +48,8 @@ export function SellerProductFormPage() {
   const modoEdicion = Boolean(id);
   const { token } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const volverA = location.pathname.startsWith('/admin') ? '/admin' : '/vendedor';
 
   const [categorias, setCategorias] = useState([]);
   const [categoriaId, setCategoriaId] = useState('');
@@ -164,7 +166,7 @@ export function SellerProductFormPage() {
           token
         );
       }
-      navigate('/vendedor');
+      navigate(volverA);
     } catch (err) {
       setError(err.message);
     } finally {

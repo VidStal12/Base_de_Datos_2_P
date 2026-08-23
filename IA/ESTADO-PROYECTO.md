@@ -17,8 +17,8 @@ La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquem
 | Entrega | Alcance | Estado |
 |---|---|---|
 | Fase Inicial | Esquema 3FN + ERD + checkout atómico + DDL versionado | ✅ Completo y verificado |
-| — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, frontend | ✅ Completo (ver §3) |
-| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 4 de 6 criterios de la rúbrica completos y verificados (ver §3.5); faltan reseñas e imágenes como features nuevas y el paquete de "informe" formal |
+| — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, panel de administrador, frontend | ✅ Completo (ver §3) |
+| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 Los 6 requerimientos técnicos del PRD están implementados y verificados (5/6 puntos de la rúbrica, ver §3.5); solo falta "calidad del informe" (0.5 pt), que depende de confirmar el formato esperado, no de código. Reseñas/imágenes como feature son opcionales — el PRD solo exige la decisión embed/reference, ya documentada |
 | Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | ⬜ No iniciada (el carrito actual es solo de navegador, ver §5) |
 | Entrega 3 | Motor de búsqueda + consistencia distribuida del checkout | ⬜ No iniciada |
 | Entrega Final | Búsqueda vectorial + control de acceso NoSQL + retrospectiva | ⬜ No iniciada |
@@ -83,6 +83,12 @@ Modelo dividido (ver [ADR-002 §3.2](ADR-002-migracion-catalogo-documental.md#32
 
 **Lo que falta de Entrega 1:** reseñas e imágenes como features nuevas (el modelo ya está decidido en ADR-002 §6.1/§6.2, no implementado); resolver la pregunta del formato del informe.
 
+### 3.6 Panel de administrador (`frontend/src/pages/admin/`, `backend/src/routes/adminRoutes.js`)
+
+Visible solo para `administrador` (link "Panel admin" en el header, ruta `/admin`). Muestra el catálogo completo de **todos** los vendedores (no solo lo propio, a diferencia de `/vendedor`), con filtro por categoría y búsqueda por descripción. Reutiliza el mismo formulario de alta/edición del panel de vendedor (`SellerProductFormPage`) — ya soportaba que un `administrador` editara cualquier producto (`productoService.verificarPermiso`), solo faltaba una pantalla que listara todo para llegar ahí; el único cambio al formulario fue hacer que el redirect después de guardar vuelva a `/admin` o `/vendedor` según desde dónde se entró.
+
+**Botón "Sincronizar con MongoDB":** agrega a Mongo lo que exista en MySQL y todavía no tenga documento (categorías, subcategorías, productos) — **no** es el script `scripts/etlCatalogoAMongo.js` expuesto tal cual. Ese script hace `deleteMany()` sobre las colecciones antes de escribir, así que reconstruye todo desde cero y borra el historial de eventos acumulado; exponerlo como botón de administrador habría sido un riesgo real de pérdida de datos cada vez que alguien lo tocara, no solo en el primer uso. En su lugar, `backend/src/services/catalogoSyncService.js` implementa una sincronización aditiva (nunca borra, nunca pisa un documento ya existente) — pensada específicamente para el caso que ya se dio una vez en este proyecto: un producto creado directamente vía la API (Mongo) que nunca tuvo fila en la tabla relacional `categoria_producto`, o un producto cargado directo en MySQL que todavía no llegó a Mongo. `POST /api/admin/sync-catalogo`, protegido con `requireRole('administrador')` (los demás roles reciben 403). Verificado: idempotente (correrlo dos veces seguidas da todo en cero la segunda vez) y probado insertando un producto de prueba directo en MySQL, confirmando que la sincronización lo agrega sin tocar nada más.
+
 ---
 
 ## 4. Problemas reales encontrados y resueltos
@@ -112,7 +118,7 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 - **El carrito es solo de navegador** (`localStorage`), no hay endpoints de carrito en el backend. Es intencional: el PRD migra el carrito a Redis en Entrega 2, y a diferencia del catálogo (que sí necesita datos relacionales como fuente para el ETL de Entrega 1), el carrito no tiene ese mismo argumento — construir una versión relacional completa ahora era trabajo que se iba a tirar.
 - **No hay forma de crear cuentas `vendedor`/`administrador`** desde el registro público — es a propósito (evita que cualquiera se autoasigne un rol con privilegios). Por ahora esas cuentas se crean a mano o por el seed.
 - **No se puede recategorizar un producto** ni editar/borrar categorías, subcategorías o atributos ya creados.
-- **No hay panel de administrador** que vea pedidos o catálogo de todos los vendedores a la vez (el dashboard de vendedor solo muestra lo propio).
+- **El panel de administrador (§3.6) cubre catálogo, no pedidos** — un `administrador` ya puede ver y editar el catálogo de todos los vendedores, pero no hay todavía una vista que liste los pedidos de todos los usuarios (`GET /api/compras` sigue devolviendo solo los del usuario autenticado, sin excepción para `administrador`).
 - **Sin suite de tests automatizados** (Jest o similar) — toda la verificación en esta sesión fue manual/scripteada (`verificar:checkout`, pruebas por HTTP y por navegador).
 - **Crear/editar un producto escribe en MySQL y Mongo sin una transacción conjunta** — cada base queda consistente *dentro de sí misma*, pero no hay garantía atómica entre ambas. `crear()` intenta una compensación de mejor esfuerzo (si falla el paso de Mongo, se borra la fila de MySQL ya creada), pero no es una solución completa — esa es explícitamente tarea de Entrega 3. Ver [ADR-002 §5](ADR-002-migracion-catalogo-documental.md).
 - **`producto.descripcion`/`imagen_url`/`estado` siguen existiendo en MySQL** aunque Mongo ya es la fuente de verdad — se mantienen en sync en cada edición para no dejarlos desactualizados, pero son columnas vestigiales. Dropearlas (junto con `categoria`, `subcategoria`, `atributo_categoria`, `atributo_producto`, `categoria_producto`, ya sin uso) es una limpieza deliberadamente pospuesta, no un olvido — ver ADR-002 §7.

@@ -17,7 +17,7 @@ export function RequireRole({ roles, children }) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
         <h1 className="text-xl font-bold text-neutral-900">Acceso restringido</h1>
-        <p className="mt-2 text-neutral-600">Esta sección es solo para cuentas vendedoras.</p>
+        <p className="mt-2 text-neutral-600">No tenés permiso para ver esta sección.</p>
       </div>
     );
   }

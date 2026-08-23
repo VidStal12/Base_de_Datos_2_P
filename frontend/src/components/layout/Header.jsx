@@ -82,6 +82,11 @@ export function Header() {
                     Mi tienda
                   </Link>
                 )}
+                {usuario?.rol?.tipo_rol === 'administrador' && (
+                  <Link to="/admin" className="hidden font-medium hover:text-accent-300 sm:inline">
+                    Panel admin
+                  </Link>
+                )}
                 <Link to="/pedidos" className="flex items-center gap-1.5 hover:text-accent-300">
                   <UserIcon className="size-5" />
                   <span className="hidden md:inline">Hola, {usuario?.nombres || '...'}<br className="hidden md:block" />Mis pedidos</span>

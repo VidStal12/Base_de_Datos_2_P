@@ -14,9 +14,11 @@ import { OrderHistoryPage } from './pages/OrderHistoryPage';
 import { OrderDetailPage } from './pages/OrderDetailPage';
 import { SellerDashboardPage } from './pages/seller/SellerDashboardPage';
 import { SellerProductFormPage } from './pages/seller/SellerProductFormPage';
+import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 const ROLES_VENDEDOR = ['vendedor', 'administrador'];
+const ROLES_ADMIN = ['administrador'];
 
 export default function App() {
   return (
@@ -74,6 +76,30 @@ export default function App() {
                 path="vendedor/productos/:id/editar"
                 element={
                   <RequireRole roles={ROLES_VENDEDOR}>
+                    <SellerProductFormPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="admin"
+                element={
+                  <RequireRole roles={ROLES_ADMIN}>
+                    <AdminDashboardPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="admin/productos/nuevo"
+                element={
+                  <RequireRole roles={ROLES_ADMIN}>
+                    <SellerProductFormPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="admin/productos/:id/editar"
+                element={
+                  <RequireRole roles={ROLES_ADMIN}>
                     <SellerProductFormPage />
                   </RequireRole>
                 }
