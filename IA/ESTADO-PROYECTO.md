@@ -18,7 +18,7 @@ La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquem
 |---|---|---|
 | Fase Inicial | Esquema 3FN + ERD + checkout atómico + DDL versionado | ✅ Completo y verificado |
 | — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, frontend | ✅ Completo (ver §3) |
-| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 En curso — diagnóstico, decisiones embed/reference y diseño del historial escritos ([ADR-002](ADR-002-migracion-catalogo-documental.md), [ADR-003](ADR-003-historial-cambios-eventos.md)); falta implementar (Mongo, ETL, código contra Mongo, reseñas, imágenes) |
+| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 4 de 6 criterios de la rúbrica completos y verificados (ver §3.5); faltan reseñas e imágenes como features nuevas y el paquete de "informe" formal |
 | Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | ⬜ No iniciada (el carrito actual es solo de navegador, ver §5) |
 | Entrega 3 | Motor de búsqueda + consistencia distribuida del checkout | ⬜ No iniciada |
 | Entrega Final | Búsqueda vectorial + control de acceso NoSQL + retrospectiva | ⬜ No iniciada |
@@ -57,6 +57,32 @@ Páginas: catálogo con búsqueda/filtro por categoría (incluye un menú desple
 
 Visible solo para cuentas `vendedor`/`administrador` (link "Mi tienda" en el header). Dashboard con los productos propios; formulario de alta/edición que permite crear categoría → subcategoría → atributo sobre la marcha si todavía no existen, con los campos de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar, la categoría queda fija (recategorizar no está soportado — hay que publicar un producto nuevo).
 
+### 3.5 Entrega 1 — implementación (MongoDB)
+
+Modelo dividido (ver [ADR-002 §3.2](ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran)): `categoria`, `subcategoria` y el contenido descriptivo de `producto` (descripción, estado, atributos, imágenes) viven en MongoDB; `precio`/`cantidad` se quedan en `inventario` (MySQL) sin tocar, para no romper la atomicidad del checkout.
+
+- **MongoDB**: contenedor en `docker-compose.yml` como replica set de un nodo (`rs0`) — se auto-inicializa vía el healthcheck. Mongoose como ODM (misma naturaleza de decisión que Prisma vs. Sequelize).
+- **ETL** (`backend/scripts/etlCatalogoAMongo.js`): migra `categoria`/`subcategoria`/`producto` a Mongo, reproducible (limpia las colecciones destino antes de escribir). Corrido y verificado contra los datos reales del proyecto.
+- **`categoriaService.js` y `productoService.js`** reescritos contra Mongo, combinando con `inventario` (MySQL) en las lecturas. El contrato de API se mantuvo lo más parecido posible al anterior; lo que cambió de forma (atributos, ids de categoría, vendedor) obligó a actualizar `ProductDetailPage`, `SellerDashboardPage` y `SellerProductFormPage` en el frontend.
+- **Historial de cambios por eventos** (`ProductoEvento`, ver [ADR-003](ADR-003-historial-cambios-eventos.md)): cada alta/edición descriptiva agrega un evento con snapshot completo, nunca sobrescribe. `GET /api/productos/:id/historial?fecha=` reconstruye el estado vigente en cualquier fecha.
+- **Índice compuesto** `{producto_id, fecha}` sobre `producto_eventos` — confirmado creado, no solo declarado.
+- **Agregación** de ediciones por producto sobre la misma colección — corrida y verificada.
+
+**Verificado en vivo, no asumido:** ETL corrido con los 5 productos reales del proyecto; catálogo, filtros (categoría/subcategoría/texto/vendedor) y detalle probados contra el resultado; un producto editado dos veces y la reconstrucción por fecha devolvió efectivamente el estado *anterior* a cada edición (no solo el actual); alta de producto nuevo probada de punta a punta por la UI (React → Express → MySQL + Mongo + evento inicial); y — lo más importante — **`verificar:checkout` se corrió de nuevo después de todo esto y sigue pasando sin cambios**, confirmando que la migración no afectó la atomicidad del checkout de la Fase Inicial.
+
+**Rúbrica de Entrega 1 (ver PRD §5), estado real:**
+
+| Criterio | Peso | Estado |
+|---|---|---|
+| Diseño y normalización del modelo relacional base | 0.5 pt | ✅ Completo |
+| Diagnóstico del problema y justificación de la migración | 0.75 pt | ✅ Escrito (ADR-002) |
+| Decisión embed/reference debidamente argumentada | 1.0 pt | ✅ Escrito (ADR-002 §6) |
+| Implementación funcional del catálogo (índice + agregación) | 1.0 pt | ✅ Implementado y verificado |
+| Historial de cambios + consulta de reconstrucción por fecha | 1.25 pt | ✅ Implementado y verificado |
+| Calidad del informe y del repositorio | 0.5 pt | ⚠️ Sin resolver — no se sabe si hace falta un documento de entrega separado (ver §6) |
+
+**Lo que falta de Entrega 1:** reseñas e imágenes como features nuevas (el modelo ya está decidido en ADR-002 §6.1/§6.2, no implementado); resolver la pregunta del formato del informe.
+
 ---
 
 ## 4. Problemas reales encontrados y resueltos
@@ -75,6 +101,8 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 - **Buscador del frontend sin soporte en el backend** — se construyó la barra de búsqueda antes de que `GET /api/productos` supiera filtrar por texto. Se agregó un filtro simple (no es el buscador de texto libre con tolerancia ortográfica que pide el PRD para Entrega 3 — eso sigue pendiente).
 - **Permisos de la shadow database de Prisma (3 rondas)** — cada migración nueva exponía un permiso que faltaba (crear/borrar la base, después `ALTER`, después `UPDATE` para un backfill). Se resolvió con un único grant bien acotado en vez de seguir ampliando permisos globales uno por uno. Detalle en [ADR-001](ADR-001-stack-y-migraciones.md#notas-de-implementación-2026-08-22).
 - **CLI de Prisma no interactivo bloqueando migraciones "riesgosas"** — pasó dos veces (backfill de `id_vendedor`, restricción unique de `atributo_producto`), incluso ya habiendo verificado que el cambio era seguro. Sin flag para forzarlo; la solución fue escribir la migración a mano y aplicarla con `prisma migrate deploy`.
+- **La migración a Mongo, tal como estaba diseñada originalmente, iba a romper la atomicidad del checkout** — mover `precio`/`cantidad` a Mongo (como decía la primera versión de ADR-002) hubiera dejado el descuento de inventario y la creación del pedido en dos bases distintas sin transacción conjunta. Se detectó al planificar la implementación, antes de escribir código, y se resolvió con el modelo dividido (§3.2 de ADR-002): precio/cantidad se quedan en MySQL, checkout no se toca.
+- **Las transacciones multi-documento de Mongo necesitan un replica set**, incluso de un solo nodo — un `mongod` standalone no las soporta. Configurado en `docker-compose.yml` con auto-inicialización vía healthcheck.
 
 ---
 
@@ -85,17 +113,21 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 - **No se puede recategorizar un producto** ni editar/borrar categorías, subcategorías o atributos ya creados.
 - **No hay panel de administrador** que vea pedidos o catálogo de todos los vendedores a la vez (el dashboard de vendedor solo muestra lo propio).
 - **Sin suite de tests automatizados** (Jest o similar) — toda la verificación en esta sesión fue manual/scripteada (`verificar:checkout`, pruebas por HTTP y por navegador).
+- **Crear/editar un producto escribe en MySQL y Mongo sin una transacción conjunta** — cada base queda consistente *dentro de sí misma*, pero no hay garantía atómica entre ambas. `crear()` intenta una compensación de mejor esfuerzo (si falla el paso de Mongo, se borra la fila de MySQL ya creada), pero no es una solución completa — esa es explícitamente tarea de Entrega 3. Ver [ADR-002 §5](ADR-002-migracion-catalogo-documental.md).
+- **`producto.descripcion`/`imagen_url`/`estado` siguen existiendo en MySQL** aunque Mongo ya es la fuente de verdad — se mantienen en sync en cada edición para no dejarlos desactualizados, pero son columnas vestigiales. Dropearlas (junto con `categoria`, `subcategoria`, `atributo_categoria`, `atributo_producto`, `categoria_producto`, ya sin uso) es una limpieza deliberadamente pospuesta, no un olvido — ver ADR-002 §7.
 
 ---
 
 ## 6. Próximos pasos acordados
 
-Entrega 1 pesa 5 pts repartidos en varios criterios (PRD §5); el diagnóstico, las decisiones embed/reference y el diseño del historial de eventos (3 pts combinados de 5) ya están escritos en [ADR-002](ADR-002-migracion-catalogo-documental.md) y [ADR-003](ADR-003-historial-cambios-eventos.md). Lo que falta, todo implementación:
+De los 5 puntos de Entrega 1, quedan pendientes:
 
-1. Elegir driver/ODM de MongoDB para Node (Mongoose vs. driver nativo) y agregar el servicio a `docker-compose.yml` (como replica set de un nodo — las transacciones que necesita ADR-003 lo requieren).
-2. Escribir el script de **ETL** (relacional → documental) para categoría/subcategoría/producto.
-3. Reescribir `categoriaService`/`productoService` contra Mongo, manteniendo el contrato de API hacia el frontend en la medida de lo posible, e incorporando el patrón de eventos de [ADR-003](ADR-003-historial-cambios-eventos.md) en cada `crear`/`actualizar`.
-4. Implementar los dos endpoints de historial (`GET /api/productos/:id/historial[?fecha=]`) y el índice compuesto de `producto_eventos` que ya quedaron diseñados en ADR-003.
+1. **Reseñas de producto** — colección `resenas` + `resenas_resumen` cacheado en el producto (modelo ya decidido en ADR-002 §6.1, no implementado).
+2. **Imágenes múltiples** — el modelo ya soporta un array de imágenes (`producto.imagenes`), pero no hay UI para cargar más de una por producto; el formulario de vendedor sigue pidiendo una sola URL.
+3. **Resolver qué formato de "informe" espera el curso** — no es algo que se pueda resolver escribiendo código, hace falta confirmar con el profesor/la consigna.
+4. **Limpieza pospuesta** (no bloqueante): dropear las columnas/tablas relacionales que quedaron sin uso tras la migración (ver §5).
+
+Después de Entrega 1, seguir el roadmap del PRD: Entrega 2 (Redis + grafos/columnar) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
 5. Construir reseñas e imágenes como features nuevas, sobre el modelo ya decidido en ADR-002.
 6. Al menos un índice compuesto + una consulta de agregación reales en Mongo, mapeados a un patrón de consulta del sistema (requerimiento explícito del PRD).
 7. Después de Entrega 1, seguir el roadmap: Entrega 2 (Redis + grafos/columnar) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).

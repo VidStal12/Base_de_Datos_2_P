@@ -45,9 +45,7 @@ export function SellerDashboardPage() {
               />
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium text-neutral-800">{producto.descripcion}</p>
-                <p className="text-sm text-neutral-500">
-                  {producto.categoria_productos?.[0]?.subcategoria?.subcategoria || 'Sin categoría'}
-                </p>
+                <p className="text-sm text-neutral-500">{producto.subcategoria?.subcategoria || 'Sin categoría'}</p>
               </div>
               <div className="hidden text-right sm:block">
                 <p className="font-semibold text-neutral-900">{formatCurrency(producto.inventario?.precio)}</p>

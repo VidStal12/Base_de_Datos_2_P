@@ -7,7 +7,10 @@ const { checkout } = require('../src/services/checkoutService');
 // 2) Un checkout que pide más unidades de las disponibles falla ENTERO y no
 //    deja el inventario a medio actualizar — es decir, la transacción es atómica.
 async function main() {
-  const producto = await prisma.producto.findFirst({ where: { descripcion: 'Camiseta básica de algodón' } });
+  // Por id fijo (1 = el primer producto del seed), no por descripción — la
+  // descripción puede cambiar con el tiempo (ahora vive en Mongo, ver ADR-002)
+  // y este script no debería depender de un valor mutable.
+  const producto = await prisma.producto.findUnique({ where: { id: 1 } });
   const usuario = await prisma.usuarios.findFirst({
     where: { correo: 'ana.gomez@example.com' },
     include: { direcciones: true, metodos_pago: true },

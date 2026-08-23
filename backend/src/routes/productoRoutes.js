@@ -18,6 +18,23 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Historial de cambios (ver ADR-003). Sin ?fecha, devuelve la línea de tiempo
+// completa de eventos; con ?fecha=AAAA-MM-DD, el snapshot vigente en esa fecha.
+router.get('/:id/historial', async (req, res) => {
+  try {
+    const productoId = Number(req.params.id);
+    if (req.query.fecha) {
+      const snapshot = await productoService.historialEnFecha(productoId, new Date(req.query.fecha));
+      res.json(snapshot);
+    } else {
+      const eventos = await productoService.historialCompleto(productoId);
+      res.json(eventos);
+    }
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
 router.post('/', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
     const producto = await productoService.crear(req.usuario, req.body);

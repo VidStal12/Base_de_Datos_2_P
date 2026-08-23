@@ -29,17 +29,18 @@
 
 ### 3.1 Esquema
 
+> **Actualización (2026-08-23):** siguiendo la revisión de [ADR-002 §3.2](ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran), `precio`/`cantidad` no viven en Mongo — se quedan en `inventario` (MySQL) y no forman parte de este historial. Lo que se versiona acá es específicamente el contenido descriptivo (descripción, estado, atributos, imágenes), que es también lo que diagnosticó §1 de ADR-002. `producto_id` es el entero de `producto.id` en MySQL, no un `ObjectId`.
+
 ```json
 // colección "productos" — estado vigente (agrega version/actualizado_en a lo ya definido en ADR-002)
 {
   "_id": ObjectId("..."),
+  "producto_id": 1,
   "descripcion": "Camiseta básica de algodón",
   "estado": "activo",
   "subcategoria_id": ObjectId("..."),
   "vendedor_id": 2,
   "vendedor_nombre": "Luis Ramírez",
-  "precio": 89.99,
-  "cantidad": 43,
   "atributos": [{ "nombre": "Talla", "valor": "M" }, { "nombre": "Color", "valor": "Azul" }],
   "imagenes": [{ "url": "...", "alt": "...", "orden": 1, "principal": true }],
   "resenas_resumen": { "promedio": 4.6, "cantidad": 213 },
@@ -52,24 +53,22 @@
 // colección "producto_eventos" — historial, nunca se actualiza ni se borra
 {
   "_id": ObjectId("..."),
-  "producto_id": ObjectId("..."),
+  "producto_id": 1,
   "version": 3,
   "tipo": "creacion" | "edicion",
   "fecha": ISODate("2026-08-20T14:00:00Z"),
   "usuario_id": 2,
-  "campos_modificados": ["precio", "cantidad"],
+  "campos_modificados": ["descripcion"],
   "snapshot": {
     "descripcion": "Camiseta básica de algodón",
     "estado": "activo",
-    "precio": 89.99,
-    "cantidad": 43,
     "atributos": [{ "nombre": "Talla", "valor": "M" }, { "nombre": "Color", "valor": "Azul" }],
     "imagenes": [{ "url": "...", "alt": "...", "orden": 1, "principal": true }]
   }
 }
 ```
 
-`snapshot` deliberadamente **no** incluye `resenas_resumen`: es un agregado calculado (ADR-002 §6.1), no un dato editado por el vendedor — versionarlo junto con el resto mezclaría "cambios que hizo alguien" con "recálculos automáticos" en la misma línea de tiempo, que son dos cosas distintas. `vendedor_id`/`vendedor_nombre` tampoco se versionan por evento: quién vende el producto no es parte de "cómo estaba el producto" en el sentido que pide el PRD (descripción, precio, stock, atributos).
+`snapshot` deliberadamente **no** incluye `resenas_resumen`: es un agregado calculado (ADR-002 §6.1), no un dato editado por el vendedor — versionarlo junto con el resto mezclaría "cambios que hizo alguien" con "recálculos automáticos" en la misma línea de tiempo, que son dos cosas distintas. `vendedor_id`/`vendedor_nombre` tampoco se versionan por evento: quién vende el producto no es parte de "cómo estaba el producto" en el sentido que pide el PRD. `precio`/`cantidad` tampoco — viven en MySQL y no tienen historial versionado en este diseño (ver limitación en §5).
 
 ### 3.2 Escritura: un evento por cada `crear`/`actualizar`, atómico con el cambio de estado
 

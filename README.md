@@ -2,22 +2,24 @@
 
 Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construido de forma incremental sobre una arquitectura políglota de bases de datos. Contexto completo, alcance por entrega y rúbricas en [IA/PRD.md](IA/PRD.md); el modelo de datos de la Fase Inicial está documentado en [IA/ERD.md](IA/ERD.md) y las decisiones de stack en [IA/ADR-001-stack-y-migraciones.md](IA/ADR-001-stack-y-migraciones.md). Para un resumen de qué se construyó y en qué estado está el proyecto, ver [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
 
-## Estado actual: Fase Inicial
+## Estado actual: Fase Inicial completa, Entrega 1 en curso
 
-Backend en Node.js (JavaScript) + Express, MySQL en contenedor Docker, ORM/migraciones con Prisma. Frontend en React (Vite) + Tailwind CSS.
+Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Detalle de qué está hecho y qué falta en [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
 
 ## Requisitos
 
 - Node.js 20+
-- Docker Desktop (para el contenedor de MySQL)
+- Docker Desktop (para los contenedores de MySQL y MongoDB)
 
 ## Puesta en marcha
 
-1. **Levantar MySQL en Docker** (desde la raíz del repo):
+1. **Levantar MySQL y MongoDB en Docker** (desde la raíz del repo):
 
    ```bash
    docker compose up -d
    ```
+
+   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md).
 
 2. **Instalar dependencias del backend**:
 
@@ -46,13 +48,19 @@ Backend en Node.js (JavaScript) + Express, MySQL en contenedor Docker, ORM/migra
      ```
      (usa una *shadow database* temporal para calcular el diff — el usuario `tiendaya` ya tiene el permiso `CREATE, DROP` necesario, otorgado automáticamente al inicializar el contenedor por `docker/mysql-init/01-grant-shadow-db.sql`. Detalle del porqué en [ADR-001](IA/ADR-001-stack-y-migraciones.md#notas-de-implementación-2026-08-22).)
 
-5. **Cargar datos de prueba representativos**:
+5. **Cargar datos de prueba representativos** (MySQL):
 
    ```bash
    npm run seed
    ```
 
-6. **Levantar el servidor**:
+6. **Migrar el catálogo a MongoDB** (lee de MySQL, escribe en Mongo — reproducible, se puede correr de nuevo las veces que haga falta):
+
+   ```bash
+   node scripts/etlCatalogoAMongo.js
+   ```
+
+7. **Levantar el servidor**:
 
    ```bash
    npm run dev
@@ -102,23 +110,37 @@ Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor`
 
 **Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
 
+Los ids de categoría/subcategoría son ObjectId de Mongo (strings), no enteros — hay que usar el que devuelva cada `POST`, no un valor fijo:
+
 ```bash
 VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"correo":"luis.ramirez@example.com","contrasena":"Password123!"}' | jq -r .token)
 
 # categoría -> subcategoría -> atributo (define qué atributos aplican a esa subcategoría)
-curl -s -X POST http://localhost:3000/api/categorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"categoria":"Hogar"}'
-curl -s -X POST http://localhost:3000/api/categorias/1/subcategorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"subcategoria":"Cocina"}'
-curl -s -X POST http://localhost:3000/api/categorias/subcategorias/1/atributos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"atributo":"Material"}'
+CAT_ID=$(curl -s -X POST http://localhost:3000/api/categorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"categoria":"Hogar"}' | jq -r .id)
+SUB_ID=$(curl -s -X POST http://localhost:3000/api/categorias/$CAT_ID/subcategorias -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"subcategoria":"Cocina"}' | jq -r .id)
+curl -s -X POST http://localhost:3000/api/categorias/subcategorias/$SUB_ID/atributos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" -d '{"atributo":"Material"}'
 
-# producto con inventario y valor concreto del atributo
+# producto con inventario y valor concreto del atributo (por nombre, no por id)
 curl -s -X POST http://localhost:3000/api/productos -H "Authorization: Bearer $VTOKEN" -H "Content-Type: application/json" \
-  -d '{"descripcion":"Sartén 26cm","subcategoriaId":1,"precio":249.5,"cantidad":20,"atributos":[{"id_atributo_categoria":1,"valor":"Aluminio"}]}'
+  -d "{\"descripcion\":\"Sartén 26cm\",\"subcategoriaId\":\"$SUB_ID\",\"precio\":249.5,\"cantidad\":20,\"atributos\":[{\"nombre\":\"Material\",\"valor\":\"Aluminio\"}]}"
 
 # navegar el catálogo (sin token)
-curl -s "http://localhost:3000/api/productos?subcategoriaId=1"
+curl -s "http://localhost:3000/api/productos?subcategoriaId=$SUB_ID"
 curl -s http://localhost:3000/api/productos/1
+```
+
+## Historial de cambios (Entrega 1)
+
+Cada alta/edición del contenido descriptivo de un producto (descripción, estado, atributos, imágenes — **no** precio/stock, que no se versionan, ver [ADR-002](IA/ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran)) agrega un evento en vez de sobrescribir. `GET /api/productos/:id/historial` es público:
+
+```bash
+# línea de tiempo completa
+curl -s http://localhost:3000/api/productos/1/historial
+
+# estado vigente en una fecha arbitraria (404 si el producto no existía todavía)
+curl -s "http://localhost:3000/api/productos/1/historial?fecha=2026-08-01"
 ```
 
 ## Frontend
@@ -141,17 +163,20 @@ Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.
 ## Estructura del repositorio
 
 ```
-IA/                    Documentación de arquitectura (PRD, ERD, ADRs)
+IA/                    Documentación de arquitectura (PRD, ERD, ADRs, estado del proyecto)
 backend/
   prisma/
-    schema.prisma       Esquema (fuente de verdad del modelo de datos)
+    schema.prisma       Esquema MySQL (usuarios, direcciones, pedidos, pagos, inventario)
     migrations/          DDL versionado, generado por Prisma Migrate
-    seed.js               Datos de prueba representativos
+    seed.js               Datos de prueba representativos (MySQL)
   scripts/
-    verificarCheckout.js  Evidencia de atomicidad del checkout
+    verificarCheckout.js    Evidencia de atomicidad del checkout
+    etlCatalogoAMongo.js     ETL relacional -> documental del catálogo (ver ADR-002)
   src/
-    config/prisma.js      Cliente de Prisma (adaptador MySQL)
-    services/              Lógica de negocio (auth, checkout)
+    config/prisma.js      Cliente de Prisma (MySQL)
+    config/mongo.js        Conexión de Mongoose (MongoDB)
+    models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
+    services/              Lógica de negocio (auth, checkout, catálogo, historial)
     routes/                 Endpoints Express
     app.js / server.js
 frontend/
@@ -160,8 +185,9 @@ frontend/
     context/               Auth (token/sesión) y Cart (carrito en localStorage)
     components/            Layout (Header/Footer), tarjetas de producto, UI común
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos...)
+    pages/seller/            Panel de vendedor (alta/edición de productos)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL
-docker-compose.yml     Contenedor de MySQL para desarrollo
+docker-compose.yml     Contenedores de MySQL y MongoDB para desarrollo
 ```

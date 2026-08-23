@@ -34,7 +34,7 @@ export function ProductDetailPage() {
 
   const stock = producto.inventario?.cantidad ?? 0;
   const sinStock = stock <= 0;
-  const subcategoria = producto.categoria_productos?.[0]?.subcategoria;
+  const subcategoria = producto.subcategoria;
 
   function handleAgregar() {
     agregar(producto, cantidad);
@@ -59,9 +59,9 @@ export function ProductDetailPage() {
             </Link>
           )}
           <h1 className="mt-1 text-2xl font-bold text-neutral-900">{producto.descripcion}</h1>
-          {producto.vendedor && (
+          {producto.vendedor_nombre && (
             <p className="mt-1 text-sm text-neutral-500">
-              Vendido por <span className="font-medium text-neutral-700">{producto.vendedor.nombres} {producto.vendedor.apellidos}</span>
+              Vendido por <span className="font-medium text-neutral-700">{producto.vendedor_nombre}</span>
             </p>
           )}
         </div>
@@ -75,11 +75,11 @@ export function ProductDetailPage() {
           )}
         </div>
 
-        {producto.atributos_producto?.length > 0 && (
+        {producto.atributos?.length > 0 && (
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            {producto.atributos_producto.map((attr) => (
-              <div key={attr.id} className="flex justify-between border-b border-neutral-100 pb-1">
-                <dt className="text-neutral-500">{attr.atributo_categoria?.atributo}</dt>
+            {producto.atributos.map((attr) => (
+              <div key={attr.nombre} className="flex justify-between border-b border-neutral-100 pb-1">
+                <dt className="text-neutral-500">{attr.nombre}</dt>
                 <dd className="font-medium text-neutral-800">{attr.valor}</dd>
               </div>
             ))}

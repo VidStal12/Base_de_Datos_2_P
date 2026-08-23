@@ -53,41 +53,60 @@ Esto **sí sería implementable en relacional** (una tabla `producto_eventos` co
 
 ## 3. Decisión
 
-Migrar a MongoDB: `categoria`, `subcategoria` (con las definiciones de atributo embebidas — ver §3.1) y `producto` (con sus valores de atributo embebidos, ver §6). Reseñas e imágenes nacen documentales directamente (son features nuevas, no había nada que migrar). Todo lo demás — `usuarios`, `rol_usuario`, `direcciones`, `metodo_pago`, `carrito`, `compra`, `pago`, `compra_detalle` — se queda en MySQL: son datos transaccionales con integridad fuerte entre sí (pedidos, pagos, inventario) donde el modelo relacional ya funciona bien y donde el PRD no pide ni sugiere migrarlos.
+Migrar a MongoDB la parte **descriptiva** del catálogo: `categoria`, `subcategoria` (con las definiciones de atributo embebidas — ver §3.1) y los campos variables de `producto` (descripción, estado, atributos, imágenes — ver §6). Reseñas e imágenes nacen documentales directamente (son features nuevas, no había nada que migrar).
+
+`precio` y `cantidad` **no migran** — se quedan en `inventario` (MySQL), sin tocar. Igual que `usuarios`, `rol_usuario`, `direcciones`, `metodo_pago`, `carrito`, `compra`, `pago`, `compra_detalle`. Ver §3.2 para el porqué — es una revisión sobre el planteo original de este documento.
 
 ### 3.1 Simplificación que trae el modelo documental
 
-En Mongo no hace falta una colección separada para "qué atributos tiene esta subcategoría" — se puede embeber directamente como plantilla dentro del documento de la subcategoría:
+`categoria` y `subcategoria` sí quedan como dos colecciones separadas (no una sola, aunque una versión anterior de este documento las había aplanado en una) — aplanarlas obligaría a actualizar el nombre de la categoría en cada subcategoría que la referencia si algún día cambia, el mismo problema de desnormalización que el modelo relacional ya evita:
 
 ```json
+// colección "categorias"
+{ "_id": "ObjectId(...)", "categoria": "Ropa" }
+
 // colección "subcategorias"
 {
   "_id": "ObjectId(...)",
-  "categoria": "Ropa",
+  "categoria_id": "ObjectId(...)",
   "subcategoria": "Camisetas",
   "atributos_definidos": ["Talla", "Color"]
 }
 ```
 
-Y el producto guarda directamente nombre + valor, sin ninguna tabla de definición que joinear:
+Lo que sí se simplifica de verdad es que ya no hace falta una tabla de definición de atributos aparte (`atributo_categoria`) — queda embebida como plantilla dentro de la subcategoría (arriba), y el producto guarda directamente nombre + valor:
 
 ```json
 // colección "productos"
 {
   "_id": "ObjectId(...)",
+  "producto_id": 1,
   "descripcion": "Camiseta básica de algodón",
   "estado": "activo",
   "subcategoria_id": "ObjectId(...)",
-  "precio": 89.99,
-  "cantidad": 43,
+  "vendedor_id": 2,
+  "vendedor_nombre": "Luis Ramírez",
   "atributos": [
     { "nombre": "Talla", "valor": "M" },
     { "nombre": "Color", "valor": "Azul" }
-  ]
+  ],
+  "imagenes": [{ "url": "...", "alt": "...", "orden": 1, "principal": true }],
+  "resenas_resumen": { "promedio": 0, "cantidad": 0 },
+  "version": 1
 }
 ```
 
-Esto reemplaza los siete joins de §1.1 por una sola lectura de documento para todo lo que no sea vendedor/reseñas (ver §6).
+`producto_id` es el mismo entero de `producto.id` en MySQL — no un ObjectId nuevo. Es lo que conecta este documento con su fila `producto`/`inventario` (ver §3.2).
+
+Esto reemplaza los siete joins de §1.1 por una lectura de documento + una lectura a `inventario` (MySQL) para precio/cantidad — sigue siendo una simplificación real, aunque no elimina por completo la consulta relacional (ver §3.2).
+
+### 3.2 Actualización (2026-08-23): por qué precio/cantidad no migran
+
+La versión original de este ADR incluía `precio`/`cantidad` en el documento de Mongo. Se revisó al planificar la implementación: el checkout atómico (Fase Inicial, ya construido y probado) descuenta `inventario.cantidad` dentro de la misma transacción de Prisma que crea `compra`/`compra_detalle`/`pago`. Si `inventario` se hubiera movido a Mongo, esa transacción dejaría de poder ser una sola operación atómica — pasaría a ser una escritura en Mongo y otra en MySQL sin ninguna garantía conjunta, exactamente el problema de "checkout con múltiples componentes de persistencia" que el PRD asigna explícitamente a **Entrega 3** (con su propio documento de estrategia de consistencia), no a Entrega 1.
+
+Además, el diagnóstico de este mismo documento (§1) nunca fue sobre precio/cantidad — es sobre atributos heterogéneos por categoría y sobre historial de cambios descriptivos. Mover precio/cantidad a Mongo no resolvía ningún problema diagnosticado; solo agregaba riesgo.
+
+**Consecuencia práctica:** el detalle de un producto ahora se arma con una lectura a Mongo (descripción/atributos/imágenes) + una lectura a MySQL (`inventario`, por `producto_id`) — dos lecturas independientes, no una transacción distribuida, porque no hay ninguna escritura conjunta que deba ser atómica entre ambas para *leer* un producto. Escribir (crear/editar) sí toca las dos bases, pero cada una se mantiene consistente *dentro de sí misma* por separado — ver la implementación en `productoService.js` una vez migrado.
 
 ---
 
@@ -101,13 +120,14 @@ Esto reemplaza los siete joins de §1.1 por una sola lectura de documento para t
 ## 5. Consecuencias
 
 **Beneficios:**
-- Detalle de producto pasa de 7 tablas a 1 documento (+ vendedor, ver §6.3).
+- Detalle de producto pasa de siete tablas relacionales a un documento de Mongo + una fila de `inventario` (MySQL) — sigue siendo una simplificación real (ver §3.2).
 - Agregar un atributo nuevo a una categoría deja de requerir filas EAV — es directamente parte del documento.
 - El historial de cambios por evento (requerimiento de mayor peso de Entrega 1, ver ESTADO-PROYECTO.md) tiene un modelo natural: cada evento es un snapshot del documento completo.
+- **El checkout atómico no se toca.** Al no migrar `inventario`, la transacción de Prisma que ya está construida y probada (pedido + líneas + pago + descuento de stock) sigue siendo una sola operación atómica en una sola base de datos — cero riesgo de regresión sobre la Fase Inicial.
 
 **Limitaciones asumidas:**
-- Se pierde la integridad referencial de base de datos entre `compra_detalle.id_producto` (MySQL) y el documento de producto (Mongo) — hay que documentarlo y manejarlo en código, no en el motor (ver §6.3, mismo mecanismo que aplica para producto→vendedor).
 - Dos bases de datos que mantener, respaldar y en las que razonar en vez de una.
+- Crear o editar un producto ahora escribe en dos bases (Mongo para lo descriptivo, MySQL para precio/cantidad) sin una transacción conjunta que las cubra a ambas — si la segunda escritura falla después de que la primera tuvo éxito, queda una inconsistencia parcial. Es una versión acotada del mismo problema que Entrega 3 va a resolver formalmente para el checkout; acá se mitiga con una limpieza de mejor esfuerzo (ver implementación de `crear()`), no con una solución completa.
 - El resumen de reseñas embebido en el producto (§6.1) puede quedar desactualizado si no se recalcula con disciplina — es una inconsistencia eventual aceptada a propósito, no un descuido.
 
 ---
@@ -169,10 +189,10 @@ La migración (ETL) convierte el `imagen_url` actual de cada producto en un arra
 { "...": "...", "vendedor_id": 2, "vendedor_nombre": "Luis Ramírez" }
 ```
 
-**Esta es la misma clase de problema que "Documentación del mecanismo de referencia cruzada" pide el PRD para `compra_detalle.id_producto` (MySQL) → producto (Mongo), solo que en la dirección opuesta.** En ambos casos, el motor de base de datos no puede garantizar la integridad referencial (no hay `FOREIGN KEY` que cruce MySQL↔Mongo), así que la garantía pasa a ser responsabilidad de la aplicación:
+**Esto es el "mecanismo de referencia cruzada" que pide documentar el PRD** — con el modelo dividido de §3.2, es más acotado de lo que parecía en la versión original de este documento, porque `producto`/`inventario` **no se movieron** de MySQL: `compra_detalle.id_producto` sigue siendo una `FOREIGN KEY` real hacia una fila de `producto` que sigue existiendo, sin cambios. Las referencias cruzadas de verdad son estas dos, ambas nacidas en Mongo apuntando hacia MySQL:
 
-- **`compra_detalle.id_producto` → producto en Mongo:** si un producto se borra de Mongo, las líneas de pedido relacionales que lo referencian quedan con un ID que ya no resuelve a nada. Igual que hoy con `producto.estado`, la mitigación es no borrar productos — desactivarlos (`estado: "inactivo"`), igual que ya hace el panel de vendedor actual. El pedido histórico sigue mostrando lo que se compró (vía `compra_detalle.cantidad`/`precio_final`, que ya son un snapshot del momento de compra, no un link vivo al producto).
-- **`producto.vendedor_id` → usuario en MySQL:** si el vendedor se diera de baja, el producto queda con un `vendedor_id` huérfano. Mitigación equivalente: no se contempla borrar usuarios (no hay ni un endpoint para eso hoy), solo desactivarlos.
+- **`productos.producto_id` (Mongo) → `producto.id` (MySQL):** es un número plano, no una `FOREIGN KEY` — el motor no impide que quede huérfano. Mitigación: nunca se borra un `producto` de MySQL (no hay endpoint para eso), solo se desactiva (`estado: "inactivo"` en el documento de Mongo). El ETL y `productoService.crear()` son los únicos puntos que crean esta relación, y siempre crean primero la fila MySQL y recién después el documento Mongo (ver implementación), así que un `producto_id` en Mongo apunta siempre a algo que ya existía cuando se escribió.
+- **`productos.vendedor_id` (Mongo) → `usuarios.id_usuario` (MySQL):** mismo mecanismo. Si el vendedor se diera de baja (no hay endpoint para eso hoy tampoco), el documento quedaría con un `vendedor_id` huérfano — mitigación equivalente: desactivar, no borrar.
 
 ---
 

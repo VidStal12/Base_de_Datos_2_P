@@ -19,5 +19,30 @@ services:
       timeout: 5s
       retries: 10
 
+  mongo:
+    image: mongo:7
+    container_name: tiendaya-mongo
+    restart: unless-stopped
+    # Replica set de un solo nodo: no es para alta disponibilidad, es porque
+    # las transacciones multi-documento de Mongo (ver ADR-003, historial de
+    # eventos) solo funcionan sobre un replica set, ni siquiera de un nodo.
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      # Se inicia el replica set solo si todavía no existe uno (rs.status()
+      # falla la primera vez) — evita un paso manual aparte de "correr esto
+      # una vez"; el healthcheck termina haciendo ese trabajo de inicialización.
+      test: >
+        mongosh --quiet --eval
+        "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 5s
+
 volumes:
   mysql_data:
+  mongo_data:

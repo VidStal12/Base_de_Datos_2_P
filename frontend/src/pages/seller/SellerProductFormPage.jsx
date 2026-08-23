@@ -65,7 +65,6 @@ export function SellerProductFormPage() {
 
       if (modoEdicion) {
         const producto = await productosApi.obtener(id);
-        const asignacion = producto.categoria_productos?.[0];
         setForm({
           descripcion: producto.descripcion,
           imagen_url: producto.imagen_url || '',
@@ -73,13 +72,13 @@ export function SellerProductFormPage() {
           precio: producto.inventario?.precio ?? '',
           cantidad: producto.inventario?.cantidad ?? '',
         });
-        if (asignacion) {
-          setCategoriaId(String(asignacion.subcategoria.id_categoria));
-          setSubcategoriaId(String(asignacion.id_subcategoria));
+        if (producto.subcategoria) {
+          setCategoriaId(producto.subcategoria.categoria_id);
+          setSubcategoriaId(producto.subcategoria.id);
         }
         const valores = {};
-        (producto.atributos_producto || []).forEach((ap) => {
-          valores[ap.id_atributo_categoria] = ap.valor;
+        (producto.atributos || []).forEach((attr) => {
+          valores[attr.nombre] = attr.valor;
         });
         setValoresAtributos(valores);
       }
@@ -104,7 +103,7 @@ export function SellerProductFormPage() {
   }
 
   async function crearSubcategoria(nombre) {
-    const nueva = await categoriasApi.crearSubcategoria(Number(categoriaId), { subcategoria: nombre }, token);
+    const nueva = await categoriasApi.crearSubcategoria(categoriaId, { subcategoria: nombre }, token);
     setCategorias((prev) =>
       prev.map((c) =>
         String(c.id) === categoriaId
@@ -116,12 +115,12 @@ export function SellerProductFormPage() {
   }
 
   async function crearAtributo(nombre) {
-    const nuevo = await categoriasApi.crearAtributo(Number(subcategoriaId), { atributo: nombre }, token);
+    await categoriasApi.crearAtributo(subcategoriaId, { atributo: nombre }, token);
     setCategorias((prev) =>
       prev.map((c) => ({
         ...c,
         subcategorias: c.subcategorias.map((s) =>
-          String(s.id) === subcategoriaId ? { ...s, atributos_categoria: [...s.atributos_categoria, nuevo] } : s
+          String(s.id) === subcategoriaId ? { ...s, atributos_categoria: [...s.atributos_categoria, nombre] } : s
         ),
       }))
     );
@@ -132,8 +131,8 @@ export function SellerProductFormPage() {
     setError('');
 
     const atributos = atributosDisponibles
-      .filter((attr) => valoresAtributos[attr.id]?.trim())
-      .map((attr) => ({ id_atributo_categoria: attr.id, valor: valoresAtributos[attr.id].trim() }));
+      .filter((nombre) => valoresAtributos[nombre]?.trim())
+      .map((nombre) => ({ nombre, valor: valoresAtributos[nombre].trim() }));
 
     setGuardando(true);
     try {
@@ -157,7 +156,7 @@ export function SellerProductFormPage() {
             descripcion: form.descripcion,
             imagen_url: form.imagen_url,
             estado: form.estado,
-            subcategoriaId: Number(subcategoriaId),
+            subcategoriaId,
             precio: Number(form.precio),
             cantidad: Number(form.cantidad),
             atributos,
@@ -284,11 +283,11 @@ export function SellerProductFormPage() {
               Atributos de {subcategoriaActual?.subcategoria}
             </h2>
             <div className="flex flex-col gap-3">
-              {atributosDisponibles.map((attr) => (
-                <Field key={attr.id} label={attr.atributo}>
+              {atributosDisponibles.map((nombre) => (
+                <Field key={nombre} label={nombre}>
                   <Input
-                    value={valoresAtributos[attr.id] || ''}
-                    onChange={(e) => setValoresAtributos((prev) => ({ ...prev, [attr.id]: e.target.value }))}
+                    value={valoresAtributos[nombre] || ''}
+                    onChange={(e) => setValoresAtributos((prev) => ({ ...prev, [nombre]: e.target.value }))}
                   />
                 </Field>
               ))}
