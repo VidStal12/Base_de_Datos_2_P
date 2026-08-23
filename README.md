@@ -70,15 +70,25 @@ npm run verificar:checkout
 
 El script corre un checkout válido y luego uno que pide más unidades de las que hay en stock, confirmando que este segundo caso se rechaza por completo **sin** dejar el inventario parcialmente descontado.
 
-También se puede probar vía HTTP una vez cargado el seed:
+También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body:
 
 ```bash
-curl -X POST http://localhost:3000/api/checkout \
+# 1. Login (el usuario de ejemplo lo crea el seed)
+TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"usuarioId":1,"direccionId":1,"metodoPagoId":1,"items":[{"productoId":1,"cantidad":2}]}'
+  -d '{"correo":"ana.gomez@example.com","contrasena":"Password123!"}' | jq -r .token)
+
+# 2. Listar sus direcciones y métodos de pago para obtener los IDs
+curl -s http://localhost:3000/api/direcciones -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:3000/api/metodos-pago -H "Authorization: Bearer $TOKEN"
+
+# 3. Checkout usando esos IDs (deben pertenecer al usuario del token, si no se rechaza)
+curl -X POST http://localhost:3000/api/checkout \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"direccionId":1,"metodoPagoId":1,"items":[{"productoId":1,"cantidad":2}]}'
 ```
 
-(Los IDs asumen una base recién sembrada; ajustar según lo que devuelva `npm run seed`.)
+(Requiere `jq`; si no lo tenés, copiá el `token` del JSON de login a mano. Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados.)
 
 ## Estructura del repositorio
 

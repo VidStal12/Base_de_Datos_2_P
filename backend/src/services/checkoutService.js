@@ -10,6 +10,21 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
   }
 
   return prisma.$transaction(async (tx) => {
+    // La dirección y el método de pago deben pertenecer a quien está pagando —
+    // si no, cualquier usuario autenticado podría pasar el ID de otro y usar
+    // su dirección o su tarjeta guardada.
+    const [direccion, metodoPago] = await Promise.all([
+      tx.direcciones.findUnique({ where: { id: direccionId } }),
+      tx.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
+    ]);
+
+    if (!direccion || direccion.id_usuario !== usuarioId) {
+      throw new Error('La dirección indicada no pertenece al usuario');
+    }
+    if (!metodoPago || metodoPago.id_usuario !== usuarioId) {
+      throw new Error('El método de pago indicado no pertenece al usuario');
+    }
+
     let total = 0;
     const detalles = [];
 

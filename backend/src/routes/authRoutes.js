@@ -1,5 +1,6 @@
 const express = require('express');
-const { registrar, login } = require('../services/authService');
+const { registrar, login, obtenerPerfil } = require('../services/authService');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -18,6 +19,15 @@ router.post('/login', async (req, res) => {
     res.json(resultado);
   } catch (err) {
     res.status(401).json({ error: err.message });
+  }
+});
+
+router.get('/me', requireAuth, async (req, res) => {
+  try {
+    const usuario = await obtenerPerfil(req.usuario.id_usuario);
+    res.json(usuario);
+  } catch (err) {
+    res.status(404).json({ error: err.message });
   }
 });
 
