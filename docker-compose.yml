@@ -26,9 +26,20 @@ services:
     # Replica set de un solo nodo: no es para alta disponibilidad, es porque
     # las transacciones multi-documento de Mongo (ver ADR-003, historial de
     # eventos) solo funcionan sobre un replica set, ni siquiera de un nodo.
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+    #
+    # Puerto 27018, adentro Y afuera del contenedor (no el 27017 por defecto de
+    # Mongo, ni una traducción 27018:27017): si hay un MongoDB nativo de Windows
+    # corriendo en 127.0.0.1:27017 (instalado por fuera de este proyecto), esa
+    # dirección específica le gana a la publicación 0.0.0.0 de Docker en el
+    # mismo puerto, y cualquier cliente que conecte a 127.0.0.1:27017 termina
+    # hablando con el Mongo equivocado. Un mapeo tipo "27018:27017" no alcanza:
+    # la config del replica set tiene que coincidir con el puerto en el que
+    # mongod escucha DENTRO del contenedor (rs.reconfig lo exige — lo probamos
+    # y falló con "no host... maps to this node"), así que adentro y afuera
+    # tienen que ser el mismo número. Ver IA/ADR-002, notas de implementación.
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27018"]
     ports:
-      - "27017:27017"
+      - "27018:27018"
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -36,8 +47,8 @@ services:
       # falla la primera vez) — evita un paso manual aparte de "correr esto
       # una vez"; el healthcheck termina haciendo ese trabajo de inicialización.
       test: >
-        mongosh --quiet --eval
-        "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }"
+        mongosh --port 27018 --quiet --eval
+        "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27018'}]}).ok }"
       interval: 5s
       timeout: 10s
       retries: 20
