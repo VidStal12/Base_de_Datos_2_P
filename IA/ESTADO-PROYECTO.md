@@ -18,7 +18,7 @@ La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquem
 |---|---|---|
 | Fase Inicial | Esquema 3FN + ERD + checkout atómico + DDL versionado | ✅ Completo y verificado |
 | — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, frontend | ✅ Completo (ver §3) |
-| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | ⬜ No iniciada |
+| Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 En curso — diagnóstico, decisiones embed/reference y diseño del historial escritos ([ADR-002](ADR-002-migracion-catalogo-documental.md), [ADR-003](ADR-003-historial-cambios-eventos.md)); falta implementar (Mongo, ETL, código contra Mongo, reseñas, imágenes) |
 | Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | ⬜ No iniciada (el carrito actual es solo de navegador, ver §5) |
 | Entrega 3 | Motor de búsqueda + consistencia distribuida del checkout | ⬜ No iniciada |
 | Entrega Final | Búsqueda vectorial + control de acceso NoSQL + retrospectiva | ⬜ No iniciada |
@@ -90,9 +90,15 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 
 ## 6. Próximos pasos acordados
 
-1. Cerrar los huecos de §5 que se consideren necesarios antes de seguir (a decidir).
-2. Función de **ETL** que exporte el catálogo relacional actual hacia una base documental (MongoDB), como preparación directa para Entrega 1.
-3. A partir de ahí, seguir el roadmap del PRD: Entrega 1 (migración documental + historial de cambios) → Entrega 2 (Redis + grafos/columnar) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
+Entrega 1 pesa 5 pts repartidos en varios criterios (PRD §5); el diagnóstico, las decisiones embed/reference y el diseño del historial de eventos (3 pts combinados de 5) ya están escritos en [ADR-002](ADR-002-migracion-catalogo-documental.md) y [ADR-003](ADR-003-historial-cambios-eventos.md). Lo que falta, todo implementación:
+
+1. Elegir driver/ODM de MongoDB para Node (Mongoose vs. driver nativo) y agregar el servicio a `docker-compose.yml` (como replica set de un nodo — las transacciones que necesita ADR-003 lo requieren).
+2. Escribir el script de **ETL** (relacional → documental) para categoría/subcategoría/producto.
+3. Reescribir `categoriaService`/`productoService` contra Mongo, manteniendo el contrato de API hacia el frontend en la medida de lo posible, e incorporando el patrón de eventos de [ADR-003](ADR-003-historial-cambios-eventos.md) en cada `crear`/`actualizar`.
+4. Implementar los dos endpoints de historial (`GET /api/productos/:id/historial[?fecha=]`) y el índice compuesto de `producto_eventos` que ya quedaron diseñados en ADR-003.
+5. Construir reseñas e imágenes como features nuevas, sobre el modelo ya decidido en ADR-002.
+6. Al menos un índice compuesto + una consulta de agregación reales en Mongo, mapeados a un patrón de consulta del sistema (requerimiento explícito del PRD).
+7. Después de Entrega 1, seguir el roadmap: Entrega 2 (Redis + grafos/columnar) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
 
 ---
 
