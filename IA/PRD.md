@@ -273,11 +273,11 @@ Semana 15           →  Entrega Final: Vectorial + seguridad + presentación
 > Los siguientes campos se completarán con información adicional del equipo:
 
 - [ ] **Nombres de los integrantes del equipo**
-- [ ] **Stack tecnológico elegido** (backend, frontend, ORM/ODM)
+- [x] **Stack tecnológico elegido** (backend, frontend, ORM/ODM): Node.js (JavaScript) + React · MySQL en contenedor Docker · ORM — ver [ADR-001](ADR-001-stack-y-migraciones.md)
 - [ ] **Decisiones preliminares de arquitectura** (e.g., grafos vs. columnar para Entrega 2)
 - [ ] **Enlace al repositorio del proyecto**
 - [ ] **Estrategia de consistencia preliminar** para el checkout distribuido
-- [ ] **Modelo de datos relacional inicial** (ERD)
+- [x] **Modelo de datos relacional inicial** (ERD): primera propuesta documentada en [ERD.md](ERD.md) — pendiente confirmar página canónica del archivo fuente (ver preguntas abiertas)
 - [ ] **Cronograma interno del equipo** con milestones por entrega
 
 ---
