@@ -26,7 +26,13 @@ Backend en Node.js (JavaScript) + Express, MySQL en contenedor Docker, ORM/migra
    npm install
    ```
 
-3. **Configurar variables de entorno**: copiar `backend/.env` (ya incluido con valores de desarrollo que coinciden con `docker-compose.yml`) o ajustar `DATABASE_URL` si cambiaste las credenciales del contenedor.
+3. **Configurar variables de entorno** (`.env` no se versiona):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Los valores por defecto ya coinciden con `docker-compose.yml`; solo hace falta ajustar `DATABASE_URL` si cambiaste las credenciales del contenedor.
 
 4. **Aplicar el esquema**:
 
