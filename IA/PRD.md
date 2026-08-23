@@ -277,7 +277,7 @@ Semana 15           →  Entrega Final: Vectorial + seguridad + presentación
 - [ ] **Decisiones preliminares de arquitectura** (e.g., grafos vs. columnar para Entrega 2)
 - [ ] **Enlace al repositorio del proyecto**
 - [ ] **Estrategia de consistencia preliminar** para el checkout distribuido
-- [x] **Modelo de datos relacional inicial** (ERD): primera propuesta documentada en [ERD.md](ERD.md) — pendiente confirmar página canónica del archivo fuente (ver preguntas abiertas)
+- [x] **Modelo de datos relacional inicial** (ERD): confirmado — Página 1 de [ERD.md](ERD.md), con entidad `pago` incorporada
 - [ ] **Cronograma interno del equipo** con milestones por entrega
 
 ---

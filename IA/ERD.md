@@ -2,7 +2,7 @@
 ## Análisis del diagrama entidad-relación
 
 > Fuente: `Diagrama entidad relación Base de datos 2 , Tienda Ya.json` (exportado desde Lucidchart) · compartido por el equipo el 2026-08-22.
-> Este documento transcribe y analiza el contenido del archivo para dejar registro versionado en el repositorio — el `.json` de Lucidchart no forma parte del proyecto en Git (ver pregunta abierta en §3 sobre si conviene agregarlo).
+> Este documento transcribe y analiza el contenido del archivo para dejar registro versionado en el repositorio. **Decisión (2026-08-22):** el `.json` de Lucidchart no se versiona en Git — ver razones en §3. Este Markdown, con el diagrama Mermaid de la sección 1.2, es la fuente de verdad versionada del ERD.
 
 ---
 
@@ -12,16 +12,16 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 
 | | Página 1 | Página 2 |
 |---|---|---|
-| Entidades | 14 | 21 |
+| Entidades | 15 (incluye `pago`) | 21 |
 | Alcance | Usuarios/direcciones, catálogo (categoría → subcategoría → atributos), inventario, carrito, compra/compra_detalle | Lo mismo salvo carrito/compra, más jerarquía geográfica (país/ciudad/departamento), un flujo de **reservas** en vez de compra directa, e historial de búsquedas con origen/destino de envío |
 | Coincide con el alcance de Fase Inicial (PRD §5) | Sí, punto por punto | Parcialmente — agrega conceptos (geografía, reservas, envíos) que el PRD no menciona |
 | Consistencia interna | Buena, con detalles menores (§1.4) | Varias inconsistencias: nombres duplicados, tablas repetidas, una PK sin nombre real (§2.2) |
 
-**Recomendación:** usar **Página 1** como base del modelo relacional de la Fase Inicial — cubre exactamente lo que pide el PRD (usuarios y direcciones, categorías y productos, pedidos y líneas de pedido, inventario) y es internamente más consistente. Página 2 se documenta igual en la sección 2 por completitud: puede que ahí se haya explorado una idea previa antes de simplificar a Página 1, o que algunas piezas se quieran retomar más adelante. Confirmarlo es la primera pregunta abierta (§3) — nada de esto se implementa todavía.
+**Confirmado (2026-08-22):** el equipo usa **Página 1** como base del modelo relacional de la Fase Inicial — cubre exactamente lo que pide el PRD (usuarios y direcciones, categorías y productos, pedidos y líneas de pedido, inventario, pagos) y es internamente más consistente. Ya incorpora la entidad `pago` agregada a partir de la observación 1.4.1. Página 2 queda documentada en la sección 2 solo como referencia histórica — no se implementa.
 
 ---
 
-## 1. Página 1 — Modelo propuesto para Fase Inicial
+## 1. Página 1 — Modelo base confirmado para Fase Inicial
 
 ### 1.1 Entidades
 
@@ -30,7 +30,7 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 | `usuarios` | id_usuario | rol_id | nombres, apellidos, correo, contraseña, fecha_nacimiento (date) |
 | `rol_usuario` | id | — | tipo_rol |
 | `direcciones` | id | id_usuario | pais, direccion, codigo_postal (**decimal** ⚠) |
-| `metodo_pago` | id | id_usuario | num_tarjeta (**decimal** ⚠), codigo_seguridad (**decimal** ⚠), titular |
+| `metodo_pago` | id | id_usuario | titular (varchar), token_pasarela (varchar), ultimos_4_digitos (varchar), marca (varchar) |
 | `producto` | id | — | descripcion, imagen_url, estado |
 | `categoria` | id | — | categoria |
 | `subcategoria` | id | id_categoria | subcategoria |
@@ -40,6 +40,7 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 | `categoria_producto` | id | id_subcategoria, id_producto | — (tabla pivote) |
 | `carrito` | id | id_usuario, id_producto | cantidad, estado |
 | `compra` | id | id_usuario, id_direccion | total (decimal), fecha (date) |
+| `pago` | id | id_compra, id_metodo_pago | monto (decimal), estado (varchar), fecha_pago (date), referencia_transaccion (varchar) |
 | `compra_detalle` | id | id_compra, id_producto | precio_final, descuento, estado |
 
 ### 1.2 Diagrama
@@ -69,9 +70,10 @@ erDiagram
     METODO_PAGO {
         int id PK
         int id_usuario FK
-        varchar num_tarjeta
-        varchar codigo_seguridad
         varchar titular
+        varchar token_pasarela
+        varchar ultimos_4_digitos
+        varchar marca
     }
     PRODUCTO {
         int id PK
@@ -131,6 +133,15 @@ erDiagram
         decimal descuento
         varchar estado
     }
+    PAGO {
+        int id PK
+        int id_compra FK
+        int id_metodo_pago FK
+        decimal monto
+        varchar estado
+        date fecha_pago
+        varchar referencia_transaccion
+    }
 
     USUARIOS }o--|| ROL_USUARIO : tiene
     USUARIOS ||--o{ DIRECCIONES : registra
@@ -148,6 +159,8 @@ erDiagram
     PRODUCTO ||--o{ CARRITO : agregado_en
     PRODUCTO ||--o{ COMPRA_DETALLE : incluido_en
     COMPRA ||--o{ COMPRA_DETALLE : contiene
+    COMPRA ||--o{ PAGO : genera
+    METODO_PAGO ||--o{ PAGO : usado_en
 ```
 
 > Las cardinalidades de este diagrama reflejan lo que implican las columnas FK declaradas en cada entidad. No siempre coinciden con las puntas de flecha del archivo original de Lucidchart — ver observaciones 1.4.5 a 1.4.7.
@@ -158,9 +171,9 @@ Todo lo anterior se extrajo de los datos estructurados del `.json` (figuras, cam
 
 ### 1.4 Observaciones y recomendaciones
 
-1. **Falta una entidad de pago transaccional.** El PRD (§3, §5) pide cubrir "Pagos" en el modelo base. `metodo_pago` guarda el instrumento del usuario (tarjeta), pero ninguna tabla registra el cobro real de una compra (monto, estado, fecha, referencia de la pasarela). Sin esto, la transacción atómica de checkout (pedido + líneas + **pago** + descuento de inventario, PRD §5) no tiene dónde escribir el pago. Se recomienda agregar `pago (id, id_compra FK, id_metodo_pago FK, monto, estado, fecha_pago, referencia_transaccion)`.
+1. ~~Falta una entidad de pago transaccional.~~ **Resuelto (2026-08-22):** se agregó `pago (id, id_compra FK, id_metodo_pago FK, monto, estado, fecha_pago, referencia_transaccion)`. Separa el instrumento guardado (`metodo_pago`) del cobro real de cada compra; `estado` modela pendiente/aprobado/rechazado/reembolsado. Un `compra` puede generar varios `pago` (reintentos, reembolsos) — ver diagrama en 1.2.
 
-2. **Datos de tarjeta: tipo y seguridad.** `metodo_pago.num_tarjeta` y `codigo_seguridad` están tipados `decimal`. Un número de tarjeta no es un valor aritmético (pierde ceros a la izquierda) y debe ser `varchar`. Más importante: persistir el código de seguridad (CVV) — incluso cifrado — no cumple PCI-DSS; ninguna aplicación debería guardarlo después de autorizar el pago. La Página 2 sí modela `tarjeta_encriptada` sin CVV — es la práctica a seguir. Recomendación: quitar `codigo_seguridad` del modelo y cifrar/tokenizar `num_tarjeta` (idealmente delegar el dato completo de la tarjeta a la pasarela de pago y guardar solo un token de referencia).
+2. ~~Datos de tarjeta: tipo y seguridad.~~ **Resuelto (2026-08-22):** se quitó `codigo_seguridad` — el CVV no debe persistirse nunca, ni cifrado — y `num_tarjeta` (decimal) se reemplazó por `token_pasarela` + `ultimos_4_digitos` + `marca` (varchar). El número completo de la tarjeta ya no pasa por la base de datos: lo captura y custodia la pasarela de pago (Stripe, PayPal, MercadoPago u otra), que devuelve un token de referencia para cobros futuros y los últimos 4 dígitos para mostrarle la tarjeta al usuario. Esto además reduce el alcance de cumplimiento PCI-DSS del proyecto casi a cero, porque la aplicación nunca almacena datos sensibles de la tarjeta.
 
 3. **`atributo_producto` no tiene campo de valor.** Vincula `producto` con `atributo_categoria`, pero no guarda el valor concreto (p. ej. atributo "Color", valor "Rojo"). Así como está, no se puede representar el atributo variable por categoría que pide el PRD (§3). Agregar `valor varchar`.
 
@@ -176,7 +189,7 @@ Todo lo anterior se extrajo de los datos estructurados del `.json` (figuras, cam
 
 ## 2. Página 2 — Modelo extendido (referencia)
 
-Se documenta por completitud, ya que estaba en el archivo compartido. No se recomienda como base de la Fase Inicial (ver §0).
+Se conserva en este documento como material de referencia — por ejemplo, si más adelante se retoma la idea de direcciones con país/ciudad normalizados, o un flujo de reservas. **No es parte del alcance del proyecto ni se implementa**; la base oficial y única es la Página 1 (sección 1).
 
 ### 2.1 Entidades
 
@@ -217,8 +230,10 @@ Se documenta por completitud, ya que estaba en el archivo compartido. No se reco
 
 ## 3. Preguntas abiertas
 
-- ¿Confirman **Página 1** como base para implementar la Fase Inicial?
-- ¿Se agrega una entidad `pago` explícita, separada de `metodo_pago` (observación 1.4.1)?
-- ¿Se elimina el almacenamiento de CVV y se cifra/tokeniza el número de tarjeta (observación 1.4.2)?
-- ¿Alguna pieza de Página 2 (país/ciudad para direcciones internacionales, patrón de reservas) es intencional para una entrega posterior, o se descarta?
-- ¿Se agrega el archivo fuente del diagrama (`.json` de Lucidchart, o una exportación PNG/SVG) al repositorio — p. ej. en `IA/diagramas/` — para que quede accesible sin depender de una cuenta de Lucidchart?
+Ninguna por el momento — las preguntas de la versión anterior de este documento ya se resolvieron:
+
+- **CVV / número de tarjeta:** resuelto, ver observación 1.4.2.
+- **Página 2:** se conserva como referencia, no se implementa (ver introducción de la sección 2).
+- **¿Se versiona el `.json` de Lucidchart?** No. Es un export de una sola línea, no legible ni diffable, y queda desactualizado apenas alguien edite el diagrama en Lucidchart sin volver a exportar — un archivo así en el repo tiende a mentir con el tiempo. El diagrama Mermaid de la sección 1.2 cumple mejor el rol de "ERD versionado en el repo" que pide el PRD: es texto plano, se revisa en un PR como cualquier otro cambio, y se renderiza automáticamente en GitHub sin depender de una cuenta de Lucidchart. Si más adelante hace falta una imagen fija para el informe o la presentación (Entrega Final), lo útil sería exportar un **PNG/SVG** del diagrama — no el `.json` — y guardarlo en `IA/diagramas/`.
+
+Preguntas nuevas se agregan aquí a medida que surjan.
