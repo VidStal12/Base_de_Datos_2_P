@@ -9,6 +9,8 @@ export const productosApi = {
   obtener: (id) => api.get(`/productos/${id}`),
   crear: (datos, token) => api.post('/productos', datos, token),
   actualizar: (id, datos, token) => api.patch(`/productos/${id}`, datos, token),
+  historial: (id) => api.get(`/productos/${id}/historial`),
+  historialEnFecha: (id, fecha) => api.get(`/productos/${id}/historial?fecha=${fecha}`),
 };
 
 export const categoriasApi = {
