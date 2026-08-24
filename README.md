@@ -114,6 +114,8 @@ curl -s http://localhost:3000/api/compras/1 -H "Authorization: Bearer $TOKEN"
 
 Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor` solo puede editar sus propios productos (`403` si intenta tocar uno ajeno); un `administrador` puede editar cualquiera. No hay endpoint público para crear cuentas `vendedor`/`administrador` — el auto-registro siempre asigna `comprador` (ver [ADR-001](IA/ADR-001-stack-y-migraciones.md)); esas cuentas se crean a mano/por seed por ahora.
 
+`?q=` busca por texto solo en `descripcion` (contains, sin acentos/typos) — para eso está `?atributos=` aparte: filtrado facetado exacto sobre los valores de atributo (`{"RAM":"16GB","Color":"Negro"}`, todos exigidos a la vez). Ninguno de los dos es el buscador de texto libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch) — son cosas distintas que conviene no confundir.
+
 **Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
 
 **Panel de administrador** (`frontend/src/pages/admin/`): con sesión `administrador` aparece "Panel admin" en el header → `/admin` lista el catálogo completo de **todos** los vendedores (filtro por categoría + búsqueda), con acceso de edición a cualquier producto — reutiliza el mismo formulario del panel de vendedor. Incluye un botón "Sincronizar con MongoDB" (`POST /api/admin/sync-catalogo`) que agrega a Mongo lo que exista en MySQL y todavía no tenga documento — nunca borra ni sobrescribe lo ya sincronizado, a propósito distinto del script `scripts/etlCatalogoAMongo.js` (que sí reconstruye todo desde cero y solo es seguro para el bootstrap inicial, ver [ADR-002 §8](IA/ADR-002-migracion-catalogo-documental.md#8-notas-de-implementación-2026-08-23)).
@@ -137,6 +139,10 @@ curl -s -X POST http://localhost:3000/api/productos -H "Authorization: Bearer $V
 # navegar el catálogo (sin token)
 curl -s "http://localhost:3000/api/productos?subcategoriaId=$SUB_ID"
 curl -s http://localhost:3000/api/productos/1
+
+# filtrar por atributo (facetado, no texto libre) — ?atributos= es un JSON
+# { nombre: valor }, todos exigidos a la vez (AND)
+curl -s -G "http://localhost:3000/api/productos" --data-urlencode "atributos={\"Material\":\"Aluminio\"}"
 ```
 
 ## Historial de cambios (Entrega 1)
@@ -154,6 +160,8 @@ curl -s "http://localhost:3000/api/productos/1/historial?fecha=2026-08-01"
 ## Frontend
 
 Storefront en React con el patrón de layout de Amazon (header oscuro con búsqueda, franja de categorías, grilla de productos) pero con una paleta propia basada en teoría del color: **azul** (confianza/calma — la elección estándar en apps financieras) como color principal, y **verde azulado** como acento para acciones positivas (agregar al carrito, confirmaciones) — a propósito distinto del naranja de Amazon, que comunica urgencia. Paleta completa y el porqué en `frontend/src/index.css`.
+
+Al navegar dentro de una subcategoría (`HomePage.jsx`), aparece un sidebar de filtros por atributo (RAM, color, talla, lo que la subcategoría tenga definido) — estilo Amazon/Walmart, un checkbox por valor. Las opciones se calculan del lado del cliente a partir del catálogo completo de esa subcategoría (`calcularFacetas`), no de una llamada aparte; el filtrado en sí lo hace Mongo (`?atributos=`, ver sección Catálogo). Simplificación deliberada: las opciones no se recalculan a medida que se marcan casillas (no hay conteos tipo "128GB (3)" que se actualicen), a diferencia de un sitio real — suficiente para el tamaño de este catálogo.
 
 El carrito vive en el navegador (localStorage), no en el backend — no hay endpoints de carrito porque esa pieza se migra a Redis en Entrega 2 (ver PRD), así que no tenía sentido construir una versión relacional completa ahora. El checkout sigue pasando por el backend igual.
 

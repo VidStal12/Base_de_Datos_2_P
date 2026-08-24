@@ -21,6 +21,7 @@ function ChevronIcon(props) {
 
 export function CategoryMenu({ categorias }) {
   const [abierto, setAbierto] = useState(false);
+  const [expandida, setExpandida] = useState(null);
   const contenedorRef = useRef(null);
   const navigate = useNavigate();
 
@@ -34,9 +35,24 @@ export function CategoryMenu({ categorias }) {
     return () => document.removeEventListener('mousedown', alClickearFuera);
   }, []);
 
-  function elegir(categoriaId) {
+  function cerrar() {
     setAbierto(false);
+    setExpandida(null);
+  }
+
+  function elegirCategoria(categoriaId) {
+    cerrar();
     navigate(categoriaId ? `/?categoriaId=${categoriaId}` : '/');
+  }
+
+  function elegirSubcategoria(subcategoriaId) {
+    cerrar();
+    navigate(`/?subcategoriaId=${subcategoriaId}`);
+  }
+
+  function toggleExpandir(e, categoriaId) {
+    e.stopPropagation();
+    setExpandida((prev) => (prev === categoriaId ? null : categoriaId));
   }
 
   return (
@@ -54,22 +70,45 @@ export function CategoryMenu({ categorias }) {
       </button>
 
       {abierto && (
-        <div className="absolute left-0 top-full z-40 mt-1 w-56 overflow-hidden rounded-lg bg-white py-1 text-neutral-800 shadow-xl ring-1 ring-black/10">
+        <div className="absolute left-0 top-full z-40 mt-1 w-64 overflow-hidden rounded-lg bg-white py-1 text-neutral-800 shadow-xl ring-1 ring-black/10">
           <button
-            onClick={() => elegir(null)}
+            onClick={() => elegirCategoria(null)}
             className="block w-full px-4 py-2.5 text-left text-sm font-semibold text-brand-700 hover:bg-brand-50"
           >
             Todas las categorías
           </button>
           <div className="my-1 border-t border-neutral-100" />
           {categorias.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() => elegir(cat.id)}
-              className="block w-full px-4 py-2.5 text-left text-sm hover:bg-brand-50"
-            >
-              {cat.categoria}
-            </button>
+            <div key={cat.id}>
+              <div className="flex items-center hover:bg-brand-50">
+                <button onClick={() => elegirCategoria(cat.id)} className="flex-1 px-4 py-2.5 text-left text-sm">
+                  {cat.categoria}
+                </button>
+                {cat.subcategorias?.length > 0 && (
+                  <button
+                    onClick={(e) => toggleExpandir(e, cat.id)}
+                    aria-label={`Ver subcategorías de ${cat.categoria}`}
+                    aria-expanded={expandida === cat.id}
+                    className="px-3 py-2.5 text-neutral-400 hover:text-brand-700"
+                  >
+                    <ChevronIcon className={`size-3.5 transition-transform ${expandida === cat.id ? 'rotate-180' : '-rotate-90'}`} />
+                  </button>
+                )}
+              </div>
+              {expandida === cat.id && (
+                <div className="bg-neutral-50 py-1">
+                  {cat.subcategorias.map((sub) => (
+                    <button
+                      key={sub.id}
+                      onClick={() => elegirSubcategoria(sub.id)}
+                      className="block w-full py-2 pl-8 pr-4 text-left text-sm text-neutral-600 hover:bg-brand-100 hover:text-brand-700"
+                    >
+                      {sub.subcategoria}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}

@@ -42,9 +42,29 @@ async function combinarConInventario(documentos) {
   return documentos.map((doc) => formatear(doc, mapaInventario.get(doc.producto_id)));
 }
 
+// atributos: JSON de { [nombre]: valor } (ver productoRoutes.js) — filtrado
+// facetado, un valor exacto por atributo, todos exigidos a la vez. Cada par
+// necesita su propio $elemMatch porque tienen que coincidir con elementos
+// distintos del array `atributos`; un solo $elemMatch con ambos campos exigiría
+// que el MISMO elemento tuviera nombre Y valor de dos atributos diferentes a
+// la vez, que nunca pasa.
+function condicionesAtributos(atributos) {
+  if (!atributos) return [];
+  let pares;
+  try {
+    pares = typeof atributos === 'string' ? JSON.parse(atributos) : atributos;
+  } catch {
+    return []; // JSON inválido en un endpoint público de solo lectura: se ignora, no se rompe la página.
+  }
+  if (!pares || typeof pares !== 'object') return [];
+  return Object.entries(pares)
+    .filter(([nombre, valor]) => nombre && valor)
+    .map(([nombre, valor]) => ({ atributos: { $elemMatch: { nombre, valor } } }));
+}
+
 // Filtro de texto simple (contains) — no confundir con el buscador de texto
 // libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch).
-async function listar({ categoriaId, subcategoriaId, q, vendedorId } = {}) {
+async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos } = {}) {
   await conectar();
   const filtro = {};
 
@@ -59,6 +79,10 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId } = {}) {
   }
   if (vendedorId) {
     filtro.vendedor_id = Number(vendedorId);
+  }
+  const condiciones = condicionesAtributos(atributos);
+  if (condiciones.length) {
+    filtro.$and = condiciones;
   }
 
   const documentos = await Producto.find(filtro)
