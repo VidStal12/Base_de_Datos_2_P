@@ -24,9 +24,25 @@ async function listar(usuarioId) {
 async function eliminar(usuarioId, id) {
   const metodo = await prisma.metodo_pago.findUnique({ where: { id } });
   if (!metodo || metodo.id_usuario !== usuarioId) {
-    throw new Error('Método de pago no encontrado');
+    const err = new Error('Método de pago no encontrado');
+    err.status = 404;
+    throw err;
   }
-  await prisma.metodo_pago.delete({ where: { id } });
+  try {
+    await prisma.metodo_pago.delete({ where: { id } });
+  } catch (e) {
+    // P2003: la FK pago.id_metodo_pago no tiene onDelete configurado
+    // (RESTRICT por defecto) — a propósito, un pago ya hecho no debería poder
+    // quedar sin el método que lo cobró. Se convierte en un error claro en vez
+    // de dejar pasar el de Prisma tal cual (que trae rutas de archivo del
+    // servidor).
+    if (e.code === 'P2003') {
+      const err = new Error('No se puede eliminar: este método de pago tiene pagos asociados');
+      err.status = 409;
+      throw err;
+    }
+    throw e;
+  }
 }
 
 module.exports = { crear, listar, eliminar };

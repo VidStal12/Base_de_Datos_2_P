@@ -12,6 +12,7 @@ import { RegisterPage } from './pages/RegisterPage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OrderHistoryPage } from './pages/OrderHistoryPage';
 import { OrderDetailPage } from './pages/OrderDetailPage';
+import { AccountPage } from './pages/AccountPage';
 import { SellerDashboardPage } from './pages/seller/SellerDashboardPage';
 import { SellerProductFormPage } from './pages/seller/SellerProductFormPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
@@ -53,6 +54,14 @@ export default function App() {
                 element={
                   <RequireAuth>
                     <OrderDetailPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="cuenta"
+                element={
+                  <RequireAuth>
+                    <AccountPage />
                   </RequireAuth>
                 }
               />

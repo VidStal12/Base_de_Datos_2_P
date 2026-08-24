@@ -7,6 +7,84 @@ import { formatCurrency } from '../../utils/format';
 import { Spinner } from '../../components/common/Spinner';
 import { Button } from '../../components/common/Button';
 
+const PERIODOS = [
+  { label: 'Todo el tiempo', dias: null },
+  { label: 'Últimos 7 días', dias: 7 },
+  { label: 'Últimos 30 días', dias: 30 },
+];
+
+// Agregación de Entrega 1 (ver ADR-003 §3.4 / ENTREGA-1-TRAZABILIDAD §2.4).
+// estadisticas/ediciones no trae descripción, solo producto_id — se resuelve
+// contra un listado propio sin filtros (no el `productos` de la página, que
+// puede estar filtrado por categoría/búsqueda y dejaría ids sin resolver).
+function EstadisticasEdicionesWidget() {
+  const [stats, setStats] = useState([]);
+  const [descripciones, setDescripciones] = useState({});
+  const [periodo, setPeriodo] = useState(0);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setCargando(true);
+    setError('');
+    const dias = PERIODOS[periodo].dias;
+    const desde = dias ? new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10) : undefined;
+    Promise.all([productosApi.estadisticasEdiciones(desde), productosApi.listar({})])
+      .then(([stats, productos]) => {
+        setStats(stats);
+        setDescripciones(Object.fromEntries(productos.map((p) => [p.id, p.descripcion])));
+      })
+      .catch(() => setError('No se pudieron cargar las estadísticas.'))
+      .finally(() => setCargando(false));
+  }, [periodo]);
+
+  return (
+    <div className="rounded-xl border border-neutral-200 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-neutral-800">Productos más editados</h2>
+          <p className="mt-1 text-xs text-neutral-500">Agregación sobre el historial de eventos (ver ADR-003).</p>
+        </div>
+        <select
+          value={periodo}
+          onChange={(e) => setPeriodo(Number(e.target.value))}
+          className="rounded-lg border border-neutral-300 px-2 py-1.5 text-xs"
+        >
+          {PERIODOS.map((p, i) => (
+            <option key={p.label} value={i}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {cargando ? (
+        <div className="mt-3">
+          <Spinner />
+        </div>
+      ) : error ? (
+        <p className="mt-3 text-sm text-danger-600">{error}</p>
+      ) : stats.length === 0 ? (
+        <p className="mt-3 text-sm text-neutral-500">Sin ediciones en este período.</p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-1.5">
+          {stats.slice(0, 5).map((s) => (
+            <li key={s.producto_id} className="flex items-center justify-between gap-3 text-sm">
+              <Link to={`/admin/productos/${s.producto_id}/editar`} className="truncate text-brand-700 hover:underline">
+                {descripciones[s.producto_id] || `Producto #${s.producto_id}`}
+              </Link>
+              <span className="shrink-0 text-xs text-neutral-500">
+                {s.total_eventos} {s.total_eventos === 1 ? 'evento' : 'eventos'} · v{s.version_actual} ·{' '}
+                {new Date(s.ultima_edicion).toLocaleDateString('es-GT')}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function AdminDashboardPage() {
   const { token } = useAuth();
   const [productos, setProductos] = useState([]);
@@ -98,6 +176,8 @@ export function AdminDashboardPage() {
           </div>
         )}
       </div>
+
+      <EstadisticasEdicionesWidget />
 
       <form onSubmit={handleBuscar} className="flex flex-wrap gap-3">
         <select

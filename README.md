@@ -166,6 +166,8 @@ npm run dev
 
 Corre en `http://localhost:5173`. Necesita el backend (`cd backend && npm run dev`) y MySQL (`docker compose up -d`) corriendo en paralelo.
 
+**Mi cuenta** (`/cuenta`, requiere sesión): listar, agregar y borrar direcciones y métodos de pago — los mismos formularios que aparecen embebidos en Checkout, ahora también accesibles fuera del flujo de compra. Borrar algo que ya se usó en un pedido se rechaza con un mensaje claro (`409 No se puede eliminar: ... tiene pedidos/pagos asociados`) en vez de un error de base de datos.
+
 Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.com` (comprador) y `luis.ramirez@example.com` (vendedor), ambos con contraseña `Password123!`. No hay forma de crear una cuenta `vendedor`/`administrador` desde el registro público — es intencional, ver la sección Catálogo arriba.
 
 ## Estructura del repositorio
@@ -192,7 +194,8 @@ frontend/
     api/                   Cliente HTTP hacia el backend
     context/               Auth (token/sesión) y Cart (carrito en localStorage)
     components/            Layout (Header/Footer), tarjetas de producto, UI común
-    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos...)
+    components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
+    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta...)
     pages/seller/            Panel de vendedor (alta/edición de productos)
     pages/admin/             Panel de administrador (catálogo de todos los vendedores + sync)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base

@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 export function Footer() {
   return (
     <footer className="mt-auto bg-brand-900 text-neutral-300">
@@ -10,9 +12,21 @@ export function Footer() {
           <div>
             <h3 className="mb-2 font-semibold text-white">Cuenta</h3>
             <ul className="space-y-1 text-neutral-400">
-              <li>Mis pedidos</li>
-              <li>Direcciones</li>
-              <li>Métodos de pago</li>
+              <li>
+                <Link to="/pedidos" className="hover:text-white hover:underline">
+                  Mis pedidos
+                </Link>
+              </li>
+              <li>
+                <Link to="/cuenta" className="hover:text-white hover:underline">
+                  Direcciones
+                </Link>
+              </li>
+              <li>
+                <Link to="/cuenta" className="hover:text-white hover:underline">
+                  Métodos de pago
+                </Link>
+              </li>
             </ul>
           </div>
           <div>

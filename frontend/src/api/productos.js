@@ -11,6 +11,8 @@ export const productosApi = {
   actualizar: (id, datos, token) => api.patch(`/productos/${id}`, datos, token),
   historial: (id) => api.get(`/productos/${id}/historial`),
   historialEnFecha: (id, fecha) => api.get(`/productos/${id}/historial?fecha=${fecha}`),
+  estadisticasEdiciones: (desde) =>
+    api.get(`/productos/estadisticas/ediciones${desde ? `?desde=${desde}` : ''}`),
 };
 
 export const categoriasApi = {

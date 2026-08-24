@@ -80,7 +80,8 @@ Las tres decisiones están en [ADR-002 §6](ADR-002-migracion-catalogo-documenta
 - **Código:** `productoService.estadisticasEdiciones()` — `backend/src/services/productoService.js:253-278`. Pipeline `$match` (opcional, por fecha) → `$group` (total de eventos, última edición y versión actual por `producto_id`) → `$sort` → `$project`.
 - **Endpoint:** `GET /api/productos/estadisticas/ediciones` (`?desde=AAAA-MM-DD` opcional) — `backend/src/routes/productoRoutes.js:14-17`. Registrada **antes** de `/:id` a propósito, para que Express no interprete `estadisticas` como un id.
 - **Patrón de consulta real:** "qué productos se editan más" — insumo directo para un panel de actividad de vendedor/administrador. Diseño sugerido en [ADR-003 §3.4](ADR-003-historial-cambios-eventos.md#34-índice-y-agregación-requerimientos-técnicos-de-entrega-1-no-solo-de-este-adr).
-- **Verificación:** probado contra datos reales — devuelve conteos correctos por producto, y el filtro `?desde=` probado con una fecha futura (da `[]`) y con la fecha de hoy (da todo, porque todos los eventos son de hoy).
+- **Frontend:** widget "Productos más editados" en [`AdminDashboardPage.jsx`](../frontend/src/pages/admin/AdminDashboardPage.jsx) (`EstadisticasEdicionesWidget`) — selector de período (todo/7/30 días) más una lista ordenada por total de eventos, cada fila linkeando a editar ese producto. Llama a `productosApi.estadisticasEdiciones()` (`frontend/src/api/productos.js:14-15`).
+- **Verificación:** probado contra datos reales — devuelve conteos correctos por producto, el filtro `?desde=` probado con una fecha futura (da `[]`) y con la fecha de hoy (da todo, porque todos los eventos son de hoy), y confirmado en el navegador que cambiar el período en el widget dispara la petición con el `?desde=` correcto (revisado en Network, no solo asumido por el resultado visual).
 
 ### 2.5 Historial de cambios por eventos + reconstrucción por fecha
 
