@@ -1,4 +1,5 @@
 require('dotenv').config();
+const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const { checkout } = require('../src/services/checkoutService');
 
@@ -58,4 +59,11 @@ main()
     console.error(e);
     process.exitCode = 1;
   })
-  .finally(() => prisma.$disconnect());
+  .finally(async () => {
+    // checkout() ahora también toca Mongo (actualiza total_vendido, ver
+    // checkoutService.js) — sin este disconnect el proceso se queda colgado
+    // indefinidamente por la conexión de Mongoose abierta, aunque main() ya
+    // haya terminado su trabajo.
+    await prisma.$disconnect();
+    await mongoose.disconnect();
+  });

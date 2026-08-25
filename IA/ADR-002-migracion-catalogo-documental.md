@@ -130,6 +130,8 @@ Además, el diagnóstico de este mismo documento (§1) nunca fue sobre precio/ca
 - Crear o editar un producto ahora escribe en dos bases (Mongo para lo descriptivo, MySQL para precio/cantidad) sin una transacción conjunta que las cubra a ambas — si la segunda escritura falla después de que la primera tuvo éxito, queda una inconsistencia parcial. Es una versión acotada del mismo problema que Entrega 3 va a resolver formalmente para el checkout; acá se mitiga con una limpieza de mejor esfuerzo (ver implementación de `crear()`), no con una solución completa.
 - El resumen de reseñas embebido en el producto (§6.1) puede quedar desactualizado si no se recalcula con disciplina — es una inconsistencia eventual aceptada a propósito, no un descuido.
 
+**Considerado y descartado (2026-08-24): duplicar el historial de eventos también en MySQL.** Se evaluó agregar una tabla `producto_evento` en MySQL con el mismo snapshot que ya guarda `producto_eventos` en Mongo, escrita en paralelo en cada alta/edición. Se descartó: además de sumar un tercer punto de escritura con el mismo problema de consistencia entre bases que ya asumimos arriba, iría en contra del diagnóstico de §1.2 — el historial es justamente el caso donde el modelo relacional es un mal fit (versionar una fila + N filas de atributos a la vez), no algo que este proyecto necesite reforzar duplicándolo. Sin un motivo concreto (backup real, reporting por SQL) que justifique el costo, no se justifica. Mongo sigue siendo la única fuente de historial.
+
 ---
 
 ## 6. Decisiones de modelado: embed vs. reference

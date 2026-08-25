@@ -108,4 +108,30 @@ async function sincronizarFaltantes() {
   return resultado;
 }
 
-module.exports = { sincronizarFaltantes };
+// Recalcula total_vendido (caché en Mongo, ver Producto.js) desde la fuente de
+// verdad real: compra_detalle en MySQL. A diferencia de sincronizarFaltantes(),
+// ESTO SÍ SOBRESCRIBE un valor ya existente — es una reconciliación, no una
+// adición. Seguro de re-correr las veces que haga falta porque siempre
+// recalcula la suma real en vez de incrementar a ciegas; corrige cualquier
+// desvío que haya dejado un fallo silencioso del paso en checkoutRoutes.js.
+async function recalcularVentas() {
+  await conectar();
+
+  const sumas = await prisma.compra_detalle.groupBy({
+    by: ['id_producto'],
+    _sum: { cantidad: true },
+  });
+  const mapaVentas = new Map(sumas.map((s) => [s.id_producto, s._sum.cantidad || 0]));
+
+  const productos = await Producto.find().select('producto_id');
+  let actualizados = 0;
+  for (const { producto_id } of productos) {
+    const total = mapaVentas.get(producto_id) || 0;
+    await Producto.updateOne({ producto_id }, { $set: { total_vendido: total } });
+    actualizados += 1;
+  }
+
+  return { productos_actualizados: actualizados };
+}
+
+module.exports = { sincronizarFaltantes, recalcularVentas };

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { productosApi, categoriasApi } from '../api/productos';
 import { ProductCard } from '../components/product/ProductCard';
 import { Spinner } from '../components/common/Spinner';
@@ -58,6 +58,7 @@ function FacetFilters({ facetas, seleccionados, onToggle, onLimpiar }) {
 }
 
 export function HomePage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const q = searchParams.get('q') || '';
   const categoriaId = searchParams.get('categoriaId') || '';
@@ -70,6 +71,15 @@ export function HomePage() {
 
   const [facetas, setFacetas] = useState({});
   const [atributosSeleccionados, setAtributosSeleccionados] = useState({});
+
+  // Precio/orden: a diferencia de los atributos, no dependen de estar dentro
+  // de una subcategoría (el precio existe para cualquier producto) — por eso
+  // no viven en el sidebar de FacetFilters, que sí es exclusivo de esa vista.
+  const [precioMinInput, setPrecioMinInput] = useState('');
+  const [precioMaxInput, setPrecioMaxInput] = useState('');
+  const [precioMin, setPrecioMin] = useState('');
+  const [precioMax, setPrecioMax] = useState('');
+  const [ordenarPor, setOrdenarPor] = useState('');
 
   // Opciones de filtro: de la subcategoría completa, sin el filtro de
   // atributos todavía aplicado (ver calcularFacetas). Se resetea la selección
@@ -93,12 +103,15 @@ export function HomePage() {
     if (Object.keys(atributosSeleccionados).length > 0) {
       filtros.atributos = JSON.stringify(atributosSeleccionados);
     }
+    if (precioMin !== '') filtros.precioMin = precioMin;
+    if (precioMax !== '') filtros.precioMax = precioMax;
+    if (ordenarPor) filtros.ordenarPor = ordenarPor;
     productosApi
       .listar(filtros)
       .then(setProductos)
       .catch(() => setError('No se pudo cargar el catálogo. ¿Está corriendo el backend?'))
       .finally(() => setCargando(false));
-  }, [q, categoriaId, subcategoriaId, atributosSeleccionados]);
+  }, [q, categoriaId, subcategoriaId, atributosSeleccionados, precioMin, precioMax, ordenarPor]);
 
   useEffect(() => {
     categoriasApi.listar().then(setCategorias).catch(() => {});
@@ -114,8 +127,30 @@ export function HomePage() {
     });
   }
 
+  function aplicarPrecio(e) {
+    e.preventDefault();
+    setPrecioMin(precioMinInput);
+    setPrecioMax(precioMaxInput);
+  }
+
+  function limpiarPrecio() {
+    setPrecioMinInput('');
+    setPrecioMaxInput('');
+    setPrecioMin('');
+    setPrecioMax('');
+  }
+
+  // "Quitar filtros" tiene que limpiar TODO, no solo lo que vive en la URL
+  // (q/categoriaId/subcategoriaId) — precio y orden son estado local de esta
+  // página, un <Link to="/"> por sí solo los dejaría pegados.
+  function quitarTodosLosFiltros() {
+    limpiarPrecio();
+    setOrdenarPor('');
+    navigate('/');
+  }
+
   const categoriaActiva = categorias.find((c) => String(c.id) === categoriaId);
-  const hayFiltro = Boolean(q || categoriaId || subcategoriaId);
+  const hayFiltro = Boolean(q || categoriaId || subcategoriaId || precioMin !== '' || precioMax !== '' || ordenarPor);
   const mostrarFacetas = Boolean(subcategoriaId) && Object.keys(facetas).length > 0;
 
   return (
@@ -146,10 +181,55 @@ export function HomePage() {
             {q ? `Resultados para "${q}"` : categoriaActiva ? categoriaActiva.categoria : 'Todos los productos'}
           </h2>
           {hayFiltro && (
-            <Link to="/" className="text-sm font-medium text-brand-700 hover:underline">
+            <button onClick={quitarTodosLosFiltros} className="text-sm font-medium text-brand-700 hover:underline">
               Quitar filtros
-            </Link>
+            </button>
           )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white p-3">
+          <form onSubmit={aplicarPrecio} className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-neutral-600">Precio</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Mín"
+              value={precioMinInput}
+              onChange={(e) => setPrecioMinInput(e.target.value)}
+              className="w-20 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
+            />
+            <span className="text-neutral-400">–</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Máx"
+              value={precioMaxInput}
+              onChange={(e) => setPrecioMaxInput(e.target.value)}
+              className="w-20 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
+            />
+            <button type="submit" className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50">
+              Aplicar
+            </button>
+            {(precioMin !== '' || precioMax !== '') && (
+              <button type="button" onClick={limpiarPrecio} className="text-xs font-medium text-brand-700 hover:underline">
+                Quitar
+              </button>
+            )}
+          </form>
+
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs font-semibold text-neutral-600">Ordenar</span>
+            <select
+              value={ordenarPor}
+              onChange={(e) => setOrdenarPor(e.target.value)}
+              className="rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
+            >
+              <option value="">Relevancia</option>
+              <option value="masVendidos">Más vendidos</option>
+            </select>
+          </div>
         </div>
 
         {cargando && <Spinner />}

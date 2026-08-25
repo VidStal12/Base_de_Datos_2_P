@@ -143,7 +143,13 @@ curl -s http://localhost:3000/api/productos/1
 # filtrar por atributo (facetado, no texto libre) — ?atributos= es un JSON
 # { nombre: valor }, todos exigidos a la vez (AND)
 curl -s -G "http://localhost:3000/api/productos" --data-urlencode "atributos={\"Material\":\"Aluminio\"}"
+
+# rango de precio (resuelto en MySQL, ver ADR-002) + orden por más vendidos
+# (total_vendido es una caché en Mongo, se actualiza al confirmarse una compra)
+curl -s "http://localhost:3000/api/productos?precioMin=0&precioMax=100&ordenarPor=masVendidos"
 ```
+
+Si `total_vendido` alguna vez se desincroniza de la realidad (p. ej. compras hechas antes de que este campo existiera), `POST /api/admin/recalcular-ventas` lo recalcula desde cero sumando `compra_detalle` en MySQL — a diferencia de `sync-catalogo`, este sí sobrescribe lo que ya hay.
 
 ## Historial de cambios (Entrega 1)
 

@@ -64,7 +64,17 @@ function condicionesAtributos(atributos) {
 
 // Filtro de texto simple (contains) — no confundir con el buscador de texto
 // libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch).
-async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos } = {}) {
+//
+// precioMin/precioMax: precio vive en MySQL, no en Mongo (ver ADR-002 §3.2) —
+// se resuelve el rango ahí primero (barato, `inventario` es una tabla chica)
+// y el resultado se pasa a Mongo como un $in sobre producto_id. No hay forma
+// de evitar la consulta cruzada acá porque el dato vive en la otra base.
+//
+// ordenarPor: 'masVendidos' usa total_vendido (caché, ver Producto.js) y el
+// índice compuesto {subcategoria_id, total_vendido} — más preciso cuando se
+// filtra por subcategoriaId (igualdad exacta sobre el primer campo del
+// índice) que por categoriaId (que resuelve a un $in de varias subcategorías).
+async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor } = {}) {
   await conectar();
   const filtro = {};
 
@@ -84,10 +94,22 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos } 
   if (condiciones.length) {
     filtro.$and = condiciones;
   }
+  if (precioMin !== undefined || precioMax !== undefined) {
+    const rango = {};
+    if (precioMin !== undefined) rango.gte = Number(precioMin);
+    if (precioMax !== undefined) rango.lte = Number(precioMax);
+    const enRango = await prisma.inventario.findMany({
+      where: { precio: rango },
+      select: { id_producto: true },
+    });
+    filtro.producto_id = { $in: enRango.map((i) => i.id_producto) };
+  }
 
-  const documentos = await Producto.find(filtro)
-    .populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } })
-    .lean();
+  let consulta = Producto.find(filtro).populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } });
+  if (ordenarPor === 'masVendidos') {
+    consulta = consulta.sort({ total_vendido: -1 });
+  }
+  const documentos = await consulta.lean();
   return combinarConInventario(documentos);
 }
 

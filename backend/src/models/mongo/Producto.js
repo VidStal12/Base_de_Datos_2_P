@@ -27,9 +27,21 @@ const productoSchema = new Schema(
       promedio: { type: Number, default: 0 },
       cantidad: { type: Number, default: 0 },
     },
+    // Caché de solo lectura de MySQL (compra_detalle.cantidad, sumado por
+    // producto) — igual que vendedor_nombre. Se actualiza en checkoutRoutes.js
+    // después de que la compra ya se confirmó en MySQL, nunca al leer el
+    // catálogo. Puede desactualizarse si ese paso falla; se recalcula desde
+    // MySQL vía POST /api/admin/recalcular-ventas (ver catalogoSyncService.js).
+    total_vendido: { type: Number, default: 0 },
     version: { type: Number, default: 1 },
   },
   { timestamps: { createdAt: false, updatedAt: 'actualizado_en' } }
 );
+
+// Requerimiento técnico de Entrega 1 (índice compuesto mapeado a un patrón de
+// consulta real, ver ENTREGA-1-TRAZABILIDAD.md §2.3): "más vendidos dentro de
+// esta subcategoría" es exactamente igualdad en el primer campo + orden por
+// el segundo, el mismo patrón que {producto_id, fecha} en ProductoEvento.js.
+productoSchema.index({ subcategoria_id: 1, total_vendido: -1 });
 
 module.exports = model('Producto', productoSchema, 'productos');

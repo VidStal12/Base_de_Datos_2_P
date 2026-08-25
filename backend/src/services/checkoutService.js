@@ -1,5 +1,7 @@
 const prisma = require('../config/prisma');
 const { esEnteroPositivo } = require('../utils/validation');
+const { conectar } = require('../config/mongo');
+const Producto = require('../models/mongo/Producto');
 
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
@@ -87,6 +89,24 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     });
 
     return { compra, pago };
+  }).then(async (resultado) => {
+    // Fuera de la transacción a propósito: la compra ya está confirmada y es
+    // irreversible en MySQL en este punto, esto solo actualiza la caché de
+    // lectura en Mongo (total_vendido, ver Producto.js). Mejor esfuerzo, igual
+    // que el resto de las escrituras cruzadas de este proyecto (ver ADR-002
+    // §5) — si esto falla, la compra ya sucedió igual, no hay nada que
+    // revertir; recalcularVentas() la corrige después si hace falta.
+    try {
+      await conectar();
+      await Promise.all(
+        items.map(({ productoId, cantidad }) =>
+          Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad } })
+        )
+      );
+    } catch (err) {
+      console.error('No se pudo actualizar total_vendido en Mongo:', err.message);
+    }
+    return resultado;
   });
 }
 
