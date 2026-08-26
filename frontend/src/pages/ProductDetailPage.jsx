@@ -10,11 +10,76 @@ import { Field, Input } from '../components/common/Input';
 
 const TIPO_LABEL = { creacion: 'Creación', edicion: 'Edición' };
 
+// Preview de cómo se veía el producto en el catálogo en esa fecha — mismo
+// lenguaje visual que ProductCard.jsx, pero SIN botón de "Agregar al
+// carrito" a propósito: es una vista histórica de solo lectura, no algo
+// comprable (el id sigue siendo el del producto actual, comprar "esta
+// versión" no tendría sentido). vendedor_nombre/subcategoría no viven en el
+// snapshot (no se versionan, ver ADR-003 §3.1) — se toman del producto vigente,
+// que es información razonablemente estable (no soporta recategorizar ni
+// cambiar de dueño).
+function SnapshotPreviewCard({ snapshot, fecha, productoId, vendedorNombre, subcategoriaNombre }) {
+  const principal = snapshot.imagenes?.find((img) => img.principal) || snapshot.imagenes?.[0];
+  const inventario = snapshot.inventario;
+  const sinStock = inventario && inventario.cantidad <= 0;
+  // timeZone: 'UTC' a propósito: el <input type="date"> da "AAAA-MM-DD" sin
+  // hora, que Date() interpreta como medianoche UTC — formatear en la zona
+  // horaria local podía mostrarlo como el día anterior.
+  const fechaLabel = new Date(fecha).toLocaleDateString('es-GT', { dateStyle: 'long', timeZone: 'UTC' });
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border-2 border-dashed border-brand-200 bg-white">
+      <div className="flex items-center justify-between bg-brand-50 px-4 py-2">
+        <span className="text-xs font-semibold text-brand-700">Vista histórica del catálogo</span>
+        <span className="text-xs text-neutral-500">al {fechaLabel}</span>
+      </div>
+      <div className="flex gap-4 p-4">
+        <Link to={`/productos/${productoId}`} className="size-24 shrink-0 overflow-hidden rounded-lg bg-neutral-100">
+          <img
+            src={principal?.url || 'https://placehold.co/200x200?text=TiendaYa'}
+            alt={snapshot.descripcion}
+            className="size-full object-cover"
+          />
+        </Link>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          {subcategoriaNombre && <span className="text-xs text-neutral-500">{subcategoriaNombre}</span>}
+          <Link to={`/productos/${productoId}`} className="line-clamp-2 text-sm font-medium text-neutral-800 hover:text-brand-700">
+            {snapshot.descripcion}
+          </Link>
+          {vendedorNombre && <p className="text-xs text-neutral-500">Vendido por {vendedorNombre}</p>}
+
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {inventario && <span className="text-lg font-bold text-neutral-900">{formatCurrency(inventario.precio)}</span>}
+            {inventario &&
+              (sinStock ? (
+                <span className="rounded-full bg-danger-500/10 px-2 py-0.5 text-xs font-semibold text-danger-600">Agotado</span>
+              ) : (
+                <span className="rounded-full bg-accent-500/10 px-2 py-0.5 text-xs font-semibold text-accent-700">
+                  {inventario.cantidad} en stock
+                </span>
+              ))}
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">{snapshot.estado}</span>
+          </div>
+
+          {snapshot.atributos?.length > 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              {snapshot.atributos.map((a) => `${a.nombre}: ${a.valor}`).join(' · ')}
+            </p>
+          )}
+          {!inventario && (
+            <p className="mt-1 text-xs text-neutral-400">Este evento es anterior a que se empezara a registrar precio/stock.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Historial de cambios por eventos (ver ADR-003) — línea de tiempo completa
 // más reconstrucción del estado en una fecha arbitraria. Se carga aparte del
 // producto (no bloquea el resto de la página) porque es información
 // secundaria, no algo que el comprador necesite para decidir la compra.
-function HistorialSection({ productoId, vendedorId, token }) {
+function HistorialSection({ productoId, vendedorId, vendedorNombre, subcategoriaNombre, token }) {
   const [eventos, setEventos] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [fecha, setFecha] = useState('');
@@ -99,28 +164,13 @@ function HistorialSection({ productoId, vendedorId, token }) {
         {errorFecha && <p className="mt-2 text-sm text-danger-600">{errorFecha}</p>}
 
         {snapshot && (
-          <div className="mt-3 rounded-lg bg-neutral-50 p-3 text-sm">
-            <p>
-              <span className="font-medium text-neutral-700">Descripción: </span>
-              {snapshot.descripcion}
-            </p>
-            <p>
-              <span className="font-medium text-neutral-700">Estado: </span>
-              {snapshot.estado}
-            </p>
-            {snapshot.atributos?.length > 0 && (
-              <p>
-                <span className="font-medium text-neutral-700">Atributos: </span>
-                {snapshot.atributos.map((a) => `${a.nombre}: ${a.valor}`).join(', ')}
-              </p>
-            )}
-            {snapshot.inventario && (
-              <p>
-                <span className="font-medium text-neutral-700">Precio / stock: </span>
-                {formatCurrency(snapshot.inventario.precio)} · {snapshot.inventario.cantidad} en stock
-              </p>
-            )}
-          </div>
+          <SnapshotPreviewCard
+            snapshot={snapshot}
+            fecha={fecha}
+            productoId={productoId}
+            vendedorNombre={vendedorNombre}
+            subcategoriaNombre={subcategoriaNombre}
+          />
         )}
       </div>
     </div>
@@ -251,7 +301,13 @@ export function ProductDetailPage() {
       </div>
 
       {ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (
-        <HistorialSection productoId={producto.id} vendedorId={producto.vendedor_id} token={token} />
+        <HistorialSection
+          productoId={producto.id}
+          vendedorId={producto.vendedor_id}
+          vendedorNombre={producto.vendedor_nombre}
+          subcategoriaNombre={producto.subcategoria?.subcategoria}
+          token={token}
+        />
       )}
     </div>
   );
