@@ -153,14 +153,18 @@ Si `total_vendido` alguna vez se desincroniza de la realidad (p. ej. compras hec
 
 ## Historial de cambios (Entrega 1)
 
-Cada alta/edición del contenido descriptivo de un producto (descripción, estado, atributos, imágenes — **no** precio/stock, que no se versionan, ver [ADR-002](IA/ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran)) agrega un evento en vez de sobrescribir. `GET /api/productos/:id/historial` es público:
+Cada alta/edición de un producto agrega un evento en vez de sobrescribir — descripción, estado, atributos, imágenes, **y precio/cantidad** (cacheados desde MySQL en el momento del evento, ver [ADR-003](IA/ADR-003-historial-cambios-eventos.md#31-esquema)). Un edit de solo precio o solo stock también genera su propio evento; los descuentos de inventario del checkout, a propósito, no (eso seguiría siendo cada venta individual, no una edición de catálogo). Solo `vendedor`/`administrador` — requiere token:
 
 ```bash
+VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"correo":"luis.ramirez@example.com","contrasena":"Password123!"}' | campo token)
+
 # línea de tiempo completa
-curl -s http://localhost:3000/api/productos/1/historial
+curl -s http://localhost:3000/api/productos/1/historial -H "Authorization: Bearer $VTOKEN"
 
 # estado vigente en una fecha arbitraria (404 si el producto no existía todavía)
-curl -s "http://localhost:3000/api/productos/1/historial?fecha=2026-08-01"
+curl -s "http://localhost:3000/api/productos/1/historial?fecha=2026-08-01" -H "Authorization: Bearer $VTOKEN"
 ```
 
 ## Frontend

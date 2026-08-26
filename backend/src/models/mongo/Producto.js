@@ -28,8 +28,8 @@ const productoSchema = new Schema(
       cantidad: { type: Number, default: 0 },
     },
     // Caché de solo lectura de MySQL (compra_detalle.cantidad, sumado por
-    // producto) — igual que vendedor_nombre. Se actualiza en checkoutRoutes.js
-    // después de que la compra ya se confirmó en MySQL, nunca al leer el
+    // producto) — igual que vendedor_nombre. Se actualiza en checkoutService.js
+    // después de que la transacción de MySQL ya se confirmó, nunca al leer el
     // catálogo. Puede desactualizarse si ese paso falla; se recalcula desde
     // MySQL vía POST /api/admin/recalcular-ventas (ver catalogoSyncService.js).
     total_vendido: { type: Number, default: 0 },

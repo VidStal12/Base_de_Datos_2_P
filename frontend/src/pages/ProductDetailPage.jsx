@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { productosApi } from '../api/productos';
 import { formatCurrency } from '../utils/format';
+import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
 import { Spinner } from '../components/common/Spinner';
 import { Button } from '../components/common/Button';
@@ -13,7 +14,7 @@ const TIPO_LABEL = { creacion: 'Creación', edicion: 'Edición' };
 // más reconstrucción del estado en una fecha arbitraria. Se carga aparte del
 // producto (no bloquea el resto de la página) porque es información
 // secundaria, no algo que el comprador necesite para decidir la compra.
-function HistorialSection({ productoId, vendedorId }) {
+function HistorialSection({ productoId, vendedorId, token }) {
   const [eventos, setEventos] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [fecha, setFecha] = useState('');
@@ -24,11 +25,11 @@ function HistorialSection({ productoId, vendedorId }) {
   useEffect(() => {
     setCargando(true);
     productosApi
-      .historial(productoId)
+      .historial(productoId, token)
       .then(setEventos)
       .catch(() => setEventos([]))
       .finally(() => setCargando(false));
-  }, [productoId]);
+  }, [productoId, token]);
 
   async function handleConsultar(e) {
     e.preventDefault();
@@ -37,7 +38,7 @@ function HistorialSection({ productoId, vendedorId }) {
     setErrorFecha('');
     setSnapshot(null);
     try {
-      setSnapshot(await productosApi.historialEnFecha(productoId, fecha));
+      setSnapshot(await productosApi.historialEnFecha(productoId, fecha, token));
     } catch (err) {
       setErrorFecha(err.message);
     } finally {
@@ -75,6 +76,11 @@ function HistorialSection({ productoId, vendedorId }) {
               <p className="mt-1 text-xs text-neutral-500">Cambió: {ev.campos_modificados.join(', ')}</p>
             )}
             <p className="mt-1 text-sm text-neutral-700">{ev.snapshot.descripcion}</p>
+            {ev.snapshot.inventario && (
+              <p className="mt-0.5 text-xs text-neutral-500">
+                {formatCurrency(ev.snapshot.inventario.precio)} · {ev.snapshot.inventario.cantidad} en stock (en ese momento)
+              </p>
+            )}
           </li>
         ))}
       </ul>
@@ -108,6 +114,12 @@ function HistorialSection({ productoId, vendedorId }) {
                 {snapshot.atributos.map((a) => `${a.nombre}: ${a.valor}`).join(', ')}
               </p>
             )}
+            {snapshot.inventario && (
+              <p>
+                <span className="font-medium text-neutral-700">Precio / stock: </span>
+                {formatCurrency(snapshot.inventario.precio)} · {snapshot.inventario.cantidad} en stock
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -115,9 +127,12 @@ function HistorialSection({ productoId, vendedorId }) {
   );
 }
 
+const ROLES_VEN_HISTORIAL = ['vendedor', 'administrador'];
+
 export function ProductDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { usuario, token } = useAuth();
   const { agregar } = useCart();
   const [producto, setProducto] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -235,7 +250,9 @@ export function ProductDetailPage() {
         </div>
       </div>
 
-      <HistorialSection productoId={producto.id} vendedorId={producto.vendedor_id} />
+      {ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (
+        <HistorialSection productoId={producto.id} vendedorId={producto.vendedor_id} token={token} />
+      )}
     </div>
   );
 }

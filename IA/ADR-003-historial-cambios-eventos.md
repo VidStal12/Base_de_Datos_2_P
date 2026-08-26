@@ -30,6 +30,8 @@
 ### 3.1 Esquema
 
 > **Actualización (2026-08-23):** siguiendo la revisión de [ADR-002 §3.2](ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran), `precio`/`cantidad` no viven en Mongo — se quedan en `inventario` (MySQL) y no forman parte de este historial. Lo que se versiona acá es específicamente el contenido descriptivo (descripción, estado, atributos, imágenes), que es también lo que diagnosticó §1 de ADR-002. `producto_id` es el entero de `producto.id` en MySQL, no un `ObjectId`.
+>
+> **Actualización (2026-08-26): esto se revirtió.** `precio`/`cantidad` **sí** se versionan ahora — no como parte del documento vigente (siguen sin vivir en Mongo, ADR-002 §3.2 no cambió), sino como un valor cacheado dentro de cada `snapshot` (`inventario: {precio, cantidad}`), capturado desde MySQL en el momento exacto de cada evento. La distinción entre "documento vigente" y "snapshot histórico" es lo que hace esto posible sin reabrir el problema de atomicidad cruzada: el documento `productos` sigue sin tener precio/cantidad (así que `combinarConInventario` en las lecturas normales no cambia), pero el snapshot de un evento es un dato *escrito una vez y congelado para siempre* — no necesita mantenerse sincronizado con nada después de creado, a diferencia de un campo "vigente" que sí lo necesitaría. Un edit de solo precio o solo cantidad ahora genera su propio evento (antes solo lo hacía un cambio descriptivo). Sigue habiendo un límite deliberado: los descuentos de inventario del checkout **no** generan evento — solo las ediciones explícitas de vendedor/administrador vía `productoService.actualizar()`. El endpoint pasó a requerir rol `vendedor`/`administrador` (antes era público) porque ahora expone precio histórico, información de negocio que un comprador no debería poder ver.
 
 ```json
 // colección "productos" — estado vigente (agrega version/actualizado_en a lo ya definido en ADR-002)
@@ -68,7 +70,7 @@
 }
 ```
 
-`snapshot` deliberadamente **no** incluye `resenas_resumen`: es un agregado calculado (ADR-002 §6.1), no un dato editado por el vendedor — versionarlo junto con el resto mezclaría "cambios que hizo alguien" con "recálculos automáticos" en la misma línea de tiempo, que son dos cosas distintas. `vendedor_id`/`vendedor_nombre` tampoco se versionan por evento: quién vende el producto no es parte de "cómo estaba el producto" en el sentido que pide el PRD. `precio`/`cantidad` tampoco — viven en MySQL y no tienen historial versionado en este diseño (ver limitación en §5).
+`snapshot` deliberadamente **no** incluye `resenas_resumen`: es un agregado calculado (ADR-002 §6.1), no un dato editado por el vendedor — versionarlo junto con el resto mezclaría "cambios que hizo alguien" con "recálculos automáticos" en la misma línea de tiempo, que son dos cosas distintas. `vendedor_id`/`vendedor_nombre` tampoco se versionan por evento: quién vende el producto no es parte de "cómo estaba el producto" en el sentido que pide el PRD. `precio`/`cantidad` **sí se versionan desde el 2026-08-26** (ver la actualización arriba) — no como parte del documento vigente, sino cacheados dentro de cada `snapshot.inventario`.
 
 ### 3.2 Escritura: un evento por cada `crear`/`actualizar`, atómico con el cambio de estado
 
@@ -164,6 +166,7 @@ GET /api/productos/:id/historial                     → lista completa de event
 - Cada edición duplica el documento completo en `producto_eventos` — más espacio en disco que guardar solo deltas (opción C, descartada en §2). Aceptable al volumen de este proyecto; si un producto se editara miles de veces, valdría la pena revisar esta decisión.
 - Requiere que MongoDB corra como replica set (aunque sea de un nodo) para poder usar transacciones — una restricción de infraestructura a resolver en `docker-compose.yml` cuando se implemente, no un problema de diseño, pero hay que tenerlo presente.
 - `resenas_resumen` y datos del vendedor quedan fuera del snapshot a propósito (§3.1) — si en el futuro se pidiera reconstruir "cuántas reseñas tenía en tal fecha", este diseño no lo respondería sin extenderlo.
+- Desde que `precio`/`cantidad` se versionan (2026-08-26), los descuentos de inventario del checkout siguen sin generar evento a propósito — el historial reconstruye ediciones deliberadas de catálogo, no cada venta. Reconstruir "cuánto stock había exactamente después de esta compra puntual" no es algo que este diseño responda, solo "cuál era el precio/stock la última vez que alguien editó el producto antes de esa fecha".
 
 ## 6. Próximos pasos (implementación)
 

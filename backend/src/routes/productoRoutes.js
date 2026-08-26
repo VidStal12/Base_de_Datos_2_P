@@ -28,7 +28,10 @@ router.get('/:id', async (req, res) => {
 
 // Historial de cambios (ver ADR-003). Sin ?fecha, devuelve la línea de tiempo
 // completa de eventos; con ?fecha=AAAA-MM-DD, el snapshot vigente en esa fecha.
-router.get('/:id/historial', async (req, res) => {
+// Solo vendedor/administrador: ahora incluye precio/stock por versión, que no
+// es algo que un comprador debería poder curiosear (historial de precios,
+// patrones de reabastecimiento).
+router.get('/:id/historial', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
     const productoId = Number(req.params.id);
     if (req.query.fecha) {

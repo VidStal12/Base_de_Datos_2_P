@@ -176,7 +176,13 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       fecha: doc.actualizado_en,
       usuario_id: vendedor.id_usuario,
       campos_modificados: [],
-      snapshot: { descripcion: doc.descripcion, estado: doc.estado, atributos: doc.atributos, imagenes: doc.imagenes },
+      snapshot: {
+        descripcion: doc.descripcion,
+        estado: doc.estado,
+        atributos: doc.atributos,
+        imagenes: doc.imagenes,
+        inventario: { precio, cantidad },
+      },
     });
 
     return obtener(productoRelacional.id);
@@ -206,32 +212,42 @@ async function verificarPermiso(vendedor, productoId) {
   return producto;
 }
 
-// Edición: campos descriptivos van a Mongo + generan un evento; precio/cantidad
-// van a MySQL, sin evento (no se versionan — ver ADR-003 §3.1). Todo opcional,
-// se actualiza solo lo que venga en el body.
+// Edición: cualquier campo que cambie (descriptivo O precio/cantidad) genera
+// un evento — el historial reconstruye el producto completo, y precio/stock
+// son parte de "el producto" tanto como la descripción (ver conversación de
+// diseño, IA/ESTADO-PROYECTO.md). A propósito NO cubre los descuentos de
+// inventario del checkout (ver checkoutService.js): esto es para ediciones
+// deliberadas de vendedor/administrador, no para cada venta — si cada compra
+// generara un evento acá, "historial de cambios" dejaría de ser un registro
+// de catálogo y pasaría a ser un libro de ventas. Todo opcional, se actualiza
+// solo lo que venga en el body.
 async function actualizar(vendedor, productoId, { descripcion, imagen_url, estado, precio, cantidad, atributos }) {
   await verificarPermiso(vendedor, productoId);
   await conectar();
+
+  const camposModificados = [];
+  let inventarioActual = null;
 
   if (precio !== undefined || cantidad !== undefined) {
     const datosInventario = {};
     if (precio !== undefined) {
       if (typeof precio !== 'number' || precio <= 0) throw new Error('El precio debe ser un número positivo');
       datosInventario.precio = precio;
+      camposModificados.push('precio');
     }
     if (cantidad !== undefined) {
       if (!Number.isInteger(cantidad) || cantidad < 0) throw new Error('La cantidad debe ser un entero mayor o igual a 0');
       datosInventario.cantidad = cantidad;
+      camposModificados.push('cantidad');
     }
-    await prisma.inventario.update({ where: { id_producto: productoId }, data: datosInventario });
+    inventarioActual = await prisma.inventario.update({ where: { id_producto: productoId }, data: datosInventario });
   }
 
   const cambiaDescriptivo = descripcion !== undefined || imagen_url !== undefined || estado !== undefined || (atributos && atributos.length);
-  if (cambiaDescriptivo) {
+  if (cambiaDescriptivo || camposModificados.length > 0) {
     const doc = await Producto.findOne({ producto_id: productoId });
     if (!doc) throw new Error('Producto no encontrado en el catálogo documental');
 
-    const camposModificados = [];
     if (descripcion !== undefined) {
       if (!descripcion) throw new Error('La descripción no puede estar vacía');
       doc.descripcion = descripcion;
@@ -258,6 +274,13 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
     doc.version += 1;
     await doc.save();
 
+    // Si esta llamada no tocó precio/cantidad, el snapshot igual necesita el
+    // valor VIGENTE (no queda "vacío") para seguir siendo un snapshot
+    // completo, no un delta — mismo principio que ya regía para lo descriptivo.
+    if (!inventarioActual) {
+      inventarioActual = await prisma.inventario.findUnique({ where: { id_producto: productoId } });
+    }
+
     await ProductoEvento.create({
       producto_id: productoId,
       version: doc.version,
@@ -265,7 +288,13 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
       fecha: doc.actualizado_en,
       usuario_id: vendedor.id_usuario,
       campos_modificados: camposModificados,
-      snapshot: { descripcion: doc.descripcion, estado: doc.estado, atributos: doc.atributos, imagenes: doc.imagenes },
+      snapshot: {
+        descripcion: doc.descripcion,
+        estado: doc.estado,
+        atributos: doc.atributos,
+        imagenes: doc.imagenes,
+        inventario: { precio: Number(inventarioActual.precio), cantidad: inventarioActual.cantidad },
+      },
     });
 
     // El MySQL producto.descripcion/imagen_url/estado ya no son la fuente de
