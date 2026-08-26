@@ -56,6 +56,12 @@ export function SellerProductFormPage() {
   const [subcategoriaId, setSubcategoriaId] = useState('');
   const [form, setForm] = useState({ descripcion: '', imagen_url: '', estado: 'activo', precio: '', cantidad: '' });
   const [valoresAtributos, setValoresAtributos] = useState({});
+  // Nombre nuevo pendiente para un atributo existente, indexado por su nombre
+  // ORIGINAL (no cambia mientras se escribe, evita que el input pierda foco).
+  // Separado de valoresAtributos a propósito: permite renombrar sin tocar el
+  // valor ya cargado, y sin necesidad de "+ Crear nueva" + volver a tipear el
+  // valor — ver ESTADO-PROYECTO.md §3.4.
+  const [renombres, setRenombres] = useState({});
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
@@ -91,7 +97,15 @@ export function SellerProductFormPage() {
 
   const categoriaActual = categorias.find((c) => String(c.id) === categoriaId);
   const subcategoriaActual = categoriaActual?.subcategorias.find((s) => String(s.id) === subcategoriaId);
-  const atributosDisponibles = subcategoriaActual?.atributos_categoria || [];
+  // Unión con las claves de valoresAtributos (no solo la plantilla de la
+  // subcategoría): en modo edición, un producto puede tener un atributo que
+  // ya no está en atributos_categoria (p. ej. si la plantilla cambió después
+  // de crear el producto). Sin esto, ese atributo quedaba invisible en el
+  // formulario — ni se veía ni se podía editar, solo "+ Crear nueva" (que
+  // además fallaba si el nombre ya existía en atributos_definidos).
+  const atributosDisponibles = Array.from(
+    new Set([...(subcategoriaActual?.atributos_categoria || []), ...Object.keys(valoresAtributos)])
+  );
 
   function actualizarCampo(campo, valor) {
     setForm((prev) => ({ ...prev, [campo]: valor }));
@@ -116,6 +130,15 @@ export function SellerProductFormPage() {
     setSubcategoriaId(String(nueva.id));
   }
 
+  function quitarAtributo(nombre) {
+    setValoresAtributos((prev) => ({ ...prev, [nombre]: '' }));
+    setRenombres((prev) => {
+      const siguiente = { ...prev };
+      delete siguiente[nombre];
+      return siguiente;
+    });
+  }
+
   async function crearAtributo(nombre) {
     await categoriasApi.crearAtributo(subcategoriaId, { atributo: nombre }, token);
     setCategorias((prev) =>
@@ -134,7 +157,13 @@ export function SellerProductFormPage() {
 
     const atributos = atributosDisponibles
       .filter((nombre) => valoresAtributos[nombre]?.trim())
-      .map((nombre) => ({ nombre, valor: valoresAtributos[nombre].trim() }));
+      .map((nombre) => ({ nombre: renombres[nombre]?.trim() || nombre, valor: valoresAtributos[nombre].trim() }));
+
+    const nombresFinales = atributos.map((a) => a.nombre);
+    if (new Set(nombresFinales).size !== nombresFinales.length) {
+      setError('Hay dos atributos con el mismo nombre — revisá los nombres antes de guardar.');
+      return;
+    }
 
     setGuardando(true);
     try {
@@ -286,12 +315,33 @@ export function SellerProductFormPage() {
             </h2>
             <div className="flex flex-col gap-3">
               {atributosDisponibles.map((nombre) => (
-                <Field key={nombre} label={nombre}>
-                  <Input
-                    value={valoresAtributos[nombre] || ''}
-                    onChange={(e) => setValoresAtributos((prev) => ({ ...prev, [nombre]: e.target.value }))}
-                  />
-                </Field>
+                <div key={nombre} className="flex flex-col gap-2 rounded-lg border border-neutral-100 p-3">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1">
+                      <Field label="Nombre del atributo">
+                        <Input
+                          value={renombres[nombre] ?? nombre}
+                          onChange={(e) => setRenombres((prev) => ({ ...prev, [nombre]: e.target.value }))}
+                        />
+                      </Field>
+                    </div>
+                    {valoresAtributos[nombre]?.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => quitarAtributo(nombre)}
+                        className="mt-6 shrink-0 text-xs font-medium text-danger-600 hover:underline"
+                      >
+                        Quitar
+                      </button>
+                    )}
+                  </div>
+                  <Field label="Valor">
+                    <Input
+                      value={valoresAtributos[nombre] || ''}
+                      onChange={(e) => setValoresAtributos((prev) => ({ ...prev, [nombre]: e.target.value }))}
+                    />
+                  </Field>
+                </div>
               ))}
               <InlineCreate placeholder="Nombre del atributo (p. ej. Material)" onCrear={crearAtributo} />
             </div>

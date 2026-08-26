@@ -243,7 +243,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
     inventarioActual = await prisma.inventario.update({ where: { id_producto: productoId }, data: datosInventario });
   }
 
-  const cambiaDescriptivo = descripcion !== undefined || imagen_url !== undefined || estado !== undefined || (atributos && atributos.length);
+  const cambiaDescriptivo = descripcion !== undefined || imagen_url !== undefined || estado !== undefined || atributos !== undefined;
   if (cambiaDescriptivo || camposModificados.length > 0) {
     const doc = await Producto.findOne({ producto_id: productoId });
     if (!doc) throw new Error('Producto no encontrado en el catálogo documental');
@@ -261,13 +261,21 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
       doc.estado = estado;
       camposModificados.push('estado');
     }
-    if (atributos && atributos.length) {
+    if (atributos !== undefined) {
+      // Reemplazo completo, no merge: lo que llega acá ya es el conjunto
+      // completo de atributos vigentes según el formulario (ver
+      // SellerProductFormPage.jsx), no un delta. Necesario para poder quitar
+      // un atributo o cambiarlo por otro distinto en un producto puntual —
+      // con un merge (update-or-push) nunca se podía borrar nada, solo agregar
+      // o pisar un valor existente.
       for (const { nombre, valor } of atributos) {
         if (!nombre || !valor) throw new Error('Cada atributo necesita nombre y valor');
-        const existente = doc.atributos.find((a) => a.nombre === nombre);
-        if (existente) existente.valor = valor;
-        else doc.atributos.push({ nombre, valor });
       }
+      const nombres = atributos.map((a) => a.nombre);
+      if (new Set(nombres).size !== nombres.length) {
+        throw new Error('No puede haber dos atributos con el mismo nombre');
+      }
+      doc.atributos = atributos.map(({ nombre, valor }) => ({ nombre, valor }));
       camposModificados.push('atributos');
     }
 
