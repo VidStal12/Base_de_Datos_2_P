@@ -5,10 +5,12 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { esEnteroPositivo } = require('../utils/validation');
 
-// Contenido descriptivo (Mongo) + precio/cantidad (MySQL, sin tocar) — ver
-// ADR-002 §3.2. Las dos bases se leen por separado y se combinan acá; no hace
-// falta que sea una transacción porque son dos LECTURAS independientes.
-function formatear(doc, inventario) {
+// Todo el contenido de catálogo, incluido precio/cantidad, vive en el
+// documento de Mongo — ver Producto.js. MySQL (`inventario`) sigue siendo la
+// única fuente transaccional (checkout la usa directo, ver checkoutService.js),
+// pero las lecturas de catálogo ya no cruzan a MySQL para nada: precio/cantidad
+// acá son la copia que productoService.js reenvía después de cada escritura.
+function formatear(doc) {
   const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
   return {
     id: doc.producto_id,
@@ -28,18 +30,10 @@ function formatear(doc, inventario) {
         }
       : undefined,
     version: doc.version,
-    inventario: inventario
-      ? { id: inventario.id, id_producto: inventario.id_producto, precio: inventario.precio, cantidad: inventario.cantidad }
-      : null,
+    // undefined en documentos creados antes de este campo, hasta que corra
+    // POST /api/admin/recalcular-inventario — null en vez de reventar.
+    inventario: doc.precio !== undefined ? { precio: doc.precio, cantidad: doc.cantidad } : null,
   };
-}
-
-async function combinarConInventario(documentos) {
-  if (documentos.length === 0) return [];
-  const ids = documentos.map((d) => d.producto_id);
-  const inventarios = await prisma.inventario.findMany({ where: { id_producto: { in: ids } } });
-  const mapaInventario = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
-  return documentos.map((doc) => formatear(doc, mapaInventario.get(doc.producto_id)));
 }
 
 // atributos: JSON de { [nombre]: valor } (ver productoRoutes.js) — filtrado
@@ -65,10 +59,9 @@ function condicionesAtributos(atributos) {
 // Filtro de texto simple (contains) — no confundir con el buscador de texto
 // libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch).
 //
-// precioMin/precioMax: precio vive en MySQL, no en Mongo (ver ADR-002 §3.2) —
-// se resuelve el rango ahí primero (barato, `inventario` es una tabla chica)
-// y el resultado se pasa a Mongo como un $in sobre producto_id. No hay forma
-// de evitar la consulta cruzada acá porque el dato vive en la otra base.
+// precioMin/precioMax: filtro directo sobre Producto.precio (ver Producto.js
+// y el índice {subcategoria_id, precio}) — ya no hace falta resolverlo en
+// MySQL primero, precio vive acá también desde que se agregó ese campo.
 //
 // ordenarPor: 'masVendidos' usa total_vendido (caché, ver Producto.js) y el
 // índice compuesto {subcategoria_id, total_vendido} — más preciso cuando se
@@ -95,14 +88,9 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
     filtro.$and = condiciones;
   }
   if (precioMin !== undefined || precioMax !== undefined) {
-    const rango = {};
-    if (precioMin !== undefined) rango.gte = Number(precioMin);
-    if (precioMax !== undefined) rango.lte = Number(precioMax);
-    const enRango = await prisma.inventario.findMany({
-      where: { precio: rango },
-      select: { id_producto: true },
-    });
-    filtro.producto_id = { $in: enRango.map((i) => i.id_producto) };
+    filtro.precio = {};
+    if (precioMin !== undefined) filtro.precio.$gte = Number(precioMin);
+    if (precioMax !== undefined) filtro.precio.$lte = Number(precioMax);
   }
 
   let consulta = Producto.find(filtro).populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } });
@@ -110,7 +98,7 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
     consulta = consulta.sort({ total_vendido: -1 });
   }
   const documentos = await consulta.lean();
-  return combinarConInventario(documentos);
+  return documentos.map(formatear);
 }
 
 async function obtener(id) {
@@ -119,8 +107,7 @@ async function obtener(id) {
     .populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } })
     .lean();
   if (!doc) throw new Error('Producto no encontrado');
-  const inventario = await prisma.inventario.findUnique({ where: { id_producto: id } });
-  return formatear(doc, inventario);
+  return formatear(doc);
 }
 
 function construirImagenes(imagen_url, descripcion) {
@@ -164,6 +151,8 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       subcategoria_id: subcategoria._id,
       vendedor_id: vendedor.id_usuario,
       vendedor_nombre: `${productoRelacional.vendedor.nombres} ${productoRelacional.vendedor.apellidos}`,
+      precio,
+      cantidad,
       atributos: atributos || [],
       imagenes: construirImagenes(imagen_url, descripcion),
       version: 1,
@@ -279,15 +268,20 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
       camposModificados.push('atributos');
     }
 
-    doc.version += 1;
-    await doc.save();
-
-    // Si esta llamada no tocó precio/cantidad, el snapshot igual necesita el
-    // valor VIGENTE (no queda "vacío") para seguir siendo un snapshot
-    // completo, no un delta — mismo principio que ya regía para lo descriptivo.
+    // precio/cantidad se reenvían acá SIEMPRE, no solo cuando esta llamada los
+    // tocó — MySQL (inventario) sigue siendo la fuente transaccional, esto es
+    // el reenvío de mejor esfuerzo hacia la copia de Mongo (ver Producto.js).
+    // Si esta llamada no los tocó, igual hace falta el valor VIGENTE para que
+    // tanto el doc como el snapshot queden completos, no un delta — mismo
+    // principio que ya regía para lo descriptivo.
     if (!inventarioActual) {
       inventarioActual = await prisma.inventario.findUnique({ where: { id_producto: productoId } });
     }
+    doc.precio = Number(inventarioActual.precio);
+    doc.cantidad = inventarioActual.cantidad;
+
+    doc.version += 1;
+    await doc.save();
 
     await ProductoEvento.create({
       producto_id: productoId,
@@ -301,18 +295,15 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
         estado: doc.estado,
         atributos: doc.atributos,
         imagenes: doc.imagenes,
-        inventario: { precio: Number(inventarioActual.precio), cantidad: inventarioActual.cantidad },
+        inventario: { precio: doc.precio, cantidad: doc.cantidad },
       },
     });
 
-    // El MySQL producto.descripcion/imagen_url/estado ya no son la fuente de
-    // verdad (Mongo lo es), pero se mantienen en sync para no dejarlos
-    // silenciosamente desactualizados mientras no se hace la limpieza de
-    // columnas pendiente (ver ADR-002 §7 / ESTADO-PROYECTO.md).
-    await prisma.producto.update({
-      where: { id: productoId },
-      data: { descripcion: doc.descripcion, imagen_url: doc.imagenes[0]?.url || '', estado: doc.estado },
-    });
+    // producto.descripcion/imagen_url/estado en MySQL YA NO se actualizan acá
+    // a propósito: Mongo es la única fuente de verdad para lo descriptivo, y
+    // esas columnas de MySQL son puramente vestigiales — la fila de
+    // `producto` se conserva solo como ancla de FK para inventario/
+    // compra_detalle/carrito (ver ESTADO-PROYECTO.md).
   }
 
   return obtener(productoId);

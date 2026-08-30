@@ -55,7 +55,7 @@ Esto **sí sería implementable en relacional** (una tabla `producto_eventos` co
 
 Migrar a MongoDB la parte **descriptiva** del catálogo: `categoria`, `subcategoria` (con las definiciones de atributo embebidas — ver §3.1) y los campos variables de `producto` (descripción, estado, atributos, imágenes — ver §6). Reseñas e imágenes nacen documentales directamente (son features nuevas, no había nada que migrar).
 
-`precio` y `cantidad` **no migran** — se quedan en `inventario` (MySQL), sin tocar. Igual que `usuarios`, `rol_usuario`, `direcciones`, `metodo_pago`, `carrito`, `compra`, `pago`, `compra_detalle`. Ver §3.2 para el porqué — es una revisión sobre el planteo original de este documento.
+`precio` y `cantidad` **no migran** — `inventario` (MySQL) sigue siendo la única fuente transaccional, sin tocar. Igual que `usuarios`, `rol_usuario`, `direcciones`, `metodo_pago`, `carrito`, `compra`, `pago`, `compra_detalle`. Ver §3.2 para el porqué — es una revisión sobre el planteo original de este documento. (§3.3 agrega una copia de lectura de precio/cantidad en Mongo sin cambiar esto — la autoridad transaccional sigue siendo la misma.)
 
 ### 3.1 Simplificación que trae el modelo documental
 
@@ -107,6 +107,29 @@ La versión original de este ADR incluía `precio`/`cantidad` en el documento de
 Además, el diagnóstico de este mismo documento (§1) nunca fue sobre precio/cantidad — es sobre atributos heterogéneos por categoría y sobre historial de cambios descriptivos. Mover precio/cantidad a Mongo no resolvía ningún problema diagnosticado; solo agregaba riesgo.
 
 **Consecuencia práctica:** el detalle de un producto ahora se arma con una lectura a Mongo (descripción/atributos/imágenes) + una lectura a MySQL (`inventario`, por `producto_id`) — dos lecturas independientes, no una transacción distribuida, porque no hay ninguna escritura conjunta que deba ser atómica entre ambas para *leer* un producto. Escribir (crear/editar) sí toca las dos bases, pero cada una se mantiene consistente *dentro de sí misma* por separado — ver la implementación en `productoService.js` una vez migrado.
+
+### 3.3 Actualización (2026-08-29): copia de lectura de precio/cantidad en Mongo
+
+`Producto` (Mongo) ahora sí guarda `precio`/`cantidad` — pero esto **no revierte** §3.2, lo complementa. La distinción que importa es entre *quién escribe primero, de forma transaccional* y *quién más termina teniendo una copia*:
+
+- **Autoridad transaccional**: sigue siendo exclusivamente `inventario` (MySQL). El checkout atómico de la Fase Inicial no cambió una línea — sigue siendo una sola transacción de Prisma que lee y descuenta `inventario.cantidad`, sin tocar Mongo en el medio. El riesgo que motivó §3.2 (romper esa atomicidad) sigue evitado de la misma manera: Mongo nunca es parte de la transacción.
+- **Lo que cambió**: cada escritura en `inventario` (una edición de vendedor/administrador vía `productoService.actualizar()`, o un descuento de checkout vía `checkoutService.js`) ahora se **reenvía** a `Producto.precio`/`Producto.cantidad` después del hecho — mismo patrón de caché de lectura ya establecido para `vendedor_nombre` y `total_vendido` (ver §6.3 y `Producto.js`). Antes, cada lectura del catálogo (`listar()`/`obtener()`) hacía una consulta cruzada a MySQL para conseguir estos dos campos; ahora esa consulta cruzada desaparece del camino de lectura por completo, y el filtro de rango de precio (`?precioMin=`/`?precioMax=`) pasó de "resolver en MySQL, pasar los ids a Mongo como `$in`" a un filtro directo de Mongo, con su propio índice compuesto `{subcategoria_id, precio}`.
+
+Esto es reenvío de mejor esfuerzo (igual que el resto de las escrituras cruzadas del proyecto, ver §5) — hay una ventana breve entre que MySQL cambia y Mongo se entera, no es consistencia fuerte entre las dos bases. `POST /api/admin/recalcular-inventario` reconcilia si alguna vez se desincroniza (mismo mecanismo que `recalcular-ventas` para `total_vendido`).
+
+**Consecuencia práctica revisada:** el detalle de un producto ahora se arma con **una sola lectura**, a Mongo — la lectura cruzada a `inventario` descrita arriba (párrafo anterior a este) ya no ocurre en el camino de lectura. `inventario` (MySQL) se sigue leyendo, pero solo dentro de la transacción de checkout y en `productoService.actualizar()` para obtener el valor vigente a reenviar — nunca para servir una página del catálogo.
+
+### 3.4 Actualización (2026-08-30): se borra el catálogo relacional vestigial
+
+Desde Entrega 1, `categoria`, `subcategoria`, `atributo_categoria`, `atributo_producto`, `categoria_producto`, y las columnas `descripcion`/`imagen_url`/`estado` de `producto` seguían existiendo en MySQL pero sin ningún código que las leyera ni las escribiera — `categoriaService.js` ya estaba 100% contra Mongo, y el último punto que escribía las columnas de `producto` se sacó de `productoService.actualizar()` el 2026-08-29 (ver §3.3 y ESTADO-PROYECTO.md). Mantenerlas era inercia, no una decisión activa — no cumplían ningún propósito ni como caché, ni como respaldo, ni como ancla de FK para algo que siguiera vivo.
+
+**Decisión:** se borraron con una migración (`20260830000000_drop_catalogo_relacional_vestigial`), verificada antes de aplicar contra los datos reales del proyecto (Mongo tenía exactamente los mismos 4 categorías/4 subcategorías que MySQL, más una — de una prueba posterior que nunca tocó MySQL — confirmando que MySQL no tenía nada que Mongo no tuviera ya). `producto` en sí **no se borra** — sigue siendo el ancla de FK de `inventario`/`compra_detalle`/`carrito`, que son justamente las tablas que §3.2/§3.3 necesitan que seguían en MySQL por la atomicidad del checkout. Solo pierde las columnas descriptivas, que ya no eran la fuente de verdad de nada.
+
+**Consecuencias en cascada** (todo lo que dependía de que esas tablas relacionales existieran):
+
+- **`scripts/etlCatalogoAMongo.js` (borrado):** su único trabajo era migrar `categoria`/`subcategoria`/`producto` DESDE MySQL HACIA Mongo — sin esas tablas relacionales, no hay nada de qué hacer ETL. `prisma/seed.js` absorbió ese trabajo: ahora puebla MySQL (usuarios, roles, direcciones, producto+inventario) Y Mongo (categorías, subcategorías, documentos de producto con su evento inicial) en un solo paso, en vez de dos scripts separados.
+- **`catalogoSyncService.sincronizarFaltantes()` y `POST /api/admin/sync-catalogo` (borrados):** su trabajo era backfillear Mongo con lo que existiera en MySQL y todavía no tuviera documento — imposible sin esas tablas. `recalcularVentas()`/`recalcularInventario()` y sus rutas siguen intactos, porque leen `compra_detalle`/`inventario`, que no se tocaron.
+- **§6.3 de este documento** ("El ETL y `productoService.crear()` son los únicos puntos que crean [la relación `producto_id`]"): la referencia al ETL quedó desactualizada por lo de arriba — hoy los puntos que crean esa relación son `productoService.crear()` y `prisma/seed.js`.
 
 ---
 
@@ -193,7 +216,7 @@ La migración (ETL) convierte el `imagen_url` actual de cada producto en un arra
 
 **Esto es el "mecanismo de referencia cruzada" que pide documentar el PRD** — con el modelo dividido de §3.2, es más acotado de lo que parecía en la versión original de este documento, porque `producto`/`inventario` **no se movieron** de MySQL: `compra_detalle.id_producto` sigue siendo una `FOREIGN KEY` real hacia una fila de `producto` que sigue existiendo, sin cambios. Las referencias cruzadas de verdad son estas dos, ambas nacidas en Mongo apuntando hacia MySQL:
 
-- **`productos.producto_id` (Mongo) → `producto.id` (MySQL):** es un número plano, no una `FOREIGN KEY` — el motor no impide que quede huérfano. Mitigación: nunca se borra un `producto` de MySQL (no hay endpoint para eso), solo se desactiva (`estado: "inactivo"` en el documento de Mongo). El ETL y `productoService.crear()` son los únicos puntos que crean esta relación, y siempre crean primero la fila MySQL y recién después el documento Mongo (ver implementación), así que un `producto_id` en Mongo apunta siempre a algo que ya existía cuando se escribió.
+- **`productos.producto_id` (Mongo) → `producto.id` (MySQL):** es un número plano, no una `FOREIGN KEY` — el motor no impide que quede huérfano. Mitigación: nunca se borra un `producto` de MySQL (no hay endpoint para eso), solo se desactiva (`estado: "inactivo"` en el documento de Mongo). `productoService.crear()` y `prisma/seed.js` son los únicos puntos que crean esta relación (el ETL de bootstrap que existía hasta el 2026-08-30 se borró junto con las tablas relacionales que migraba, ver §3.4), y siempre crean primero la fila MySQL y recién después el documento Mongo (ver implementación), así que un `producto_id` en Mongo apunta siempre a algo que ya existía cuando se escribió.
 - **`productos.vendedor_id` (Mongo) → `usuarios.id_usuario` (MySQL):** mismo mecanismo. Si el vendedor se diera de baja (no hay endpoint para eso hoy tampoco), el documento quedaría con un `vendedor_id` huérfano — mitigación equivalente: desactivar, no borrar.
 
 ---

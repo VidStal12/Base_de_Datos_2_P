@@ -39,8 +39,8 @@ app.get('/', (req, res) => {
       'POST /api/checkout (requiere token)',
       'GET /api/compras (requiere token — pedidos del usuario autenticado)',
       'GET /api/compras/:id (requiere token)',
-      'POST /api/admin/sync-catalogo (requiere token, rol administrador — agrega a Mongo lo que falte, no destructivo)',
       'POST /api/admin/recalcular-ventas (requiere token, rol administrador — recalcula total_vendido desde compra_detalle, sobrescribe la caché)',
+      'POST /api/admin/recalcular-inventario (requiere token, rol administrador — recalcula precio/cantidad desde inventario (MySQL), sobrescribe la caché)',
     ],
   });
 });

@@ -31,7 +31,7 @@ Para el resumen general de estado (qué está hecho, qué falta, problemas encon
 
 > "Vista de detalle de producto"
 
-- **Backend:** `GET /api/productos/:id` — `backend/src/routes/productoRoutes.js:20-27` → `productoService.obtener()` (`productoService.js:116-124`), combina el documento de Mongo con `inventario` de MySQL (precio/cantidad).
+- **Backend:** `GET /api/productos/:id` — `backend/src/routes/productoRoutes.js:20-27` → `productoService.obtener()` (`productoService.js:104-111`), lee el documento de Mongo, que desde el 2026-08-29 ya incluye precio/cantidad como copia de lectura (ver ADR-002 §3.3) — ya no hay una lectura cruzada a MySQL en este camino.
 - **Frontend:** [`ProductDetailPage.jsx`](../frontend/src/pages/ProductDetailPage.jsx) — trae el producto por id (líneas 20-25), muestra descripción, atributos, vendedor, precio/stock y permite agregar al carrito.
 
 ### 1.4 Consulta del estado histórico en una fecha arbitraria
@@ -49,9 +49,8 @@ Ver detalle completo en §2.5 (es el mismo requerimiento técnico, no una featur
 > "Migración documentada y reproducible de productos: modelo relacional → base documental"
 
 - **Diagnóstico y justificación:** [ADR-002 §1](ADR-002-migracion-catalogo-documental.md#1-diagnóstico-contexto) (por qué el modelo EAV relacional no alcanza) y [§3.2](ADR-002-migracion-catalogo-documental.md#32-actualización-2026-08-23-por-qué-preciocantidad-no-migran) (qué migra y qué no, y por qué).
-- **Script de migración (bootstrap, reproducible):** [`backend/scripts/etlCatalogoAMongo.js`](../backend/scripts/etlCatalogoAMongo.js) — lee `categoria`/`subcategoria`/`producto` de MySQL vía Prisma, limpia y reescribe las colecciones Mongo destino. Pensado para clonar el repo y correr una vez (o de nuevo en desarrollo); no destinado a re-ejecutarse en un catálogo con historial real (ver 2.6 más abajo, y [ADR-002 §8.1](ADR-002-migracion-catalogo-documental.md#81-conflicto-de-puertos-con-un-mongodb-nativo-de-windows)).
-- **Sincronización aditiva (para un catálogo ya en uso):** [`backend/src/services/catalogoSyncService.js`](../backend/src/services/catalogoSyncService.js), expuesta en `POST /api/admin/sync-catalogo` (`backend/src/routes/adminRoutes.js:10-17`, rol `administrador`). Nunca borra ni pisa un documento existente — agrega lo que falte. Verificado insertando un producto de prueba directo en MySQL y confirmando que la sincronización lo agrega sin tocar el resto.
-- **Verificación:** corrida contra los datos reales del proyecto (5 productos), confirmado vía `GET /api/productos` que el resultado coincide con el origen relacional.
+- **Script de migración (bootstrap, reproducible) — histórico:** hasta el 2026-08-30, `backend/scripts/etlCatalogoAMongo.js` leía `categoria`/`subcategoria`/`producto` de MySQL vía Prisma, limpiaba y reescribía las colecciones Mongo destino; `catalogoSyncService.sincronizarFaltantes()` (expuesta en `POST /api/admin/sync-catalogo`) hacía lo mismo de forma aditiva para un catálogo ya en uso. Ambos se borraron junto con las tablas relacionales que migraban/sincronizaban (ver [ADR-002 §3.4](ADR-002-migracion-catalogo-documental.md#34-actualización-2026-08-30-se-borra-el-catálogo-relacional-vestigial)) — sin `categoria`/`subcategoria`/`atributo_*` en MySQL, no queda nada de qué hacer ETL. `prisma/seed.js` absorbió ese trabajo: puebla MySQL y Mongo en un solo paso.
+- **Verificación (en su momento):** ambos scripts se corrieron y verificaron contra los datos reales del proyecto antes de que las tablas relacionales se borraran — confirmado vía `GET /api/productos` que el resultado coincidía con el origen relacional. La migración en sí (el requerimiento del PRD) ya estaba satisfecha independientemente de que las herramientas que la hicieron posible ya no existan.
 
 ### 2.2 Decisión embed vs. reference (reseñas, imágenes, vendedor)
 
@@ -100,8 +99,8 @@ Las tres decisiones están en [ADR-002 §6](ADR-002-migracion-catalogo-documenta
 > "Documentación del mecanismo de referencia cruzada: líneas de pedido (relacionales) → productos (documentales), sin exigir integridad referencial garantizada en esta etapa"
 
 - **Documentado en:** [ADR-002 §6](ADR-002-migracion-catalogo-documental.md#6-decisiones-de-modelado-embed-vs-reference), subsección 6.3 (líneas 178-196 del ADR) — con el modelo dividido (§3.2), `producto`/`inventario` **no se movieron** de MySQL, así que `compra_detalle.id_producto` sigue siendo una FK real de MySQL a MySQL, sin cruce de bases. Las dos referencias cruzadas reales nacen del lado Mongo apuntando hacia MySQL:
-  - `Producto.producto_id` (Mongo, `Producto.js:16`) → `producto.id` (MySQL) — es lo que conecta el documento con su fila de `inventario`. Usado en `productoService.combinarConInventario()` (`productoService.js:37-43`).
-  - `Producto.vendedor_id` (Mongo, `Producto.js:22`) → `usuarios.id_usuario` (MySQL) — con `vendedor_nombre` como caché de lectura para no tener que resolverlo en cada consulta.
+  - `Producto.producto_id` (Mongo, `Producto.js:24`) → `producto.id` (MySQL) — es lo que conecta el documento con su fila `producto`/`inventario`. `Producto.precio`/`cantidad` (Mongo) son una copia de lectura reenviada desde `inventario` (MySQL, la única fuente transaccional) en cada escritura — ver [ADR-002 §3.3](ADR-002-migracion-catalogo-documental.md#33-actualización-2026-08-29-copia-de-lectura-de-preciocantidad-en-mongo); el reenvío vive en `productoService.actualizar()`/`crear()` y `checkoutService.js`, ya no en una lectura cruzada al servir el catálogo.
+  - `Producto.vendedor_id` (Mongo, `Producto.js:30`) → `usuarios.id_usuario` (MySQL) — con `vendedor_nombre` como caché de lectura para no tener que resolverlo en cada consulta.
 - **Sin integridad garantizada, a propósito:** si se borrara un usuario o un producto por fuera del flujo normal, quedaría una referencia huérfana — mitigación documentada es desactivar, no borrar (no hay endpoint de borrado físico de ninguno de los dos). Consistente con lo que pide el PRD para esta etapa.
 
 ---
@@ -113,7 +112,7 @@ Las tres decisiones están en [ADR-002 §6](ADR-002-migracion-catalogo-documenta
 - **Modelo relacional base:** [ERD.md](ERD.md) + `backend/prisma/schema.prisma`.
 - **Diagnóstico + decisión documental justificada:** [ADR-002](ADR-002-migracion-catalogo-documental.md) completo.
 - **Evidencia de funcionamiento:** este documento (§1-2) + [ESTADO-PROYECTO.md §3.5](ESTADO-PROYECTO.md) (qué se corrió y verificó, no solo qué se escribió).
-- **Script de migración:** `backend/scripts/etlCatalogoAMongo.js` (bootstrap) + `backend/src/services/catalogoSyncService.js` (sync aditivo, uso continuo).
+- **Script de migración (histórico, ver arriba):** `backend/scripts/etlCatalogoAMongo.js` y `catalogoSyncService.sincronizarFaltantes()` ya no existen — su trabajo lo absorbió `backend/prisma/seed.js` (ver [ADR-002 §3.4](ADR-002-migracion-catalogo-documental.md#34-actualización-2026-08-30-se-borra-el-catálogo-relacional-vestigial)).
 - **Código del catálogo:** `backend/src/services/{categoriaService,productoService}.js`, `backend/src/models/mongo/`, `backend/src/routes/{categoriaRoutes,productoRoutes}.js`, todo el frontend en `frontend/src/pages/` (`HomePage`, `ProductDetailPage`, `pages/seller/`, `pages/admin/`).
 - **"Calidad del informe y del repositorio" (0.5 pt):** sigue sin resolver si el curso espera un documento de entrega separado (PDF u otro formato) además de lo que ya está en `IA/` — depende de la consigna del curso, no de código. Ver [ESTADO-PROYECTO.md §6](ESTADO-PROYECTO.md).
 

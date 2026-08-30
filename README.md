@@ -48,19 +48,13 @@ Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccion
      ```
      (usa una *shadow database* temporal para calcular el diff — el usuario `tiendaya` ya tiene el permiso `CREATE, DROP` necesario, otorgado automáticamente al inicializar el contenedor por `docker/mysql-init/01-grant-shadow-db.sql`. Detalle del porqué en [ADR-001](IA/ADR-001-stack-y-migraciones.md#notas-de-implementación-2026-08-22).)
 
-5. **Cargar datos de prueba representativos** (MySQL):
+5. **Cargar datos de prueba representativos** (MySQL + Mongo, un solo paso — hasta el 2026-08-30 esto eran dos scripts separados, ver `IA/ADR-002` §3.4):
 
    ```bash
    npm run seed
    ```
 
-6. **Migrar el catálogo a MongoDB** (lee de MySQL, escribe en Mongo — reproducible, se puede correr de nuevo las veces que haga falta):
-
-   ```bash
-   node scripts/etlCatalogoAMongo.js
-   ```
-
-7. **Levantar el servidor**:
+6. **Levantar el servidor**:
 
    ```bash
    npm run dev
@@ -118,7 +112,7 @@ Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor`
 
 **Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
 
-**Panel de administrador** (`frontend/src/pages/admin/`): con sesión `administrador` aparece "Panel admin" en el header → `/admin` lista el catálogo completo de **todos** los vendedores (filtro por categoría + búsqueda), con acceso de edición a cualquier producto — reutiliza el mismo formulario del panel de vendedor. Incluye un botón "Sincronizar con MongoDB" (`POST /api/admin/sync-catalogo`) que agrega a Mongo lo que exista en MySQL y todavía no tenga documento — nunca borra ni sobrescribe lo ya sincronizado, a propósito distinto del script `scripts/etlCatalogoAMongo.js` (que sí reconstruye todo desde cero y solo es seguro para el bootstrap inicial, ver [ADR-002 §8](IA/ADR-002-migracion-catalogo-documental.md#8-notas-de-implementación-2026-08-23)).
+**Panel de administrador** (`frontend/src/pages/admin/`): con sesión `administrador` aparece "Panel admin" en el header → `/admin` lista el catálogo completo de **todos** los vendedores (filtro por categoría + búsqueda), con acceso de edición a cualquier producto — reutiliza el mismo formulario del panel de vendedor. También muestra "Productos más editados" (agregación sobre el historial de eventos, ver ADR-003 §3.4). El botón "Sincronizar con MongoDB" que existía acá se quitó el 2026-08-30 junto con las tablas relacionales que sincronizaba — ver [ADR-002 §3.4](IA/ADR-002-migracion-catalogo-documental.md#34-actualización-2026-08-30-se-borra-el-catálogo-relacional-vestigial).
 
 Los ids de categoría/subcategoría son ObjectId de Mongo (strings), no enteros — hay que usar el que devuelva cada `POST`, no un valor fijo:
 
@@ -144,12 +138,14 @@ curl -s http://localhost:3000/api/productos/1
 # { nombre: valor }, todos exigidos a la vez (AND)
 curl -s -G "http://localhost:3000/api/productos" --data-urlencode "atributos={\"Material\":\"Aluminio\"}"
 
-# rango de precio (resuelto en MySQL, ver ADR-002) + orden por más vendidos
-# (total_vendido es una caché en Mongo, se actualiza al confirmarse una compra)
+# rango de precio (filtro directo en Mongo, ver ADR-002 §3.3 — precio/cantidad
+# son una copia de lectura ahí, MySQL/inventario sigue siendo la fuente
+# transaccional) + orden por más vendidos (total_vendido, caché en Mongo,
+# se actualiza al confirmarse una compra)
 curl -s "http://localhost:3000/api/productos?precioMin=0&precioMax=100&ordenarPor=masVendidos"
 ```
 
-Si `total_vendido` alguna vez se desincroniza de la realidad (p. ej. compras hechas antes de que este campo existiera), `POST /api/admin/recalcular-ventas` lo recalcula desde cero sumando `compra_detalle` en MySQL — a diferencia de `sync-catalogo`, este sí sobrescribe lo que ya hay.
+Si `total_vendido` o `precio`/`cantidad` alguna vez se desincronizan de la realidad, `POST /api/admin/recalcular-ventas` (recalcula `total_vendido` sumando `compra_detalle` en MySQL) y `POST /api/admin/recalcular-inventario` (recalcula `precio`/`cantidad` desde `inventario` en MySQL) los reconcilian desde cero, sobrescribiendo lo que ya hay.
 
 ## Historial de cambios (Entrega 1)
 
@@ -194,12 +190,11 @@ Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.
 IA/                    Documentación de arquitectura (PRD, ERD, ADRs, estado del proyecto)
 backend/
   prisma/
-    schema.prisma       Esquema MySQL (usuarios, direcciones, pedidos, pagos, inventario)
+    schema.prisma       Esquema MySQL (usuarios, direcciones, pedidos, pagos, inventario — el catálogo vive en Mongo, ver ADR-002 §3.4)
     migrations/          DDL versionado, generado por Prisma Migrate
-    seed.js               Datos de prueba representativos (MySQL)
+    seed.js               Datos de prueba representativos (MySQL + Mongo, un solo paso)
   scripts/
     verificarCheckout.js    Evidencia de atomicidad del checkout
-    etlCatalogoAMongo.js     ETL relacional -> documental del catálogo (ver ADR-002)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)

@@ -91,20 +91,23 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     return { compra, pago };
   }).then(async (resultado) => {
     // Fuera de la transacción a propósito: la compra ya está confirmada y es
-    // irreversible en MySQL en este punto, esto solo actualiza la caché de
-    // lectura en Mongo (total_vendido, ver Producto.js). Mejor esfuerzo, igual
-    // que el resto de las escrituras cruzadas de este proyecto (ver ADR-002
-    // §5) — si esto falla, la compra ya sucedió igual, no hay nada que
-    // revertir; recalcularVentas() la corrige después si hace falta.
+    // irreversible en MySQL en este punto, esto solo actualiza las cachés de
+    // lectura en Mongo (total_vendido Y cantidad, ver Producto.js — MySQL
+    // `inventario` ya se descontó arriba, DENTRO de la transacción; esto es
+    // el reenvío de esa misma resta hacia la copia de Mongo). Mejor esfuerzo,
+    // igual que el resto de las escrituras cruzadas de este proyecto (ver
+    // ADR-002 §5) — si esto falla, la compra ya sucedió igual, no hay nada
+    // que revertir; recalcularVentas()/recalcularInventario() lo corrigen
+    // después si hace falta.
     try {
       await conectar();
       await Promise.all(
         items.map(({ productoId, cantidad }) =>
-          Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad } })
+          Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad, cantidad: -cantidad } })
         )
       );
     } catch (err) {
-      console.error('No se pudo actualizar total_vendido en Mongo:', err.message);
+      console.error('No se pudo actualizar total_vendido/cantidad en Mongo:', err.message);
     }
     return resultado;
   });

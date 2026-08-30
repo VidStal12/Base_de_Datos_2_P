@@ -6,9 +6,17 @@ const imagenSchema = new Schema(
   { _id: false }
 );
 
-// precio/cantidad NO viven acá — se quedan en `inventario` (MySQL). Ver
-// ADR-002 §3.2: mover el stock a Mongo hubiera roto la atomicidad del
-// checkout, que sigue siendo una sola transacción de Prisma sobre MySQL.
+// precio/cantidad: MySQL (`inventario`) sigue siendo la única fuente
+// transaccional — checkout sigue siendo una sola transacción de Prisma ahí,
+// sin tocar Mongo en el medio (ver ADR-002 §3.2, actualizado 2026-08-29). Lo
+// que cambió es que ahora SÍ se guarda una copia acá, reenviada por
+// productoService.js/checkoutService.js después de cada escritura en MySQL —
+// mismo patrón de caché de lectura que vendedor_nombre/total_vendido. Así
+// listar()/obtener() dejan de tener que cruzar a MySQL en cada lectura del
+// catálogo. Puede haber una ventana breve de desactualización entre que
+// MySQL cambia y el reenvío llega (es reenvío después del hecho, no una
+// transacción distribuida) — se recalcula desde MySQL vía
+// POST /api/admin/recalcular-inventario si alguna vez se desincroniza.
 const productoSchema = new Schema(
   {
     // Entero de `producto.id` en MySQL, no un ObjectId — es lo que conecta
@@ -21,6 +29,8 @@ const productoSchema = new Schema(
     // entre bases, ver ADR-002 §6.3. vendedor_nombre es una caché de lectura.
     vendedor_id: { type: Number, required: true },
     vendedor_nombre: { type: String, required: true },
+    precio: { type: Number, required: true },
+    cantidad: { type: Number, required: true, default: 0 },
     atributos: [atributoValorSchema],
     imagenes: [imagenSchema],
     resenas_resumen: {
@@ -43,5 +53,11 @@ const productoSchema = new Schema(
 // esta subcategoría" es exactamente igualdad en el primer campo + orden por
 // el segundo, el mismo patrón que {producto_id, fecha} en ProductoEvento.js.
 productoSchema.index({ subcategoria_id: 1, total_vendido: -1 });
+
+// Mismo patrón que el índice anterior, para "productos en este rango de
+// precio dentro de esta subcategoría" — listar() ahora filtra precio
+// directamente acá (ver productoService.js), en vez de resolverlo en MySQL
+// y pasar los ids como $in.
+productoSchema.index({ subcategoria_id: 1, precio: 1 });
 
 module.exports = model('Producto', productoSchema, 'productos');

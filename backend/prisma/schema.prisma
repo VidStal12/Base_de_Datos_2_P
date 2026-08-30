@@ -1,6 +1,17 @@
 // Esquema relacional — Fase Inicial (TiendaYa)
 // Fuente de diseño: IA/ERD.md (Página 1, confirmada como base del proyecto)
-
+//
+// El catálogo descriptivo (categoria, subcategoria, atributo_categoria,
+// atributo_producto, categoria_producto, y descripcion/imagen_url/estado de
+// producto) vivió acá durante la Fase Inicial y se migró a MongoDB en
+// Entrega 1 (ver IA/ADR-002). Esas tablas/columnas se borraron el
+// 2026-08-30 — ningún código las escribía ni las leía desde que
+// categoriaService.js se reescribió contra Mongo; mantenerlas vacías no
+// tenía ningún propósito. Lo que queda acá es exactamente lo que MySQL
+// sigue necesitando: usuarios/auth, direcciones/pagos, y la parte
+// transaccional del catálogo (producto como ancla de FK + inventario +
+// compras), que es intencionalmente donde se concentra la consistencia
+// fuerte de todo el sistema. Ver IA/ADR-002 §3.4.
 generator client {
   provider = "prisma-client-js"
 }
@@ -58,39 +69,22 @@ model metodo_pago {
   pagos   pago[]
 }
 
-model categoria {
-  id        Int    @id @default(autoincrement())
-  categoria String
-
-  subcategorias subcategoria[]
-}
-
-model subcategoria {
-  id            Int    @id @default(autoincrement())
-  id_categoria  Int
-  subcategoria  String
-
-  categoria           categoria            @relation(fields: [id_categoria], references: [id])
-  atributos_categoria atributo_categoria[]
-  categoria_productos categoria_producto[]
-}
-
 // id_vendedor: cada producto pertenece a un único vendedor (agregado a pedido del
 // equipo — el modelo original del ERD no distinguía qué vendedor gestiona qué
 // producto, así que cualquier "vendedor" podía editar el catálogo de cualquier otro).
+//
+// Solo ancla de FK desde el 2026-08-30: lo descriptivo (descripcion/imagen_url/
+// estado/atributos/categoría) vive únicamente en Mongo (Producto.js) desde
+// Entrega 1 — esta fila existe para que inventario/compra_detalle/carrito
+// tengan algo relacional a qué apuntar, nada más.
 model producto {
   id          Int    @id @default(autoincrement())
   id_vendedor Int
-  descripcion String
-  imagen_url  String
-  estado      String
 
-  vendedor            usuarios             @relation(fields: [id_vendedor], references: [id_usuario])
-  inventario          inventario?
-  categoria_productos categoria_producto[]
-  atributos_producto  atributo_producto[]
-  carritos            carrito[]
-  compra_detalles     compra_detalle[]
+  vendedor        usuarios         @relation(fields: [id_vendedor], references: [id_usuario])
+  inventario      inventario?
+  carritos        carrito[]
+  compra_detalles compra_detalle[]
 }
 
 // 1:1 con producto (ver IA/ERD.md, observación 1.4.6). Si más adelante se necesita
@@ -102,40 +96,6 @@ model inventario {
   cantidad    Int
 
   producto producto @relation(fields: [id_producto], references: [id])
-}
-
-model atributo_categoria {
-  id              Int    @id @default(autoincrement())
-  id_subcategoria Int
-  atributo        String
-
-  subcategoria       subcategoria        @relation(fields: [id_subcategoria], references: [id])
-  atributos_producto atributo_producto[]
-}
-
-// El campo "valor" fue agregado en el análisis del ERD (observación 1.4.3): sin él
-// no había forma de registrar el valor concreto del atributo para un producto dado.
-model atributo_producto {
-  id                    Int    @id @default(autoincrement())
-  id_producto           Int
-  id_atributo_categoria Int
-  valor                 String
-
-  producto           producto            @relation(fields: [id_producto], references: [id])
-  atributo_categoria atributo_categoria  @relation(fields: [id_atributo_categoria], references: [id])
-
-  // Un producto no puede tener dos valores para el mismo atributo. También es lo
-  // que permite hacer upsert al editar (crear el valor si no existía, actualizarlo si sí).
-  @@unique([id_producto, id_atributo_categoria])
-}
-
-model categoria_producto {
-  id              Int @id @default(autoincrement())
-  id_subcategoria Int
-  id_producto     Int
-
-  subcategoria subcategoria @relation(fields: [id_subcategoria], references: [id])
-  producto     producto     @relation(fields: [id_producto], references: [id])
 }
 
 model carrito {

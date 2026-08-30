@@ -19,6 +19,8 @@ El archivo contiene **dos páginas** con modelos de datos distintos:
 
 **Confirmado (2026-08-22):** el equipo usa **Página 1** como base del modelo relacional de la Fase Inicial — cubre exactamente lo que pide el PRD (usuarios y direcciones, categorías y productos, pedidos y líneas de pedido, inventario, pagos) y es internamente más consistente. Ya incorpora la entidad `pago` agregada a partir de la observación 1.4.1. Página 2 queda documentada en la sección 2 solo como referencia histórica — no se implementa.
 
+> **Nota (2026-08-30):** lo que sigue describe el modelo tal como se confirmó para la Fase Inicial, 100% relacional — se mantiene sin editar como registro histórico del diseño original. Desde Entrega 1, la porción de catálogo (`categoria`, `subcategoria`, `atributo_categoria`, `atributo_producto`, `categoria_producto`, y la parte descriptiva de `producto`) se migró a MongoDB y las tablas relacionales equivalentes ya no existen — ver [ADR-002](ADR-002-migracion-catalogo-documental.md) (decisión de migrar) y su §3.4 (borrado de las tablas, una vez confirmado que no cumplían más propósito). El resto de este ERD (usuarios, direcciones, métodos de pago, inventario, carrito, compra/compra_detalle/pago) sigue describiendo el esquema relacional vigente.
+
 ---
 
 ## 1. Página 1 — Modelo base confirmado para Fase Inicial
