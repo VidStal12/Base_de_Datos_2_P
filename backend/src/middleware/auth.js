@@ -26,4 +26,22 @@ function requireRole(...rolesPermitidos) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+// Como requireAuth, pero no rechaza si falta o es inválido el token — lo
+// intenta parsear y listo, req.usuario queda undefined en vez de cortar la
+// respuesta. Para rutas públicas que igual quieren saber quién pregunta
+// CUANDO hay sesión (p. ej. mostrarle a un vendedor sus propios productos
+// inactivos en el catálogo, sin exigirle login a todo el mundo que navega).
+function optionalAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+  if (scheme === 'Bearer' && token) {
+    try {
+      req.usuario = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      // Token inválido/expirado en una ruta pública: se ignora, no se rechaza.
+    }
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireRole, optionalAuth };

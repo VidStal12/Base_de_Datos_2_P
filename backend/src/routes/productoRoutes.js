@@ -1,11 +1,20 @@
 const express = require('express');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, optionalAuth } = require('../middleware/auth');
 const productoService = require('../services/productoService');
 
 const router = express.Router();
 
-router.get('/', async (req, res) => {
-  const productos = await productoService.listar(req.query);
+// Pública (optionalAuth, no requireAuth) — pero un producto inactivo solo se
+// incluye si quien pregunta demuestra con su propio token que tiene motivo
+// para verlo: un administrador (ve cualquiera) o el vendedor dueño de esos
+// productos (ve los suyos, filtrando por su propio vendedorId). Nunca se
+// confía en un query param del cliente para esto — cualquiera podría mandar
+// ?vendedorId=2 sin ser Luis; lo que importa es a quién dice el token que es.
+router.get('/', optionalAuth, async (req, res) => {
+  const mostrarInactivos =
+    req.usuario?.rol === 'administrador' ||
+    (req.usuario?.rol === 'vendedor' && String(req.usuario.id_usuario) === String(req.query.vendedorId));
+  const productos = await productoService.listar({ ...req.query, mostrarInactivos });
   res.json(productos);
 });
 

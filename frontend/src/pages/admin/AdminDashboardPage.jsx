@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import { productosApi, categoriasApi } from '../../api/productos';
 import { formatCurrency } from '../../utils/format';
 import { Spinner } from '../../components/common/Spinner';
@@ -16,6 +17,7 @@ const PERIODOS = [
 // contra un listado propio sin filtros (no el `productos` de la página, que
 // puede estar filtrado por categoría/búsqueda y dejaría ids sin resolver).
 function EstadisticasEdicionesWidget() {
+  const { token } = useAuth();
   const [stats, setStats] = useState([]);
   const [descripciones, setDescripciones] = useState({});
   const [periodo, setPeriodo] = useState(0);
@@ -27,14 +29,17 @@ function EstadisticasEdicionesWidget() {
     setError('');
     const dias = PERIODOS[periodo].dias;
     const desde = dias ? new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10) : undefined;
-    Promise.all([productosApi.estadisticasEdiciones(desde), productosApi.listar({})])
+    // Token de administrador acá también: un producto editado y luego
+    // desactivado tiene que poder seguir resolviendo su descripción real acá,
+    // no caer al "Producto #N" solo porque ya no está activo.
+    Promise.all([productosApi.estadisticasEdiciones(desde), productosApi.listar({}, token)])
       .then(([stats, productos]) => {
         setStats(stats);
         setDescripciones(Object.fromEntries(productos.map((p) => [p.id, p.descripcion])));
       })
       .catch(() => setError('No se pudieron cargar las estadísticas.'))
       .finally(() => setCargando(false));
-  }, [periodo]);
+  }, [periodo, token]);
 
   return (
     <div className="rounded-xl border border-neutral-200 bg-white p-4">
@@ -84,6 +89,7 @@ function EstadisticasEdicionesWidget() {
 }
 
 export function AdminDashboardPage() {
+  const { token } = useAuth();
   const [productos, setProductos] = useState([]);
   const [categorias, setCategorias] = useState([]);
   const [categoriaId, setCategoriaId] = useState('');
@@ -94,14 +100,17 @@ export function AdminDashboardPage() {
   function cargarProductos() {
     setCargando(true);
     setError('');
+    // Token de administrador: sin él, este mismo endpoint filtraría a solo
+    // activos (ver productoRoutes.js) — el panel de admin necesita ver y
+    // poder editar productos inactivos de cualquier vendedor, no solo los propios.
     productosApi
-      .listar({ categoriaId, q: busqueda })
+      .listar({ categoriaId, q: busqueda }, token)
       .then(setProductos)
       .catch(() => setError('No se pudo cargar el catálogo.'))
       .finally(() => setCargando(false));
   }
 
-  useEffect(cargarProductos, [categoriaId]);
+  useEffect(cargarProductos, [categoriaId, token]);
   useEffect(() => {
     categoriasApi.listar().then(setCategorias).catch(() => setCategorias([]));
   }, []);

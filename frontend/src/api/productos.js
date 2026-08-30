@@ -1,10 +1,13 @@
 import { api } from './client';
 
 export const productosApi = {
-  listar: (filtros = {}) => {
+  // token opcional: sin él (navegación pública) el backend solo devuelve
+  // productos activos. Con un token de vendedor/administrador válido, también
+  // incluye los inactivos que ese token autoriza a ver (ver productoRoutes.js).
+  listar: (filtros = {}, token) => {
     const params = new URLSearchParams(filtros);
     const query = params.toString() ? `?${params.toString()}` : '';
-    return api.get(`/productos${query}`);
+    return api.get(`/productos${query}`, token);
   },
   obtener: (id) => api.get(`/productos/${id}`),
   crear: (datos, token) => api.post('/productos', datos, token),

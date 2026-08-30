@@ -18,10 +18,10 @@ export function SellerDashboardPage() {
   useEffect(() => {
     if (!usuario) return;
     productosApi
-      .listar({ vendedorId: usuario.id_usuario })
+      .listar({ vendedorId: usuario.id_usuario }, token)
       .then(setProductos)
       .finally(() => setCargando(false));
-  }, [usuario]);
+  }, [usuario, token]);
 
   if (cargando) return <Spinner />;
 

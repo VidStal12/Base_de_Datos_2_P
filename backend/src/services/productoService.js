@@ -65,9 +65,19 @@ function condicionesAtributos(atributos) {
 // índice compuesto {subcategoria_id, total_vendido} — más preciso cuando se
 // filtra por subcategoriaId (igualdad exacta sobre el primer campo del
 // índice) que por categoriaId (que resuelve a un $in de varias subcategorías).
-async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor } = {}) {
+//
+// mostrarInactivos: por defecto se excluyen productos estado:"inactivo" —
+// antes no se filtraba nada acá y un producto desactivado seguía apareciendo
+// (y siendo comprable) en el catálogo público. La decisión de permitir
+// inactivos vive en productoRoutes.js, no acá: este parámetro llega ya
+// decidido contra el token de quien pregunta, nunca se confía en un valor
+// que mande el cliente directo.
+async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor, mostrarInactivos } = {}) {
   await conectar();
   const filtro = {};
+  if (!mostrarInactivos) {
+    filtro.estado = 'activo';
+  }
 
   if (subcategoriaId) {
     filtro.subcategoria_id = subcategoriaId;
