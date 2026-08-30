@@ -51,7 +51,10 @@ async function recalcularInventario() {
       omitidos.push(producto_id);
       continue;
     }
-    await Producto.updateOne({ producto_id }, { $set: { precio: Number(inv.precio), cantidad: inv.cantidad } });
+    await Producto.updateOne(
+      { producto_id },
+      { $set: { 'inventario.precio': Number(inv.precio), 'inventario.cantidad': inv.cantidad } }
+    );
     actualizados += 1;
   }
 

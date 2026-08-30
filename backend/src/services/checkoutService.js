@@ -103,7 +103,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
       await conectar();
       await Promise.all(
         items.map(({ productoId, cantidad }) =>
-          Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad, cantidad: -cantidad } })
+          Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad, 'inventario.cantidad': -cantidad } })
         )
       );
     } catch (err) {

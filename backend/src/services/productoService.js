@@ -30,9 +30,7 @@ function formatear(doc) {
         }
       : undefined,
     version: doc.version,
-    // undefined en documentos creados antes de este campo, hasta que corra
-    // POST /api/admin/recalcular-inventario — null en vez de reventar.
-    inventario: doc.precio !== undefined ? { precio: doc.precio, cantidad: doc.cantidad } : null,
+    inventario: doc.inventario || null,
   };
 }
 
@@ -59,9 +57,9 @@ function condicionesAtributos(atributos) {
 // Filtro de texto simple (contains) — no confundir con el buscador de texto
 // libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch).
 //
-// precioMin/precioMax: filtro directo sobre Producto.precio (ver Producto.js
-// y el índice {subcategoria_id, precio}) — ya no hace falta resolverlo en
-// MySQL primero, precio vive acá también desde que se agregó ese campo.
+// precioMin/precioMax: filtro directo sobre Producto.inventario.precio (ver
+// Producto.js y el índice {subcategoria_id, 'inventario.precio'}) — ya no
+// hace falta resolverlo en MySQL primero, precio vive acá también.
 //
 // ordenarPor: 'masVendidos' usa total_vendido (caché, ver Producto.js) y el
 // índice compuesto {subcategoria_id, total_vendido} — más preciso cuando se
@@ -88,9 +86,9 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
     filtro.$and = condiciones;
   }
   if (precioMin !== undefined || precioMax !== undefined) {
-    filtro.precio = {};
-    if (precioMin !== undefined) filtro.precio.$gte = Number(precioMin);
-    if (precioMax !== undefined) filtro.precio.$lte = Number(precioMax);
+    filtro['inventario.precio'] = {};
+    if (precioMin !== undefined) filtro['inventario.precio'].$gte = Number(precioMin);
+    if (precioMax !== undefined) filtro['inventario.precio'].$lte = Number(precioMax);
   }
 
   let consulta = Producto.find(filtro).populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } });
@@ -118,8 +116,9 @@ function construirImagenes(imagen_url, descripcion) {
 // atributos: [{ nombre, valor }] — valores concretos para los atributos que la
 // subcategoría define (p. ej. Talla: "M").
 //
-// Escribe primero en MySQL (producto + inventario, igual que antes) y recién
-// después en Mongo. Si el paso de Mongo falla, se intenta deshacer la fila de
+// Escribe primero en MySQL (producto, solo como ancla de FK + inventario) y
+// recién después en Mongo, que es la única fuente de lo descriptivo — ver
+// ADR-002 §3.4. Si el paso de Mongo falla, se intenta deshacer la fila de
 // MySQL ya creada — no es una transacción distribuida real (eso es trabajo de
 // Entrega 3), es una compensación de mejor esfuerzo. Ver ADR-002 §5.
 async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId, precio, cantidad, atributos }) {
@@ -135,9 +134,6 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
   const productoRelacional = await prisma.producto.create({
     data: {
       id_vendedor: vendedor.id_usuario,
-      descripcion,
-      imagen_url: imagen_url || '',
-      estado: estado || 'activo',
       inventario: { create: { precio, cantidad } },
     },
     include: { vendedor: { select: { nombres: true, apellidos: true } } },
@@ -151,8 +147,7 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       subcategoria_id: subcategoria._id,
       vendedor_id: vendedor.id_usuario,
       vendedor_nombre: `${productoRelacional.vendedor.nombres} ${productoRelacional.vendedor.apellidos}`,
-      precio,
-      cantidad,
+      inventario: { precio, cantidad },
       atributos: atributos || [],
       imagenes: construirImagenes(imagen_url, descripcion),
       version: 1,
@@ -277,8 +272,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
     if (!inventarioActual) {
       inventarioActual = await prisma.inventario.findUnique({ where: { id_producto: productoId } });
     }
-    doc.precio = Number(inventarioActual.precio);
-    doc.cantidad = inventarioActual.cantidad;
+    doc.inventario = { precio: Number(inventarioActual.precio), cantidad: inventarioActual.cantidad };
 
     doc.version += 1;
     await doc.save();
@@ -295,7 +289,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
         estado: doc.estado,
         atributos: doc.atributos,
         imagenes: doc.imagenes,
-        inventario: { precio: doc.precio, cantidad: doc.cantidad },
+        inventario: { precio: doc.inventario.precio, cantidad: doc.inventario.cantidad },
       },
     });
 

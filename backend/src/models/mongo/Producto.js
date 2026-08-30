@@ -5,18 +5,24 @@ const imagenSchema = new Schema(
   { url: String, alt: String, orden: Number, principal: Boolean },
   { _id: false }
 );
+// Anidado (no dos campos sueltos) para que la forma coincida con la que ya
+// usa snapshot.inventario en ProductoEvento.js — mismo objeto {precio,
+// cantidad} en los dos lugares, en vez de una forma acá y otra ahí.
+const inventarioSchema = new Schema(
+  { precio: { type: Number, required: true }, cantidad: { type: Number, required: true, default: 0 } },
+  { _id: false }
+);
 
-// precio/cantidad: MySQL (`inventario`) sigue siendo la única fuente
+// inventario: MySQL (`inventario`, la tabla) sigue siendo la única fuente
 // transaccional — checkout sigue siendo una sola transacción de Prisma ahí,
-// sin tocar Mongo en el medio (ver ADR-002 §3.2, actualizado 2026-08-29). Lo
-// que cambió es que ahora SÍ se guarda una copia acá, reenviada por
-// productoService.js/checkoutService.js después de cada escritura en MySQL —
-// mismo patrón de caché de lectura que vendedor_nombre/total_vendido. Así
-// listar()/obtener() dejan de tener que cruzar a MySQL en cada lectura del
-// catálogo. Puede haber una ventana breve de desactualización entre que
-// MySQL cambia y el reenvío llega (es reenvío después del hecho, no una
-// transacción distribuida) — se recalcula desde MySQL vía
-// POST /api/admin/recalcular-inventario si alguna vez se desincroniza.
+// sin tocar Mongo en el medio (ver ADR-002 §3.2/§3.3). Esto es una copia de
+// lectura, reenviada por productoService.js/checkoutService.js después de
+// cada escritura en MySQL — mismo patrón de caché de lectura que
+// vendedor_nombre/total_vendido. Así listar()/obtener() dejan de tener que
+// cruzar a MySQL en cada lectura del catálogo. Puede haber una ventana breve
+// de desactualización entre que MySQL cambia y el reenvío llega (es reenvío
+// después del hecho, no una transacción distribuida) — se recalcula desde
+// MySQL vía POST /api/admin/recalcular-inventario si alguna vez se desincroniza.
 const productoSchema = new Schema(
   {
     // Entero de `producto.id` en MySQL, no un ObjectId — es lo que conecta
@@ -29,8 +35,7 @@ const productoSchema = new Schema(
     // entre bases, ver ADR-002 §6.3. vendedor_nombre es una caché de lectura.
     vendedor_id: { type: Number, required: true },
     vendedor_nombre: { type: String, required: true },
-    precio: { type: Number, required: true },
-    cantidad: { type: Number, required: true, default: 0 },
+    inventario: { type: inventarioSchema, required: true },
     atributos: [atributoValorSchema],
     imagenes: [imagenSchema],
     resenas_resumen: {
@@ -57,7 +62,8 @@ productoSchema.index({ subcategoria_id: 1, total_vendido: -1 });
 // Mismo patrón que el índice anterior, para "productos en este rango de
 // precio dentro de esta subcategoría" — listar() ahora filtra precio
 // directamente acá (ver productoService.js), en vez de resolverlo en MySQL
-// y pasar los ids como $in.
-productoSchema.index({ subcategoria_id: 1, precio: 1 });
+// y pasar los ids como $in. Ruta con punto porque precio quedó anidado
+// dentro de inventario, no un campo de primer nivel.
+productoSchema.index({ subcategoria_id: 1, 'inventario.precio': 1 });
 
 module.exports = model('Producto', productoSchema, 'productos');

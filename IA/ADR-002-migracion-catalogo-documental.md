@@ -131,6 +131,20 @@ Desde Entrega 1, `categoria`, `subcategoria`, `atributo_categoria`, `atributo_pr
 - **`catalogoSyncService.sincronizarFaltantes()` y `POST /api/admin/sync-catalogo` (borrados):** su trabajo era backfillear Mongo con lo que existiera en MySQL y todavía no tuviera documento — imposible sin esas tablas. `recalcularVentas()`/`recalcularInventario()` y sus rutas siguen intactos, porque leen `compra_detalle`/`inventario`, que no se tocaron.
 - **§6.3 de este documento** ("El ETL y `productoService.crear()` son los únicos puntos que crean [la relación `producto_id`]"): la referencia al ETL quedó desactualizada por lo de arriba — hoy los puntos que crean esa relación son `productoService.crear()` y `prisma/seed.js`.
 
+### 3.5 Considerado y descartado (2026-08-30): worker de sincronización CDC bidireccional
+
+Se evaluó reemplazar el reenvío MySQL→Mongo hecho desde código de aplicación (§3.3, `productoService.js`/`checkoutService.js` escribiendo explícitamente en ambas bases) por un mecanismo más "activo": un worker separado leyendo el binlog de MySQL (ya corre con `binlog_format=ROW`, sin cambios de configuración necesarios) para el sentido MySQL→Mongo, y Change Streams de Mongo (ya hay replica set, `rs0`) para un sentido Mongo→MySQL.
+
+**Se descartó** al mapear campo por campo qué necesitaría cada dirección: `inventario`→`Producto.precio/cantidad` y `usuarios`→`Producto.vendedor_nombre` son las únicas candidatas reales para MySQL→Mongo, y ya están cubiertas por el reenvío existente (§3.3). Para Mongo→MySQL no apareció ningún dato que necesitara viajar en ese sentido: `usuarios` no tiene ninguna copia ni siquiera parcial en Mongo, y el catálogo (lo único que sí vive en Mongo) dejó de tener una tabla espejo en MySQL a la que volver (§3.4). Sin un payload real para esa dirección, un listener bidireccional sería infraestructura nueva (un proceso siempre corriendo, con su propio manejo de reintentos/posición de reanudación) sin nada que mover — el reenvío de mejor esfuerzo ya implementado cubre el caso real sin ese costo operativo.
+
+También se consideró y se descartó agregar un snapshot descriptivo del producto a `compra_detalle` (capturado desde Mongo al momento del checkout, para que el historial de pedidos fuera reconstruible sin depender de una consulta en vivo a Mongo) — la arquitectura actual, donde MySQL guarda `id_producto` y el resto se resuelve contra Mongo al leer, ya es lo que el equipo quiere: cada base guarda lo que le corresponde, sin duplicar lo que la otra ya tiene.
+
+### 3.6 Actualización (2026-08-30): `precio`/`cantidad` anidados como `inventario` en Mongo
+
+Cambio de forma, no de arquitectura — §3.3 sigue vigente tal cual (MySQL sigue siendo la única fuente transaccional, el reenvío sigue siendo de mejor esfuerzo después de cada escritura). Lo único que cambió es cómo se ven esos dos campos en `Producto` (Mongo): antes eran dos campos sueltos (`precio`, `cantidad`) al mismo nivel que `descripcion`/`estado`; ahora están anidados en `inventario: { precio, cantidad }`, la misma forma que `snapshot.inventario` ya usaba en `ProductoEvento` desde que existe el historial de cambios — dos representaciones distintas del mismo concepto se unificaron en una sola.
+
+Requirió una migración de datos única sobre los documentos ya existentes (mover los campos sueltos al objeto anidado, `$unset` de los viejos) — corrida una vez contra los datos reales del proyecto (5 productos). El índice `{subcategoria_id, precio}` pasó a `{subcategoria_id, 'inventario.precio'}` (ruta con punto, ver `Producto.js`). Se encontró y corrigió al mismo tiempo un bug no relacionado: `productoService.crear()` todavía intentaba escribir `descripcion`/`imagen_url`/`estado` en `prisma.producto.create()`, columnas que ya no existen en MySQL desde §3.4 — nadie lo había notado porque ningún flujo de prueba después de §3.4 había creado un producto nuevo, solo editado los existentes.
+
 ---
 
 ## 4. Justificación
