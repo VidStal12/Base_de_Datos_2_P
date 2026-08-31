@@ -11,6 +11,7 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OfertaCheckoutPage } from './pages/OfertaCheckoutPage';
+import { RecomendacionCheckoutPage } from './pages/RecomendacionCheckoutPage';
 import { OrderHistoryPage } from './pages/OrderHistoryPage';
 import { OrderDetailPage } from './pages/OrderDetailPage';
 import { AccountPage } from './pages/AccountPage';
@@ -54,6 +55,14 @@ export default function App() {
                 element={
                   <RequireAuth>
                     <OfertaCheckoutPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="recomendaciones/:id/comprar"
+                element={
+                  <RequireAuth>
+                    <RecomendacionCheckoutPage />
                   </RequireAuth>
                 }
               />

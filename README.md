@@ -88,6 +88,14 @@ npm run verificar:ofertaFlash
 
 Siembra una oferta de 5 unidades sobre un producto real y dispara 15 intentos de compra simultáneos, confirmando que gane exactamente el stock inicial (5), el resto se rechace, el contador en Redis termine en exactamente 0, y el inventario real en MySQL se descuente en la misma cantidad — sin sobreventa ni bloqueos a nivel de aplicación (un único script Lua atómico en Redis, ver `backend/src/config/redis.js`). Detalle completo en [IA/ENTREGA-2-PLAN.md §4.2](IA/ENTREGA-2-PLAN.md).
 
+## Verificar las recomendaciones por tendencia (Entrega 2)
+
+```bash
+npm run verificar:recomendaciones
+```
+
+Analiza el historial de compras real de un usuario de prueba, confirma que encuentra un producto de OTRO vendedor con atributos similares a un precio menor, y dispara 7 intentos de compra simultáneos sobre un cupo personal de 2 unidades (mismo script Lua que la oferta flash, ahora con una clave por producto+usuario en vez de una clave global) — exactamente 2 admitidos, contador en Redis en 0, inventario real descontado en 2. Detalle completo en [IA/ENTREGA-2-PLAN.md §4.5](IA/ENTREGA-2-PLAN.md).
+
 También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body.
 
 Los ejemplos de este README extraen campos de las respuestas JSON con una función `campo()` basada en Node (no en `jq`, que no viene instalado por defecto en Windows/Git Bash). Node ya es un requisito del proyecto, así que no agrega nada nuevo — definila una vez por sesión de terminal:
@@ -213,13 +221,14 @@ backend/
     verificarCheckout.js    Evidencia de atomicidad del checkout
     verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
     verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
+    verificarRecomendaciones.js  Evidencia de las recomendaciones por tendencia (Entrega 2)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)
-    config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua de la oferta flash)
+    config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua compartido por la oferta flash y las recomendaciones)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, oferta flash, historial, sync admin)
-    routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, oferta flash, recomendaciones por tendencia, historial, sync admin)
+    routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
 frontend/
   src/
@@ -227,7 +236,7 @@ frontend/
     context/               Auth (token/sesión) y Cart (carrito en Redis, Entrega 2)
     components/            Layout (Header/Footer), tarjetas de producto, UI común
     components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
-    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash...)
+    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash, recomendaciones...)
     pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
     pages/admin/             Panel de administrador (catálogo de todos los vendedores + sync)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base

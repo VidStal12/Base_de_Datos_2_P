@@ -221,6 +221,26 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 **Panel administrativo** (funcionalidad del PRD asociada a elegir grafos): una pantalla nueva en `/admin` que corre esta consulta y lista los pares/grupos de cuentas señalados, con link a cada producto en común — mismo estilo que el widget "Productos más editados" ya existente en `AdminDashboardPage.jsx`.
 
+### 4.5 Recomendaciones por tendencia (implementado y verificado, 2026-08-31)
+
+**No es un requerimiento nuevo del PRD** — es una segunda forma de llegar a "oferta flash", agregada a pedido, que complementa a §4.2 sin reemplazarlo. §4.2 sigue intacta y sin tocar: un vendedor sigue pudiendo configurar una oferta a mano sobre su propio producto, con exactamente el mismo mecanismo ya verificado. Esto es un camino ADICIONAL: en vez de que un vendedor decida qué ofrecer, el sistema analiza el historial real de compras de cada comprador y encuentra, automáticamente, productos similares de **otros** vendedores — sin que nadie lo configure.
+
+**Por qué seguía haciendo falta Redis, aunque a primera vista una recomendación personalizada no tiene un pool compartido que cuidar:** la duda inicial era razonable — si el precio es personalizado, ¿quién está compitiendo por qué? La respuesta terminó siendo: Redis pasa a cumplir DOS roles distintos, no uno:
+- **Caché** (`recomendaciones:{usuarioId}`, TTL de 1h): el análisis cruza `compra_detalle` (MySQL) con `Producto` (Mongo) — no tiene sentido recalcularlo en cada vista del catálogo. Este rol es nuevo, no existía en §4.2.
+- **Admisión atómica** (`oferta-recomendada:{productoId}:{usuarioId}:stock`), el mismo script Lua de §4.2 (`decrementarOferta`, reutilizado sin cambios) — pero la clave ahora es por **(producto, usuario)**, no global. No hay un pool compartido entre compradores distintos, pero sí un cupo personal (2 unidades) que protege contra doble clic, dos pestañas, o un reintento de red — la misma clase de problema que resuelve un `DECR` simple no basta, solo que ahora la carrera es contra uno mismo en vez de contra el resto de los compradores.
+
+**Análisis de tendencia** (`tendenciaService.analizarTendencia`, `backend/src/services/tendenciaService.js`): no hay join real entre MySQL y Mongo, se resuelve en la aplicación —
+1. `compra_detalle` del usuario (MySQL) → subcategoría con más unidades compradas en total (Mongo, resolviendo cada `id_producto`).
+2. Dentro de esa subcategoría: el valor más común POR NOMBRE de atributo (no el par nombre+valor más frecuente en general — así "Almacenamiento" y "RAM" quedan representados los dos, no solo el que más se repite) y el vendedor más comprado.
+
+**Coincidencias** (`buscarCoincidencias`): productos activos de esa subcategoría, de CUALQUIER vendedor, puntuados por cuántos atributos preferidos comparten — no exige que coincidan todos (a diferencia del filtro de facetas del catálogo normal), porque con un catálogo chico exigir coincidencia total devuelve fácilmente cero resultados. 15% de descuento sobre el precio normal, simple y fácil de ajustar después.
+
+**Guardia 2, reutilizada sin cambios:** `checkoutService.checkoutOferta()` — la misma función de §4.2, ni una línea nueva. El precio (`precio_recomendado`) se vuelve a validar contra la recomendación vigente del usuario en el momento de comprar, nunca se confía en un precio que mande el cliente — sin esto, cualquiera podría pedir el descuento en un producto cualquiera adivinando la URL.
+
+**Datos sembrados a propósito** (mismo criterio que §4.3 para reseñas coordinadas): el catálogo original tenía un solo vendedor por subcategoría — sin un segundo vendedor con los MISMOS atributos, no hay nada que la comparación pueda encontrar. Se agregó una segunda cuenta de vendedor (Marta Díaz) con productos que comparten atributos con los de Luis en Camisetas y Celulares (`prisma/seed.js`, y sembrado también en la base de desarrollo ya en uso por `verificarRecomendaciones.js`), y `RAM` como atributo nuevo de la subcategoría Celulares.
+
+**Verificación** (`npm run verificar:recomendaciones`, `backend/scripts/verificarRecomendaciones.js`): corrida real contra el historial de compras YA ACUMULADO de Ana durante el resto de las pruebas de este proyecto (no fabricado para este script) — detectó correctamente Camisetas/Talla:M/Color:Azul/Luis como su tendencia dominante, encontró el producto de Marta como coincidencia cruzada con un precio menor al normal, y bajo 7 intentos de compra simultáneos sobre un cupo personal de 2, admitió exactamente 2, rechazó el resto, el contador en Redis terminó en 0, y el inventario real en MySQL se descontó en exactamente 2 unidades. Un intento de comprar un producto que no es una recomendación vigente se rechazó con 403. Probado también de punta a punta en el navegador como Ana: la sección "Recomendado para vos" aparece en el inicio con la explicación de por qué, y una compra se confirma al precio recomendado (referencia `TX-OFERTA-...`, mismo prefijo que la oferta flash porque reutiliza la misma `checkoutOferta`).
+
 ---
 
 ## 5. Riesgos y dependencias

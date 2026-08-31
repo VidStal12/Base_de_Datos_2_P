@@ -79,7 +79,11 @@ async function main() {
   const subcatCelulares = await Subcategoria.create({
     categoria_id: categoriaElectronica._id,
     subcategoria: 'Celulares',
-    atributos_definidos: ['Almacenamiento', 'Color'],
+    // RAM sumado para Entrega 2 (recomendaciones por tendencia, ver
+    // ENTREGA-2-PLAN.md §4.5) — el ejemplo de referencia usa justo
+    // almacenamiento + RAM como los atributos que definen la preferencia de
+    // un comprador dentro de Celulares.
+    atributos_definidos: ['Almacenamiento', 'RAM', 'Color'],
   });
 
   // --- productos: fila mínima en MySQL (ancla de FK + inventario) + documento
@@ -148,14 +152,64 @@ async function main() {
     cantidad: 15,
     atributos: [
       { nombre: 'Almacenamiento', valor: '128GB' },
+      { nombre: 'RAM', valor: '8GB' },
       { nombre: 'Color', valor: 'Negro' },
+    ],
+  });
+
+  // --- segundo vendedor + productos que compiten con los de Luis en las
+  // mismas subcategorías, con los MISMOS atributos — sin esto, no hay nada
+  // de qué "recomendaciones por tendencia" (Entrega 2, ver
+  // ENTREGA-2-PLAN.md §4.5) pueda encontrar: un catálogo de un solo vendedor
+  // por subcategoría no tiene comparación entre vendedores posible. Sembrado
+  // a propósito, mismo criterio que ya se documentó para reseñas coordinadas
+  // en §4.3 — es lo que le da a la consulta de tendencia algo real que
+  // encontrar, no una decoración.
+  const marta = await prisma.usuarios.create({
+    data: {
+      rol_id: vendedor.id,
+      nombres: 'Marta',
+      apellidos: 'Díaz',
+      correo: 'marta.diaz@example.com',
+      contrasena: passwordHash,
+      fecha_nacimiento: new Date('1993-02-20'),
+    },
+  });
+  const martaNombre = `${marta.nombres} ${marta.apellidos}`;
+
+  await crearProducto({
+    vendedorId: marta.id_usuario,
+    vendedorNombre: martaNombre,
+    descripcion: 'Camiseta de algodón pima',
+    imagenUrl: 'https://picsum.photos/seed/camiseta-marta/400',
+    subcategoriaId: subcatCamisetas._id,
+    precio: 79.5,
+    cantidad: 30,
+    atributos: [
+      { nombre: 'Talla', valor: 'M' },
+      { nombre: 'Color', valor: 'Azul' },
+    ],
+  });
+
+  await crearProducto({
+    vendedorId: marta.id_usuario,
+    vendedorNombre: martaNombre,
+    descripcion: 'Smartphone Z9',
+    imagenUrl: 'https://picsum.photos/seed/smartphone-marta/400',
+    subcategoriaId: subcatCelulares._id,
+    precio: 2299.0,
+    cantidad: 10,
+    atributos: [
+      { nombre: 'Almacenamiento', valor: '128GB' },
+      { nombre: 'RAM', valor: '8GB' },
+      { nombre: 'Color', valor: 'Gris' },
     ],
   });
 
   console.log('Seed completado:');
   console.log({
-    usuarios: [usuario1.correo],
-    productos: [camiseta.descripcion, smartphone.descripcion],
+    usuarios: [usuario1.correo, marta.correo],
+    productos: [camiseta.descripcion, smartphone.descripcion, 'Camiseta de algodón pima', 'Smartphone Z9'],
   });
 }
 

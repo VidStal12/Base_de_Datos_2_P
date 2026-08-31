@@ -1,8 +1,73 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { productosApi, categoriasApi } from '../api/productos';
+import { recomendacionesApi } from '../api/recomendaciones';
+import { useAuth } from '../context/AuthContext';
 import { ProductCard } from '../components/product/ProductCard';
 import { Spinner } from '../components/common/Spinner';
+import { formatCurrency } from '../utils/format';
+
+// "Recomendado para vos" (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) —
+// distinto de las ofertas flash normales (/ofertas, configuradas a mano por
+// un vendedor sobre SU producto): esto analiza el historial de compras del
+// usuario y encuentra productos similares de OTROS vendedores, sin que nadie
+// lo configure. Solo se muestra si hay sesión iniciada Y el análisis
+// encontró algo — un comprador sin historial, o cuyo historial no tiene
+// competencia real en el catálogo, simplemente no ve esta sección.
+function RecomendacionesSection() {
+  const { usuario, token } = useAuth();
+  const [datos, setDatos] = useState(null);
+
+  useEffect(() => {
+    if (!usuario) {
+      setDatos(null);
+      return;
+    }
+    recomendacionesApi
+      .obtener(token)
+      .then(setDatos)
+      .catch(() => setDatos(null));
+  }, [usuario, token]);
+
+  if (!datos?.tendencia || datos.productos.length === 0) return null;
+
+  const descripcionTendencia = datos.tendencia.atributosPreferidos.map((a) => `${a.nombre}: ${a.valor}`).join(', ');
+
+  return (
+    <section className="rounded-2xl border border-accent-200 bg-accent-50/60 p-5">
+      <h2 className="text-lg font-bold text-neutral-900">Recomendado para vos</h2>
+      <p className="mt-1 text-sm text-neutral-600">
+        Porque compraste seguido productos con {descripcionTendencia} — encontramos opciones parecidas, de distintos vendedores.
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+        {datos.productos.map((p) => (
+          <Link
+            key={p.id}
+            to={`/recomendaciones/${p.id}/comprar`}
+            className="flex flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white transition-shadow hover:shadow-lg"
+          >
+            <div className="aspect-square overflow-hidden bg-neutral-100">
+              <img
+                src={p.imagen_url || 'https://placehold.co/400x400?text=TiendaYa'}
+                alt={p.descripcion}
+                loading="lazy"
+                className="size-full object-cover"
+              />
+            </div>
+            <div className="flex flex-1 flex-col gap-1 p-3">
+              <p className="line-clamp-2 text-sm font-medium text-neutral-800">{p.descripcion}</p>
+              <p className="text-xs text-neutral-500">{p.vendedor_nombre}</p>
+              <div className="mt-auto flex items-baseline gap-2">
+                <span className="font-bold text-neutral-900">{formatCurrency(p.precio_recomendado)}</span>
+                <span className="text-xs text-neutral-500 line-through">{formatCurrency(p.precio_normal)}</span>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 // Deriva las opciones de cada atributo a partir de los productos de la
 // subcategoría (sin aplicar todavía el filtro de atributos) — así las
@@ -168,12 +233,15 @@ export function HomePage() {
 
       <div className="flex min-w-0 flex-1 flex-col gap-6">
         {!hayFiltro && (
-          <section className="overflow-hidden rounded-2xl bg-gradient-to-r from-brand-700 to-brand-500 px-8 py-12 text-white sm:py-16">
-            <h1 className="text-2xl font-bold sm:text-4xl">Todo lo que buscás, a un clic.</h1>
-            <p className="mt-2 max-w-xl text-brand-100">
-              Explorá el catálogo de TiendaYa — precios claros, envío directo a tu dirección guardada.
-            </p>
-          </section>
+          <>
+            <section className="overflow-hidden rounded-2xl bg-gradient-to-r from-brand-700 to-brand-500 px-8 py-12 text-white sm:py-16">
+              <h1 className="text-2xl font-bold sm:text-4xl">Todo lo que buscás, a un clic.</h1>
+              <p className="mt-2 max-w-xl text-brand-100">
+                Explorá el catálogo de TiendaYa — precios claros, envío directo a tu dirección guardada.
+              </p>
+            </section>
+            <RecomendacionesSection />
+          </>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-2">
