@@ -19,11 +19,11 @@ La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquem
 | Fase Inicial | Esquema 3FN + ERD + checkout atómico + DDL versionado | ✅ Completo y verificado |
 | — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, panel de administrador, frontend | ✅ Completo (ver §3) |
 | Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 Los 6 requerimientos técnicos del PRD están implementados y verificados (5/6 puntos de la rúbrica, ver §3.5); solo falta "calidad del informe" (0.5 pt), que depende de confirmar el formato esperado, no de código. Reseñas/imágenes como feature son opcionales — el PRD solo exige la decisión embed/reference, ya documentada |
-| Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | ⬜ No iniciada (el carrito actual es solo de navegador, ver §5) |
+| Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | 🟡 No implementada, pero **planificada** (2026-08-30) — ver [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md): stack decidido (Redis + Neo4j), evaluación comparativa grafos/columnar ya redactada, plan de implementación por pieza con orden de trabajo y riesgos identificados (el carrito actual es solo de navegador, ver §5) |
 | Entrega 3 | Motor de búsqueda + consistencia distribuida del checkout | ⬜ No iniciada |
 | Entrega Final | Búsqueda vectorial + control de acceso NoSQL + retrospectiva | ⬜ No iniciada |
 
-**Pendientes del PRD (§9) que siguen sin resolver:** nombres del equipo, enlace al repositorio, decisión preliminar grafos vs. columnar (Entrega 2), estrategia preliminar de consistencia distribuida, cronograma interno del equipo. Ninguno de estos se completó en esta sesión porque no dependen de código — hace falta que el equipo los defina.
+**Pendientes del PRD (§9) que siguen sin resolver:** nombres del equipo, enlace al repositorio, estrategia preliminar de consistencia distribuida, cronograma interno del equipo. La decisión preliminar grafos vs. columnar (Entrega 2) ya no está pendiente — resuelta en [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md) (grafos/Neo4j). El resto sigue sin resolver porque no depende de código — hace falta que el equipo lo defina.
 
 ---
 
@@ -159,7 +159,7 @@ De los 5 puntos de Entrega 1, quedan pendientes:
 
 (La limpieza de columnas/tablas relacionales vestigiales, que figuraba acá como pendiente, se completó el 2026-08-30 — ver §3.5. El índice compuesto + agregación real que pedía el PRD también está cumplido, ver §2 y ENTREGA-1-TRAZABILIDAD.md.)
 
-Después de Entrega 1, seguir el roadmap del PRD: Entrega 2 (Redis + grafos/columnar) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
+Después de Entrega 1, seguir el roadmap del PRD: Entrega 2 (Redis + grafos/columnar, ya planificada en detalle — ver [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md)) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
 
 ---
 
