@@ -128,7 +128,7 @@ Ninguna de estas tres condiciones aplica a la escala actual del proyecto (5 prod
 
 ## 4. Plan de implementación
 
-### 4.1 Carrito en Redis — ✅ implementado y verificado (2026-08-30)
+### 4.1 Carrito en Redis (implementado y verificado, 2026-08-30)
 
 **Decisión de identidad de sesión:** el carrito ahora **requiere sesión iniciada** — ya no hay carrito anónimo. Se clavea directamente por `usuario.id_usuario` (no una cookie de sesión separada), así que no hace falta ningún mecanismo de fusión al iniciar sesión: el carrito de un usuario es siempre el mismo carrito, esté logueado desde hace rato o recién.
 

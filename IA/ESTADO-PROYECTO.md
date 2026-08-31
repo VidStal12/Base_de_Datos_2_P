@@ -108,7 +108,7 @@ Visible solo para `administrador` (link "Panel admin" en el header, ruta `/admin
 
 ### 3.7 Entrega 2 — carrito en Redis (`cartService.js`, `cartRoutes.js`, `CartContext.jsx`)
 
-Primera pieza de Entrega 2 implementada — plan completo en [ENTREGA-2-PLAN.md §4.1](ENTREGA-2-PLAN.md#41-carrito-en-redis--implementado-y-verificado-2026-08-30).
+Primera pieza de Entrega 2 implementada — plan completo en [ENTREGA-2-PLAN.md §4.1](ENTREGA-2-PLAN.md#41-carrito-en-redis-implementado-y-verificado-2026-08-30).
 
 - **Infra:** servicio `redis` en `docker-compose.yml` (imagen `redis:7`, sin volumen — dato transitorio a propósito, no hace falta persistirlo), `ioredis` como dependencia, `backend/src/config/redis.js` (conexión perezosa, mismo patrón que `config/mongo.js`).
 - **El carrito ahora requiere sesión iniciada** — dejó de ser anónimo/de navegador. Se clave por `carrito:{usuario.id_usuario}` (hash de Redis, `productoId → cantidad`), no por una cookie de sesión separada. Consecuencia directa y verificada: el carrito **persiste a través de un logout→login** (no estaba en el plan original, se confirmó al probar) — un beneficio real de clavear por identidad de usuario en vez de por sesión de navegador.

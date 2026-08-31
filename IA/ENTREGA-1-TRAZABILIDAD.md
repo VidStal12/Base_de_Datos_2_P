@@ -52,6 +52,50 @@ Ver detalle completo en §2.5 (es el mismo requerimiento técnico, no una featur
 - **Script de migración (bootstrap, reproducible) — histórico:** hasta el 2026-08-30, `backend/scripts/etlCatalogoAMongo.js` leía `categoria`/`subcategoria`/`producto` de MySQL vía Prisma, limpiaba y reescribía las colecciones Mongo destino; `catalogoSyncService.sincronizarFaltantes()` (expuesta en `POST /api/admin/sync-catalogo`) hacía lo mismo de forma aditiva para un catálogo ya en uso. Ambos se borraron junto con las tablas relacionales que migraban/sincronizaban (ver [ADR-002 §3.4](ADR-002-migracion-catalogo-documental.md#34-actualización-2026-08-30-se-borra-el-catálogo-relacional-vestigial)) — sin `categoria`/`subcategoria`/`atributo_*` en MySQL, no queda nada de qué hacer ETL. `prisma/seed.js` absorbió ese trabajo: puebla MySQL y Mongo en un solo paso.
 - **Verificación (en su momento):** ambos scripts se corrieron y verificaron contra los datos reales del proyecto antes de que las tablas relacionales se borraran — confirmado vía `GET /api/productos` que el resultado coincidía con el origen relacional. La migración en sí (el requerimiento del PRD) ya estaba satisfecha independientemente de que las herramientas que la hicieron posible ya no existan.
 
+**Comandos para reproducir desde cero** (clon nuevo, sin datos — esto es lo "reproducible" del requisito):
+
+```bash
+# 1. Infraestructura: MySQL, MongoDB (replica set de un nodo, auto-inicializado
+#    por el healthcheck — ver docker-compose.yml) y Redis. Esperar a que los
+#    tres queden "healthy" antes de seguir.
+docker compose up -d
+
+# 2. Esquema de MySQL: aplica TODO el historial de migraciones, en orden
+#    (backend/prisma/migrations/), sin prompts interactivos.
+cd backend
+npm run prisma:deploy
+
+# 3. Datos: puebla MySQL (roles, usuarios, direcciones, producto+inventario) y
+#    Mongo (Categoria/Subcategoria/Producto+ProductoEvento) en un solo paso —
+#    esto es lo que reemplazó al ETL histórico (ver arriba). Limpia las
+#    colecciones de Mongo antes de escribir, así se puede correr de nuevo
+#    tantas veces como haga falta; NO limpia MySQL (para repetir desde cero
+#    ahí hace falta `docker compose down -v` + volver al paso 1).
+npm run seed
+```
+
+**Evidencia de funcionamiento** (parte del entregable, no solo el dato sembrado):
+
+```bash
+npm run verificar:checkout   # checkout transaccional, contra los datos del seed
+```
+
+**Crear una migración nueva** (desarrollo — distinto de reproducir las existentes):
+
+```bash
+npm run prisma:migrate -- --name nombre_de_la_migracion   # = prisma migrate dev
+```
+Dos migraciones de este proyecto (`add_producto_vendedor`, con backfill de `id_vendedor`; `atributo_producto_unique`) se escribieron a mano en vez de generarse con este comando — el CLI no interactivo de Prisma bloquea migraciones que detecta como riesgosas, sin flag para forzarlas (ver ESTADO-PROYECTO.md §4). El historial ya existente siempre se reproduce vía `prisma:deploy` (paso 2), nunca regenerándolo.
+
+**Reconciliación bajo demanda** (no es parte del bootstrap — corrige a Mongo si se desincroniza de MySQL, mismo espíritu que la migración inicial pero aplicado de nuevo sobre un catálogo ya en uso; ver `catalogoSyncService.js`):
+
+```bash
+curl -X POST http://localhost:3000/api/admin/recalcular-ventas \
+  -H "Authorization: Bearer <token de administrador>"
+curl -X POST http://localhost:3000/api/admin/recalcular-inventario \
+  -H "Authorization: Bearer <token de administrador>"
+```
+
 ### 2.2 Decisión embed vs. reference (reseñas, imágenes, vendedor)
 
 > "Decisión embed vs. reference fundamentada para: reseñas de producto, imágenes asociadas, relación producto–vendedor (criterios: frecuencia de acceso conjunto, volumen de datos, tasa de cambio)"
