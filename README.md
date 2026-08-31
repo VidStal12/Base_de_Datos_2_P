@@ -80,6 +80,14 @@ npm run verificar:carrito
 
 Agrega un ítem y confirma el TTL de 7.5 min (450s, por inactividad — se reinicia con cada interacción, no solo al crear la clave), que agregar de más clampa contra el stock vigente, que quitar el último ítem borra la clave del hash entera, y que un checkout exitoso vacía el carrito del lado del servidor. Detalle completo en [IA/ENTREGA-2-PLAN.md §4.1](IA/ENTREGA-2-PLAN.md).
 
+## Verificar la oferta flash bajo concurrencia (Entrega 2)
+
+```bash
+npm run verificar:ofertaFlash
+```
+
+Siembra una oferta de 5 unidades sobre un producto real y dispara 15 intentos de compra simultáneos, confirmando que gane exactamente el stock inicial (5), el resto se rechace, el contador en Redis termine en exactamente 0, y el inventario real en MySQL se descuente en la misma cantidad — sin sobreventa ni bloqueos a nivel de aplicación (un único script Lua atómico en Redis, ver `backend/src/config/redis.js`). Detalle completo en [IA/ENTREGA-2-PLAN.md §4.2](IA/ENTREGA-2-PLAN.md).
+
 También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body.
 
 Los ejemplos de este README extraen campos de las respuestas JSON con una función `campo()` basada en Node (no en `jq`, que no viene instalado por defecto en Windows/Git Bash). Node ya es un requisito del proyecto, así que no agrega nada nuevo — definila una vez por sesión de terminal:
@@ -204,25 +212,26 @@ backend/
   scripts/
     verificarCheckout.js    Evidencia de atomicidad del checkout
     verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
+    verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)
-    config/redis.js         Cliente de ioredis (Redis, Entrega 2)
+    config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua de la oferta flash)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout, catálogo, carrito, historial, sync admin)
-    routes/                 Endpoints Express (incluye adminRoutes.js)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, oferta flash, historial, sync admin)
+    routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js)
     app.js / server.js
 frontend/
   src/
     api/                   Cliente HTTP hacia el backend
-    context/               Auth (token/sesión) y Cart (carrito en localStorage)
+    context/               Auth (token/sesión) y Cart (carrito en Redis, Entrega 2)
     components/            Layout (Header/Footer), tarjetas de producto, UI común
     components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
-    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta...)
-    pages/seller/            Panel de vendedor (alta/edición de productos)
+    pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash...)
+    pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
     pages/admin/             Panel de administrador (catálogo de todos los vendedores + sync)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL
-docker-compose.yml     Contenedores de MySQL y MongoDB para desarrollo
+docker-compose.yml     Contenedores de MySQL, MongoDB y Redis para desarrollo
 ```

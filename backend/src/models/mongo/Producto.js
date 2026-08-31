@@ -13,6 +13,26 @@ const inventarioSchema = new Schema(
   { _id: false }
 );
 
+// Oferta flash (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.2) — un cupo limitado
+// a precio rebajado, separado del precio/stock normal de arriba. `activo` es
+// un interruptor independiente de la ventana de fechas (permite pausar sin
+// tocar las fechas, o dejar una oferta preparada de antemano con activo:false)
+// — comprar exige las dos cosas a la vez: activo Y estar dentro de
+// [vigente_desde, vigente_hasta]. stock_oferta es el tamaño ORIGINAL del pool,
+// no el remanente en vivo — ese vive únicamente en Redis
+// (`oferta:{producto_id}:stock`, ver ofertaFlashService.js), con TTL atado a
+// vigente_hasta. No required: la mayoría de los productos nunca tiene una.
+const ofertaFlashSchema = new Schema(
+  {
+    activo: { type: Boolean, default: false },
+    precio_oferta: Number,
+    stock_oferta: Number,
+    vigente_desde: Date,
+    vigente_hasta: Date,
+  },
+  { _id: false }
+);
+
 // inventario: MySQL (`inventario`, la tabla) sigue siendo la única fuente
 // transaccional — checkout sigue siendo una sola transacción de Prisma ahí,
 // sin tocar Mongo en el medio (ver ADR-002 §3.2/§3.3). Esto es una copia de
@@ -36,6 +56,7 @@ const productoSchema = new Schema(
     vendedor_id: { type: Number, required: true },
     vendedor_nombre: { type: String, required: true },
     inventario: { type: inventarioSchema, required: true },
+    oferta_flash: ofertaFlashSchema,
     atributos: [atributoValorSchema],
     imagenes: [imagenSchema],
     resenas_resumen: {

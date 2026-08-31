@@ -31,6 +31,7 @@ function formatear(doc) {
       : undefined,
     version: doc.version,
     inventario: doc.inventario || null,
+    oferta_flash: doc.oferta_flash || null,
   };
 }
 
@@ -357,4 +358,16 @@ async function estadisticasEdiciones({ desde } = {}) {
   return ProductoEvento.aggregate(pipeline);
 }
 
-module.exports = { listar, obtener, crear, actualizar, historialEnFecha, historialCompleto, estadisticasEdiciones };
+// verificarPermiso se exporta también: ofertaFlashService.js la reutiliza tal
+// cual para su propio PATCH (¿puede esta persona tocar este producto? — la
+// misma pregunta que para editar el producto en sí, no una segunda versión).
+module.exports = {
+  listar,
+  obtener,
+  crear,
+  actualizar,
+  historialEnFecha,
+  historialCompleto,
+  estadisticasEdiciones,
+  verificarPermiso,
+};

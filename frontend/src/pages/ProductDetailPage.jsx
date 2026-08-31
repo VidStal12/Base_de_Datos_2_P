@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { productosApi } from '../api/productos';
+import { ofertasApi } from '../api/ofertas';
 import { formatCurrency } from '../utils/format';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
@@ -20,14 +21,22 @@ export function ProductDetailPage() {
   const [error, setError] = useState('');
   const [cantidad, setCantidad] = useState(1);
   const [agregado, setAgregado] = useState(false);
+  const [ofertaStock, setOfertaStock] = useState(null);
 
   useEffect(() => {
     setCargando(true);
     setAgregado(false);
     setCantidad(1);
+    setOfertaStock(null);
     productosApi
       .obtener(id)
-      .then(setProducto)
+      .then((p) => {
+        setProducto(p);
+        // Aparte, no bloquea el render del producto — una oferta flash es la
+        // excepción, no la regla, y su remanente vive en Redis, no en este
+        // mismo documento (ver ofertaFlashService.consultarStock).
+        ofertasApi.consultarStock(id).then(setOfertaStock).catch(() => setOfertaStock(null));
+      })
       .catch(() => setError('No encontramos este producto.'))
       .finally(() => setCargando(false));
   }, [id]);
@@ -80,6 +89,22 @@ export function ProductDetailPage() {
               <span className="text-sm font-semibold text-accent-700">{stock} disponibles</span>
             )}
           </div>
+
+          {ofertaStock?.activo && ofertaStock.restante > 0 && (
+            <div className="rounded-lg border border-accent-300 bg-accent-50 p-4">
+              <span className="inline-block rounded-full bg-accent-600 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wide text-white">
+                Oferta flash
+              </span>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-xl font-bold text-neutral-900">{formatCurrency(ofertaStock.precio_oferta)}</span>
+                <span className="text-sm text-neutral-500 line-through">{formatCurrency(producto.inventario?.precio)}</span>
+              </div>
+              <p className="mt-1 text-sm font-semibold text-accent-700">Quedan {ofertaStock.restante} al precio de oferta</p>
+              <Button variant="accent" onClick={() => navigate(`/ofertas/${producto.id}/comprar`)} className="mt-3 w-full py-2.5">
+                Comprar oferta ahora
+              </Button>
+            </div>
+          )}
 
           {producto.atributos?.length > 0 && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">

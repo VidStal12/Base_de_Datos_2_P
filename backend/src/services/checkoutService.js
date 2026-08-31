@@ -127,4 +127,107 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
   });
 }
 
-module.exports = { checkout };
+// Guardia 2 (autoridad final en MySQL) de la oferta flash — ver
+// ofertaFlashService.js y ENTREGA-2-PLAN.md §4.2. Deliberadamente una función
+// separada, NO una rama dentro de checkout() de arriba: "no reemplaza el
+// checkout normal" (§4.2) significa también no arriesgar el que ya está
+// verificado agregándole casos. Comparte el módulo (ambas son "compras que
+// tocan MySQL en una transacción") pero ninguna línea de código.
+//
+// Único ítem, precio provisto por el llamador (precio_oferta de Mongo, no
+// inventario.precio) — todo lo demás calca a checkout(): valida pertenencia
+// de dirección/método de pago, exige stock REAL suficiente (Redis ya admitió
+// del lado del pool de oferta, pero eso es solo la guardia 1; si el
+// inventario real ya no alcanza, acá se rechaza igual, aunque Redis haya
+// dicho que sí — ver §4.2, "dos guardas, no una"), y reenvía a Mongo después
+// de confirmar. `descuento` en compra_detalle, que en el checkout normal
+// siempre queda en 0, acá sí lleva el ahorro real.
+async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId }) {
+  if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
+    throw new Error('productoId y cantidad deben ser enteros positivos');
+  }
+  if (!esEnteroPositivo(direccionId) || !esEnteroPositivo(metodoPagoId)) {
+    throw new Error('direccionId y metodoPagoId deben ser enteros positivos');
+  }
+  if (typeof precioUnitario !== 'number' || precioUnitario <= 0) {
+    throw new Error('precioUnitario debe ser un número positivo');
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const [direccion, metodoPago] = await Promise.all([
+      tx.direcciones.findUnique({ where: { id: direccionId } }),
+      tx.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
+    ]);
+    if (!direccion || direccion.id_usuario !== usuarioId) {
+      throw new Error('La dirección indicada no pertenece al usuario');
+    }
+    if (!metodoPago || metodoPago.id_usuario !== usuarioId) {
+      throw new Error('El método de pago indicado no pertenece al usuario');
+    }
+
+    const inventario = await tx.inventario.findUnique({ where: { id_producto: productoId } });
+    if (!inventario || inventario.cantidad < cantidad) {
+      // La guardia 1 (Redis) ya admitió esta compra dentro del pool de
+      // oferta — esto es la guardia 2 rechazándola igual porque el
+      // inventario REAL ya no alcanza. Es exactamente el caso que separa
+      // "admisión rápida" de "autoridad final" (§4.2); el llamador
+      // (ofertaFlashService.comprar) revierte el contador de Redis cuando
+      // esto pasa, para no dejar quemada una unidad del pool que nadie
+      // efectivamente se llevó.
+      throw new Error(`Stock insuficiente para el producto ${productoId}`);
+    }
+
+    await tx.inventario.update({ where: { id_producto: productoId }, data: { cantidad: { decrement: cantidad } } });
+
+    const precioFinal = precioUnitario * cantidad;
+    const descuentoUnitario = Math.max(Number(inventario.precio) - precioUnitario, 0);
+
+    const compra = await tx.compra.create({
+      data: {
+        id_usuario: usuarioId,
+        id_direccion: direccionId,
+        total: precioFinal,
+        compra_detalles: {
+          create: [
+            {
+              id_producto: productoId,
+              cantidad,
+              precio_final: precioFinal,
+              descuento: descuentoUnitario * cantidad,
+              estado: 'pendiente',
+            },
+          ],
+        },
+      },
+      include: { compra_detalles: true },
+    });
+
+    const pago = await tx.pago.create({
+      data: {
+        id_compra: compra.id,
+        id_metodo_pago: metodoPagoId,
+        monto: precioFinal,
+        estado: 'aprobado',
+        referencia_transaccion: `TX-OFERTA-${compra.id}-${Date.now()}`,
+      },
+    });
+
+    return { compra, pago };
+  }).then(async (resultado) => {
+    // Mismo reenvío de mejor esfuerzo que checkout() — ver el comentario de
+    // arriba, es la misma copia de lectura en Mongo, actualizada por el mismo
+    // motivo.
+    try {
+      await conectar();
+      await Producto.updateOne(
+        { producto_id: productoId },
+        { $inc: { total_vendido: cantidad, 'inventario.cantidad': -cantidad } }
+      );
+    } catch (err) {
+      console.error('No se pudo actualizar total_vendido/cantidad en Mongo (oferta flash):', err.message);
+    }
+    return resultado;
+  });
+}
+
+module.exports = { checkout, checkoutOferta };

@@ -158,7 +158,14 @@ DELETE /api/carrito              → vaciar completo
 
 Verificación completa (`npm run verificar:carrito`) y en el navegador: agregar/TTL/clamp/quitar/checkout, más un caso que el plan original no había previsto — el carrito **persiste a través de un ciclo logout→login** (beneficio directo de clavear por usuario en vez de por sesión de navegador), confirmado manualmente.
 
-### 4.2 Oferta de inventario limitado (el ítem de mayor peso, 3.0 pts)
+### 4.2 Oferta de inventario limitado (implementado y verificado, 2026-08-30)
+
+**Estado:** implementado end-to-end y probado bajo concurrencia real — ver `backend/scripts/verificarOfertaFlash.js` (`npm run verificar:ofertaFlash`) y ESTADO-PROYECTO.md §3.8 para el detalle completo. Resumen de lo que cambió respecto al plan original de abajo:
+
+- **Modelo elegido** (de las opciones discutidas): un flag en el producto real del catálogo, no un concepto separado — `Producto.oferta_flash` (Mongo): `{activo, precio_oferta, stock_oferta, vigente_desde, vigente_hasta}`, embebido, 1:1, mismo criterio que `resenas_resumen`. El vendedor/administrador lo activa desde el propio formulario de edición de producto (`SellerProductFormPage.jsx`) — no hizo falta una pantalla nueva.
+- **`ofertaId` = `producto_id`** — no un id separado, ya que un producto tiene a lo sumo una oferta activa a la vez.
+- **La ventana de vigencia maneja el TTL de Redis, no solo el flag `activo`**: comprar exige `activo === true` Y estar dentro de `[vigente_desde, vigente_hasta]`; el TTL de la clave de Redis se calcula como `segundos_hasta(vigente_hasta)` en el momento del lazy-init, así que la clave vence sola cuando termina la ventana anunciada, sin necesidad de un barrido/cron aparte. `activo` queda como interruptor independiente (pausar sin tocar fechas, o preparar una oferta de antemano con `activo:false`).
+- Todo lo demás (script Lua atómico, dos guardas, reenvío best-effort, verificación bajo concurrencia) se implementó tal como se planeó abajo — ver el detalle técnico completo, y el código real, en ESTADO-PROYECTO.md §3.8.
 
 Es una funcionalidad **nueva y separada** del checkout normal, no un reemplazo — el checkout normal sigue con su transacción de Prisma tal cual está, verificada y sin tocar (ver §2.2). La oferta flash es un *gate* adicional delante de un subconjunto acotado de unidades.
 
@@ -228,7 +235,7 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 - ~~¿Carrito anónimo o solo con sesión iniciada?~~ — resuelto: requiere sesión (§4.1).
 - ~~Valor de TTL por inactividad~~ — resuelto: 7.5 min / 450s (§4.1).
-- Cuántas unidades y qué producto(s) usar para demostrar la oferta flash (¿un producto real del catálogo marcado como "oferta", o un concepto nuevo separado del catálogo?).
+- ~~Cuántas unidades y qué producto(s) usar para demostrar la oferta flash~~ — resuelto: un producto real del catálogo, marcado con `oferta_flash` (§4.2). La cantidad es configurable por el vendedor/administrador; la verificación automática usa 5 unidades contra 15 intentos concurrentes.
 - Alcance real de la UI de reseñas — ¿algo mínimo (solo lo que el grafo necesita, §4.3) o la funcionalidad completa que ya describe ADR-002 §6.1 (con `resenas_resumen` visible en el catálogo, no solo en el detalle)?
 
 ---
@@ -236,7 +243,7 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 ## 7. Orden de trabajo sugerido
 
 1. ~~Redis + migración del carrito (§4.1)~~ — ✅ hecho (2026-08-30).
-2. Oferta de inventario limitado (§4.2) — depende de tener Redis ya integrado del paso 1, que ya está.
+2. ~~Oferta de inventario limitado (§4.2)~~ — ✅ hecho (2026-08-30).
 3. Reseñas mínimas (§4.3) — en paralelo a 1-2 si el equipo lo divide, pero **antes** del paso 4 sin excepción.
 4. Neo4j + detección de fraude + panel admin (§4.4) — depende del paso 3.
 5. Redacción final: evaluación comparativa (§3), diagrama de arquitectura actualizado, informe.
@@ -248,7 +255,7 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 | Criterio (PRD) | Peso | Estado |
 |---|---|---|
 | Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
-| Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ⬜ No iniciado — plan en §4.2 |
+| Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md §3.8 |
 | Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Redactada en este documento (§3) |
 | Implementación de grafos + reto específico (consulta multi-salto) | 3.0 pts | ⬜ No iniciado — plan en §4.3/§4.4, bloqueado por reseñas |
 | Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | ⬜ Diagrama de arquitectura todavía no existe como artefacto versionado — pendiente para el cierre de la entrega |

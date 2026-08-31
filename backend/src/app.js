@@ -9,6 +9,7 @@ const checkoutRoutes = require('./routes/checkoutRoutes');
 const compraRoutes = require('./routes/compraRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const cartRoutes = require('./routes/cartRoutes');
+const ofertaRoutes = require('./routes/ofertaRoutes');
 
 const app = express();
 
@@ -47,6 +48,9 @@ app.get('/', (req, res) => {
       'GET /api/compras/:id (requiere token)',
       'POST /api/admin/recalcular-ventas (requiere token, rol administrador — recalcula total_vendido desde compra_detalle, sobrescribe la caché)',
       'POST /api/admin/recalcular-inventario (requiere token, rol administrador — recalcula precio/cantidad desde inventario (MySQL), sobrescribe la caché)',
+      'GET /api/ofertas/:productoId/stock (remanente en vivo de la oferta flash, ver IA/ENTREGA-2-PLAN.md §4.2)',
+      'PATCH /api/ofertas/:productoId (requiere token, rol vendedor/administrador — dueño del producto o administrador; configura/pausa la oferta)',
+      'POST /api/ofertas/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId}, compra directa al precio de oferta)',
     ],
   });
 });
@@ -60,5 +64,6 @@ app.use('/api/carrito', cartRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/compras', compraRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/ofertas', ofertaRoutes);
 
 module.exports = app;

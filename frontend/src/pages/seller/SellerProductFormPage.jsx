@@ -2,9 +2,20 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { productosApi, categoriasApi } from '../../api/productos';
+import { ofertasApi } from '../../api/ofertas';
 import { Field, Input } from '../../components/common/Input';
 import { Button } from '../../components/common/Button';
 import { Spinner } from '../../components/common/Spinner';
+
+// Producto.oferta_flash guarda vigente_desde/hasta como Date (ISO al viajar
+// por JSON); <input type="datetime-local"> necesita "AAAA-MM-DDTHH:mm" en
+// hora LOCAL, no UTC — por eso no alcanza con .slice(0, 16) sobre el ISO.
+function aDatetimeLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function InlineCreate({ placeholder, onCrear }) {
   const [abierto, setAbierto] = useState(false);
@@ -66,6 +77,14 @@ export function SellerProductFormPage() {
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
+  // Oferta flash — guardado propio, separado del form principal de arriba (ver
+  // ENTREGA-2-PLAN.md §4.2): es un endpoint distinto (PATCH /api/ofertas/:id),
+  // no tiene sentido acoplarlo al submit del producto.
+  const [oferta, setOferta] = useState({ activo: false, precio_oferta: '', stock_oferta: '', vigente_desde: '', vigente_hasta: '' });
+  const [guardandoOferta, setGuardandoOferta] = useState(false);
+  const [errorOferta, setErrorOferta] = useState('');
+  const [okOferta, setOkOferta] = useState(false);
+
   useEffect(() => {
     async function cargar() {
       const cats = await categoriasApi.listar();
@@ -89,6 +108,16 @@ export function SellerProductFormPage() {
           valores[attr.nombre] = attr.valor;
         });
         setValoresAtributos(valores);
+
+        if (producto.oferta_flash) {
+          setOferta({
+            activo: producto.oferta_flash.activo || false,
+            precio_oferta: producto.oferta_flash.precio_oferta ?? '',
+            stock_oferta: producto.oferta_flash.stock_oferta ?? '',
+            vigente_desde: aDatetimeLocal(producto.oferta_flash.vigente_desde),
+            vigente_hasta: aDatetimeLocal(producto.oferta_flash.vigente_hasta),
+          });
+        }
       }
       setCargando(false);
     }
@@ -200,6 +229,31 @@ export function SellerProductFormPage() {
       setError(err.message);
     } finally {
       setGuardando(false);
+    }
+  }
+
+  async function guardarOferta(e) {
+    e.preventDefault();
+    setErrorOferta('');
+    setOkOferta(false);
+    setGuardandoOferta(true);
+    try {
+      await ofertasApi.actualizar(
+        id,
+        {
+          activo: oferta.activo,
+          precio_oferta: oferta.precio_oferta === '' ? undefined : Number(oferta.precio_oferta),
+          stock_oferta: oferta.stock_oferta === '' ? undefined : Number(oferta.stock_oferta),
+          vigente_desde: oferta.vigente_desde || undefined,
+          vigente_hasta: oferta.vigente_hasta || undefined,
+        },
+        token
+      );
+      setOkOferta(true);
+    } catch (err) {
+      setErrorOferta(err.message);
+    } finally {
+      setGuardandoOferta(false);
     }
   }
 
@@ -354,6 +408,76 @@ export function SellerProductFormPage() {
           {guardando ? 'Guardando...' : modoEdicion ? 'Guardar cambios' : 'Publicar producto'}
         </Button>
       </form>
+
+      {/* Fuera del <form> de arriba a propósito — no se puede anidar un
+          <form> dentro de otro, y esto guarda contra un endpoint aparte
+          (PATCH /api/ofertas/:id), no contra POST|PATCH /api/productos. Solo
+          en modo edición: una oferta necesita un productoId que ya exista. */}
+      {modoEdicion && (
+        <form onSubmit={guardarOferta} className="mt-8 flex flex-col gap-4 rounded-lg border border-neutral-200 p-4">
+          <div>
+            <h2 className="text-sm font-semibold text-neutral-800">Oferta flash</h2>
+            <p className="mt-1 text-xs text-neutral-500">
+              Cupo limitado a precio rebajado, con ventana de vigencia — separado del precio y stock normales de arriba
+              (ver IA/ENTREGA-2-PLAN.md §4.2).
+            </p>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
+            <input
+              type="checkbox"
+              checked={oferta.activo}
+              onChange={(e) => setOferta((prev) => ({ ...prev, activo: e.target.checked }))}
+            />
+            Oferta activa
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Precio de oferta (Q)">
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={oferta.precio_oferta}
+                onChange={(e) => setOferta((prev) => ({ ...prev, precio_oferta: e.target.value }))}
+              />
+            </Field>
+            <Field label="Unidades limitadas">
+              <Input
+                type="number"
+                min="1"
+                step="1"
+                value={oferta.stock_oferta}
+                onChange={(e) => setOferta((prev) => ({ ...prev, stock_oferta: e.target.value }))}
+              />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Empieza">
+              <Input
+                type="datetime-local"
+                value={oferta.vigente_desde}
+                onChange={(e) => setOferta((prev) => ({ ...prev, vigente_desde: e.target.value }))}
+              />
+            </Field>
+            <Field label="Termina">
+              <Input
+                type="datetime-local"
+                value={oferta.vigente_hasta}
+                onChange={(e) => setOferta((prev) => ({ ...prev, vigente_hasta: e.target.value }))}
+              />
+            </Field>
+          </div>
+
+          {errorOferta && <p className="text-sm text-danger-600">{errorOferta}</p>}
+          {okOferta && <p className="text-sm text-accent-700">Oferta guardada.</p>}
+
+          <Button type="submit" variant="primary" disabled={guardandoOferta} className="py-2.5">
+            {guardandoOferta ? 'Guardando...' : 'Guardar oferta'}
+          </Button>
+        </form>
+      )}
     </div>
   );
 }

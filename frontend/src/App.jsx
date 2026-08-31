@@ -10,6 +10,7 @@ import { CartPage } from './pages/CartPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { CheckoutPage } from './pages/CheckoutPage';
+import { OfertaCheckoutPage } from './pages/OfertaCheckoutPage';
 import { OrderHistoryPage } from './pages/OrderHistoryPage';
 import { OrderDetailPage } from './pages/OrderDetailPage';
 import { AccountPage } from './pages/AccountPage';
@@ -45,6 +46,14 @@ export default function App() {
                 element={
                   <RequireAuth>
                     <CheckoutPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="ofertas/:id/comprar"
+                element={
+                  <RequireAuth>
+                    <OfertaCheckoutPage />
                   </RequireAuth>
                 }
               />
