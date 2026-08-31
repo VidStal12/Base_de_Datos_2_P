@@ -1,12 +1,10 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { useAuth } from '../context/AuthContext';
 import { formatCurrency } from '../utils/format';
 import { Button } from '../components/common/Button';
 
 export function CartPage() {
   const { items, actualizarCantidad, quitar, total } = useCart();
-  const { estaAutenticado } = useAuth();
   const navigate = useNavigate();
 
   if (items.length === 0) {
@@ -20,8 +18,12 @@ export function CartPage() {
     );
   }
 
+  // Ya no hace falta comprobar sesión acá: /carrito está detrás de
+  // <RequireAuth> desde que el carrito requiere login (ver App.jsx,
+  // IA/ENTREGA-2-PLAN.md §4.1) — llegar a este componente ya implica sesión
+  // iniciada.
   function handleCheckout() {
-    navigate(estaAutenticado ? '/checkout' : '/login?next=/checkout');
+    navigate('/checkout');
   }
 
   return (

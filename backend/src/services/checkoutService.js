@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const { esEnteroPositivo } = require('../utils/validation');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
+const cartService = require('./cartService');
 
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
@@ -109,6 +110,19 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo:', err.message);
     }
+
+    // Vaciar el carrito en Redis acá, no solo confiar en que el frontend lo
+    // haga después de recibir la respuesta (ver ENTREGA-2-PLAN.md §4.1) — si
+    // el checkout ya se confirmó pero esa segunda llamada del cliente nunca
+    // llega (pestaña cerrada, red cortada justo ahí), el usuario volvería a
+    // ver en su carrito algo que ya compró. Try/catch propio, independiente
+    // del de arriba: que falle el reenvío a Mongo no debería impedir este intento.
+    try {
+      await cartService.vaciar(usuarioId);
+    } catch (err) {
+      console.error('No se pudo vaciar el carrito en Redis tras el checkout:', err.message);
+    }
+
     return resultado;
   });
 }

@@ -41,9 +41,9 @@ export function ProductDetailPage() {
   const sinStock = stock <= 0;
   const subcategoria = producto.subcategoria;
 
-  function handleAgregar() {
-    agregar(producto, cantidad);
-    setAgregado(true);
+  async function handleAgregar() {
+    const ok = await agregar(producto, cantidad);
+    if (ok) setAgregado(true);
   }
 
   return (
@@ -119,9 +119,9 @@ export function ProductDetailPage() {
             <Button
               variant="primary"
               disabled={sinStock}
-              onClick={() => {
-                agregar(producto, cantidad);
-                navigate('/carrito');
+              onClick={async () => {
+                const ok = await agregar(producto, cantidad);
+                if (ok) navigate('/carrito');
               }}
               className="flex-1 py-3"
             >

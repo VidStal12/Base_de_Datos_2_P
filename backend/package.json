@@ -11,6 +11,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "seed": "prisma db seed",
     "verificar:checkout": "node scripts/verificarCheckout.js",
+    "verificar:carrito": "node scripts/verificarCarrito.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -24,6 +25,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.3"
   },

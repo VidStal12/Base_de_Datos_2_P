@@ -54,6 +54,22 @@ services:
       retries: 20
       start_period: 5s
 
+  redis:
+    image: redis:7
+    container_name: tiendaya-redis
+    restart: unless-stopped
+    # Carrito (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.1) — clave-valor con TTL
+    # por inactividad. Sin auth ni persistencia especial: es un dato
+    # transitorio a propósito, se puede perder sin consecuencia (no es la
+    # fuente de verdad de nada, a diferencia de MySQL/Mongo).
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   mysql_data:
   mongo_data:

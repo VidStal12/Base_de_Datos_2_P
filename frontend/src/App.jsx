@@ -30,7 +30,14 @@ export default function App() {
             <Route element={<Layout />}>
               <Route index element={<HomePage />} />
               <Route path="productos/:id" element={<ProductDetailPage />} />
-              <Route path="carrito" element={<CartPage />} />
+              <Route
+                path="carrito"
+                element={
+                  <RequireAuth>
+                    <CartPage />
+                  </RequireAuth>
+                }
+              />
               <Route path="login" element={<LoginPage />} />
               <Route path="registro" element={<RegisterPage />} />
               <Route

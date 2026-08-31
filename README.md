@@ -13,13 +13,13 @@ Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccion
 
 ## Puesta en marcha
 
-1. **Levantar MySQL y MongoDB en Docker** (desde la raíz del repo):
+1. **Levantar MySQL, MongoDB y Redis en Docker** (desde la raíz del repo):
 
    ```bash
    docker compose up -d
    ```
 
-   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md).
+   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis es para el carrito (Entrega 2, ver [IA/ENTREGA-2-PLAN.md](IA/ENTREGA-2-PLAN.md)) — sin volumen a propósito, es dato transitorio.
 
 2. **Instalar dependencias del backend**:
 
@@ -71,6 +71,14 @@ npm run verificar:checkout
 ```
 
 El script corre un checkout válido y luego uno que pide más unidades de las que hay en stock, confirmando que este segundo caso se rechaza por completo **sin** dejar el inventario parcialmente descontado.
+
+## Verificar el carrito en Redis (Entrega 2)
+
+```bash
+npm run verificar:carrito
+```
+
+Agrega un ítem y confirma el TTL de 7.5 min (450s, por inactividad — se reinicia con cada interacción, no solo al crear la clave), que agregar de más clampa contra el stock vigente, que quitar el último ítem borra la clave del hash entera, y que un checkout exitoso vacía el carrito del lado del servidor. Detalle completo en [IA/ENTREGA-2-PLAN.md §4.1](IA/ENTREGA-2-PLAN.md).
 
 También se puede probar vía HTTP. El checkout requiere estar autenticado — el usuario y sus direcciones/métodos de pago se resuelven del token, nunca de lo que mande el cliente en el body.
 
@@ -195,11 +203,13 @@ backend/
     seed.js               Datos de prueba representativos (MySQL + Mongo, un solo paso)
   scripts/
     verificarCheckout.js    Evidencia de atomicidad del checkout
+    verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)
+    config/redis.js         Cliente de ioredis (Redis, Entrega 2)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout, catálogo, historial, sync admin)
+    services/              Lógica de negocio (auth, checkout, catálogo, carrito, historial, sync admin)
     routes/                 Endpoints Express (incluye adminRoutes.js)
     app.js / server.js
 frontend/

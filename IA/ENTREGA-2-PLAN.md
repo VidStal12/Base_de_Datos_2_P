@@ -41,9 +41,11 @@ El ítem de mayor peso individual (3.0 pts) es la oferta de inventario limitado 
 
 ## 2. Estado actual relevante (dónde estamos parados)
 
-### 2.1 Carrito — hoy es 100% de navegador
+### 2.1 Carrito — histórico (estado antes de implementar §4.1, ya migrado)
 
-[`frontend/src/context/CartContext.jsx`](../frontend/src/context/CartContext.jsx): vive enteramente en `localStorage`, sin ningún endpoint de backend. Puntos que importan para el plan de migración:
+> Esta subsección describe cómo era el carrito **antes** de esta entrega — se mantiene sin editar como registro del punto de partida. El estado vigente está en §4.1, ya implementado.
+
+[`frontend/src/context/CartContext.jsx`](../frontend/src/context/CartContext.jsx) vivía enteramente en `localStorage`, sin ningún endpoint de backend. Puntos que importaron para el plan de migración:
 
 - **Clave fija** (`tiendaya_carrito`), no por sesión ni por usuario — si dos personas comparten el mismo navegador (perfil de Windows compartido, computadora pública), comparten el mismo carrito. Esto no es un bug reportado, pero es exactamente el tipo de cosa que una migración a Redis con sesión real debería dejar de tener, no reproducir.
 - **Sin expiración de ningún tipo** — un carrito armado hace un mes seguiría ahí. El requerimiento del PRD (TTL por inactividad) no tiene equivalente actual que preservar; es funcionalidad nueva, no una migración 1:1.
@@ -126,33 +128,35 @@ Ninguna de estas tres condiciones aplica a la escala actual del proyecto (5 prod
 
 ## 4. Plan de implementación
 
-### 4.1 Carrito en Redis
+### 4.1 Carrito en Redis — ✅ implementado y verificado (2026-08-30)
 
-**Decisión de identidad de sesión (a confirmar con el equipo, ver §6):** el carrito actual no exige login. Recomendado: mantener esa regla — un visitante anónimo recibe una **cookie de sesión** (id aleatorio, `httpOnly`) en su primera visita si todavía no tiene una; el carrito se guarda contra esa `sessionId`, autenticado o no. Si más adelante inicia sesión, el carrito de esa `sessionId` se puede fusionar al `usuario.id_usuario` (fuera de alcance de esta entrega si el equipo prefiere simplificar a "carrito solo para usuarios con sesión iniciada" — ambas son razonables, pero hay que decidir una).
+**Decisión de identidad de sesión:** el carrito ahora **requiere sesión iniciada** — ya no hay carrito anónimo. Se clavea directamente por `usuario.id_usuario` (no una cookie de sesión separada), así que no hace falta ningún mecanismo de fusión al iniciar sesión: el carrito de un usuario es siempre el mismo carrito, esté logueado desde hace rato o recién.
 
-**Esquema de claves propuesto (Redis):**
+**Esquema de claves (Redis), tal cual implementado:**
 ```
-carrito:{sessionId}          → hash: { "productoId": "cantidad", ... }
+carrito:{usuario.id_usuario}   → hash: { "productoId": "cantidad", ... }
 ```
-Un hash por sesión, no una clave por línea — así el TTL se administra en un solo lugar por carrito, no por ítem.
+Un hash por usuario, no una clave por línea — el TTL se administra en un solo lugar por carrito, no por ítem.
 
-**TTL — por inactividad, no fijo:** el PRD pide expiración "por inactividad", es decir, un TTL que se **reinicia en cada operación** (agregar, actualizar cantidad, quitar), no un TTL fijo desde la creación. Se implementa con `EXPIRE carrito:{sessionId} <segundos>` ejecutado de nuevo en cada escritura sobre ese hash — no alcanza con poner el TTL una sola vez al crear la clave. Valor propuesto para documentar y justificar: 30 minutos de inactividad (ajustable; lo que importa para la rúbrica es que el valor esté declarado explícitamente y el motivo escrito, no el número exacto).
+**TTL — 7.5 minutos (450s), por inactividad, no fijo:** se reinicia en **cualquier** interacción — incluida una simple lectura (`GET /api/carrito`), no solo agregar/quitar — porque "inactividad" significa que ni mirar el carrito cuenta como actividad. Implementado con `EXPIRE carrito:{id} 450` reejecutado en cada operación de `cartService.js`, nunca puesto una sola vez al crear la clave. Verificado en `scripts/verificarCarrito.js`: TTL sube de nuevo tras una lectura posterior, no solo se mantiene.
 
-**Efecto documentado sobre el checkout** (requerimiento explícito del PRD):
-- Si el TTL vence **antes** de llegar a pagar, el carrito desaparece — el checkout debe manejar el caso "carrito vacío/expirado al momento de confirmar" con un mensaje claro, no un error genérico.
-- Si el checkout **falla** (stock insuficiente, pago rechazado), el carrito **no se vacía** — mismo comportamiento que hoy (`CheckoutPage.jsx:66`, ver §2.1), preservado exactamente igual.
-- Si el checkout **tiene éxito**, el carrito se vacía explícitamente (`DEL carrito:{sessionId}`), no simplemente se deja expirar.
+**Efecto sobre el checkout** (requerimiento explícito del PRD):
+- Si el TTL vence antes de pagar, el carrito desaparece — igual que un carrito vacío por cualquier otro motivo, sin caso especial.
+- Si el checkout falla, el carrito no se toca — mismo comportamiento que ya tenía antes de Redis (`CheckoutPage.jsx`, `vaciar()` solo dentro del `try`).
+- Si el checkout tiene éxito, el carrito se vacía **del lado del servidor**, dentro de `checkoutService.checkout()` mismo — no se dejó como una responsabilidad exclusiva del cliente (el frontend también lo pide aparte, de forma redundante/best-effort, pero ya no es la única garantía). Se decidió así después de notar, al escribir la verificación, que depender solo del cliente para este paso dejaba una ventana real (pestaña cerrada justo después de pagar) donde el carrito seguiría mostrando algo ya comprado.
 
-**Backend — nuevo `cartService.js` + `cartRoutes.js`**, mismo patrón que los servicios existentes:
+**Backend** — `cartService.js` + `cartRoutes.js` (todo detrás de `requireAuth`, sin excepción):
 ```
 GET    /api/carrito              → contenido actual (resuelve cada productoId contra Mongo para descripción/precio/imagen vigentes)
-POST   /api/carrito/items        → agregar/incrementar {productoId, cantidad}
-PATCH  /api/carrito/items/:id    → fijar cantidad
+POST   /api/carrito/items        → {productoId, cantidad}, suma a lo ya existente, clamp contra stock vigente
+PATCH  /api/carrito/items/:id    → {cantidad}, fija la cantidad exacta
 DELETE /api/carrito/items/:id    → quitar un ítem
-DELETE /api/carrito              → vaciar
+DELETE /api/carrito              → vaciar completo
 ```
 
-**Frontend:** `CartContext.jsx` mantiene la misma interfaz pública (`items`, `agregar`, `actualizarCantidad`, `quitar`, `vaciar`, `cantidadTotal`, `total`) para no tocar los componentes que ya lo consumen (`Header`, `ProductCard`, `CheckoutPage`) — internamente pasa de leer/escribir `localStorage` a llamar la API nueva. Migración acotada por diseño.
+**Frontend:** `CartContext.jsx` mantiene la misma interfaz pública (`items`, `agregar`, `actualizarCantidad`, `quitar`, `vaciar`, `cantidadTotal`, `total`) para no tocar los componentes que ya lo consumían (`Header`, `ProductCard`, `CheckoutPage`) — internamente pasó de mutaciones síncronas de `localStorage` a llamadas async contra la API nueva. `agregar()` ahora devuelve si de verdad agregó algo (`false` si redirigió a `/login` por falta de sesión) para que quien la llama no actúe como si hubiera funcionado — encontrado al migrar el botón "Comprar ahora" (`ProductDetailPage.jsx`), que navegaba a `/carrito` sin importar el resultado.
+
+Verificación completa (`npm run verificar:carrito`) y en el navegador: agregar/TTL/clamp/quitar/checkout, más un caso que el plan original no había previsto — el carrito **persiste a través de un ciclo logout→login** (beneficio directo de clavear por usuario en vez de por sesión de navegador), confirmado manualmente.
 
 ### 4.2 Oferta de inventario limitado (el ítem de mayor peso, 3.0 pts)
 
@@ -216,15 +220,14 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 - **Reseñas es una dependencia dura, no un detalle** — sin §4.3 completo, §4.4 no tiene nada que consultar. Conviene planificarlo en ese orden explícitamente, no en paralelo asumiendo que "ya va a estar listo".
 - **La oferta de inventario limitado (§4.2) es el ítem de mayor riesgo de diseño** — dos guardas (Redis + MySQL) que tienen que coordinarse sin desincronizarse ni bloquearse mutuamente. Vale prototipar y validar la concurrencia simulada temprano, no dejarlo para el final.
-- **Identidad de sesión del carrito** (§4.1) es una decisión de producto que este documento deja recomendada pero no resuelta unilateralmente — confirmar con el equipo antes de implementar (ver §6).
-- Dos infraestructuras nuevas (Redis, Neo4j) suman a las dos que ya corren (MySQL, Mongo) — cuatro contenedores Docker en desarrollo. Vale confirmar que el entorno de todo el equipo los soporta cómodamente antes de la semana de entrega.
+- Dos infraestructuras nuevas (Redis, Neo4j) suman a las dos que ya corren (MySQL, Mongo) — cuatro contenedores Docker en desarrollo. Vale confirmar que el entorno de todo el equipo los soporta cómodamente antes de la semana de entrega. Redis ya está sumado y probado; falta Neo4j.
 
 ---
 
 ## 6. Preguntas abiertas para el equipo
 
-- ¿Carrito anónimo (cookie de sesión) o carrito solo para usuarios con sesión iniciada? (§4.1)
-- Valor concreto de TTL por inactividad a declarar y justificar (propuesto: 30 min, ver §4.1).
+- ~~¿Carrito anónimo o solo con sesión iniciada?~~ — resuelto: requiere sesión (§4.1).
+- ~~Valor de TTL por inactividad~~ — resuelto: 7.5 min / 450s (§4.1).
 - Cuántas unidades y qué producto(s) usar para demostrar la oferta flash (¿un producto real del catálogo marcado como "oferta", o un concepto nuevo separado del catálogo?).
 - Alcance real de la UI de reseñas — ¿algo mínimo (solo lo que el grafo necesita, §4.3) o la funcionalidad completa que ya describe ADR-002 §6.1 (con `resenas_resumen` visible en el catálogo, no solo en el detalle)?
 
@@ -232,8 +235,8 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 ## 7. Orden de trabajo sugerido
 
-1. Redis + migración del carrito (§4.1) — fundacional, menor riesgo, no depende de nada nuevo.
-2. Oferta de inventario limitado (§4.2) — depende de tener Redis ya integrado del paso 1.
+1. ~~Redis + migración del carrito (§4.1)~~ — ✅ hecho (2026-08-30).
+2. Oferta de inventario limitado (§4.2) — depende de tener Redis ya integrado del paso 1, que ya está.
 3. Reseñas mínimas (§4.3) — en paralelo a 1-2 si el equipo lo divide, pero **antes** del paso 4 sin excepción.
 4. Neo4j + detección de fraude + panel admin (§4.4) — depende del paso 3.
 5. Redacción final: evaluación comparativa (§3), diagrama de arquitectura actualizado, informe.
@@ -244,7 +247,7 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 | Criterio (PRD) | Peso | Estado |
 |---|---|---|
-| Carrito clave-valor + TTL justificado | 1.5 pts | ⬜ No iniciado — plan en §4.1 |
+| Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
 | Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ⬜ No iniciado — plan en §4.2 |
 | Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Redactada en este documento (§3) |
 | Implementación de grafos + reto específico (consulta multi-salto) | 3.0 pts | ⬜ No iniciado — plan en §4.3/§4.4, bloqueado por reseñas |
