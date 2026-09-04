@@ -1,0 +1,128 @@
+{
+  "seller": {
+    "email": "luis.ramirez@example.com",
+    "password": "Password123!"
+  },
+  "buyers": [
+    {
+      "ref": "buyer01",
+      "email": "flash.test.01@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 01", "fecha_nacimiento": "1995-01-01" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 01", "codigo_postal": "01001" },
+      "payment": { "titular": "Flash Test 01", "token_pasarela": "tok_flash_test_01", "ultimos_4_digitos": "1001", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer02",
+      "email": "flash.test.02@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 02", "fecha_nacimiento": "1995-01-02" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 02", "codigo_postal": "01002" },
+      "payment": { "titular": "Flash Test 02", "token_pasarela": "tok_flash_test_02", "ultimos_4_digitos": "1002", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer03",
+      "email": "flash.test.03@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 03", "fecha_nacimiento": "1995-01-03" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 03", "codigo_postal": "01003" },
+      "payment": { "titular": "Flash Test 03", "token_pasarela": "tok_flash_test_03", "ultimos_4_digitos": "1003", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer04",
+      "email": "flash.test.04@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 04", "fecha_nacimiento": "1995-01-04" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 04", "codigo_postal": "01004" },
+      "payment": { "titular": "Flash Test 04", "token_pasarela": "tok_flash_test_04", "ultimos_4_digitos": "1004", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer05",
+      "email": "flash.test.05@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 05", "fecha_nacimiento": "1995-01-05" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 05", "codigo_postal": "01005" },
+      "payment": { "titular": "Flash Test 05", "token_pasarela": "tok_flash_test_05", "ultimos_4_digitos": "1005", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer06",
+      "email": "flash.test.06@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 06", "fecha_nacimiento": "1995-01-06" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 06", "codigo_postal": "01006" },
+      "payment": { "titular": "Flash Test 06", "token_pasarela": "tok_flash_test_06", "ultimos_4_digitos": "1006", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer07",
+      "email": "flash.test.07@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 07", "fecha_nacimiento": "1995-01-07" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 07", "codigo_postal": "01007" },
+      "payment": { "titular": "Flash Test 07", "token_pasarela": "tok_flash_test_07", "ultimos_4_digitos": "1007", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer08",
+      "email": "flash.test.08@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 08", "fecha_nacimiento": "1995-01-08" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 08", "codigo_postal": "01008" },
+      "payment": { "titular": "Flash Test 08", "token_pasarela": "tok_flash_test_08", "ultimos_4_digitos": "1008", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer09",
+      "email": "flash.test.09@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 09", "fecha_nacimiento": "1995-01-09" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 09", "codigo_postal": "01009" },
+      "payment": { "titular": "Flash Test 09", "token_pasarela": "tok_flash_test_09", "ultimos_4_digitos": "1009", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer10",
+      "email": "flash.test.10@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 10", "fecha_nacimiento": "1995-01-10" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 10", "codigo_postal": "01010" },
+      "payment": { "titular": "Flash Test 10", "token_pasarela": "tok_flash_test_10", "ultimos_4_digitos": "1010", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer11",
+      "email": "flash.test.11@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 11", "fecha_nacimiento": "1995-01-11" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 11", "codigo_postal": "01011" },
+      "payment": { "titular": "Flash Test 11", "token_pasarela": "tok_flash_test_11", "ultimos_4_digitos": "1011", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer12",
+      "email": "flash.test.12@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 12", "fecha_nacimiento": "1995-01-12" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 12", "codigo_postal": "01012" },
+      "payment": { "titular": "Flash Test 12", "token_pasarela": "tok_flash_test_12", "ultimos_4_digitos": "1012", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer13",
+      "email": "flash.test.13@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 13", "fecha_nacimiento": "1995-01-13" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 13", "codigo_postal": "01013" },
+      "payment": { "titular": "Flash Test 13", "token_pasarela": "tok_flash_test_13", "ultimos_4_digitos": "1013", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer14",
+      "email": "flash.test.14@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 14", "fecha_nacimiento": "1995-01-14" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 14", "codigo_postal": "01014" },
+      "payment": { "titular": "Flash Test 14", "token_pasarela": "tok_flash_test_14", "ultimos_4_digitos": "1014", "marca": "Visa" }
+    },
+    {
+      "ref": "buyer15",
+      "email": "flash.test.15@example.com",
+      "password": "FlashTest123!",
+      "profile": { "nombres": "Flash", "apellidos": "Test 15", "fecha_nacimiento": "1995-01-15" },
+      "address": { "pais": "Guatemala", "direccion": "Dirección sintética 15", "codigo_postal": "01015" },
+      "payment": { "titular": "Flash Test 15", "token_pasarela": "tok_flash_test_15", "ultimos_4_digitos": "1015", "marca": "Visa" }
+    }
+  ]
+}

@@ -9,6 +9,10 @@ node_modules/
 *.log
 npm-debug.log*
 
+# Reportes generados por el ejecutor HTTP de oferta flash
+flash-sale-tests/results/
+flash-sale-tests/prepared-state.json
+
 # Editor / OS
 .vscode/
 .DS_Store

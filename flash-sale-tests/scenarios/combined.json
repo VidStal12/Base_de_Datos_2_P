@@ -1,0 +1,48 @@
+{
+  "name": "combined",
+  "baseUrl": "http://localhost:3000/api",
+  "usersFile": "../users.example.json",
+  "requestTimeoutMs": 5000,
+  "startDelayMs": 1000,
+  "prepare": {
+    "product": {
+      "description": "Producto sintético para prueba de oferta flash",
+      "category": "Pruebas automatizadas",
+      "subcategory": "Oferta flash",
+      "normalPrice": 89.99
+    },
+    "resetInventory": true,
+    "initialInventory": 50,
+    "offerStock": 5,
+    "offerPrice": 44.99,
+    "offerDurationSeconds": 1800
+  },
+  "probes": {
+    "intervalMs": 100,
+    "timeoutMs": 2000
+  },
+  "thresholds": {
+    "maxProbeP95Ms": 1000
+  },
+  "expect": {
+    "successfulRequests": 5,
+    "soldOutRequests": 10
+  },
+  "attempts": [
+    { "id": "attempt-01", "userRef": "buyer01", "channel": "flash", "delayMs": 0, "quantity": 1 },
+    { "id": "attempt-02", "userRef": "buyer02", "channel": "flash", "delayMs": 0, "quantity": 1 },
+    { "id": "attempt-03", "userRef": "buyer03", "channel": "flash", "delayMs": 0, "quantity": 1 },
+    { "id": "attempt-04", "userRef": "buyer04", "channel": "flash", "delayMs": 10, "quantity": 1 },
+    { "id": "attempt-05", "userRef": "buyer05", "channel": "flash", "delayMs": 10, "quantity": 1 },
+    { "id": "attempt-06", "userRef": "buyer06", "channel": "flash", "delayMs": 10, "quantity": 1 },
+    { "id": "attempt-07", "userRef": "buyer07", "channel": "flash", "delayMs": 100, "quantity": 1 },
+    { "id": "attempt-08", "userRef": "buyer08", "channel": "flash", "delayMs": 100, "quantity": 1 },
+    { "id": "attempt-09", "userRef": "buyer09", "channel": "flash", "delayMs": 100, "quantity": 1 },
+    { "id": "attempt-10", "userRef": "buyer10", "channel": "flash", "delayMs": 500, "quantity": 1 },
+    { "id": "attempt-11", "userRef": "buyer11", "channel": "flash", "delayMs": 500, "quantity": 1 },
+    { "id": "attempt-12", "userRef": "buyer12", "channel": "flash", "delayMs": 500, "quantity": 1 },
+    { "id": "attempt-13", "userRef": "buyer13", "channel": "flash", "delayMs": 1000, "quantity": 1 },
+    { "id": "attempt-14", "userRef": "buyer14", "channel": "flash", "delayMs": 1000, "quantity": 1 },
+    { "id": "attempt-15", "userRef": "buyer15", "channel": "flash", "delayMs": 1000, "quantity": 1 }
+  ]
+}

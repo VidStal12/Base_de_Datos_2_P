@@ -88,6 +88,38 @@ npm run verificar:ofertaFlash
 
 Siembra una oferta de 5 unidades sobre un producto real y dispara 15 intentos de compra simultáneos, confirmando que gane exactamente el stock inicial (5), el resto se rechace, el contador en Redis termine en exactamente 0, y el inventario real en MySQL se descuente en la misma cantidad — sin sobreventa ni bloqueos a nivel de aplicación (un único script Lua atómico en Redis, ver `backend/src/config/redis.js`). Detalle completo en [IA/ENTREGA-2-PLAN.md §4.2](IA/ENTREGA-2-PLAN.md).
 
+### Prueba reutilizable contra el endpoint HTTP real
+
+Además de la verificación interna anterior, `flash-sale-tests/` prueba el endpoint `POST /api/ofertas/:productoId/comprar` atravesando Express, autenticación JWT, Redis, MySQL y Mongo. Usa 15 compradores sintéticos distintos; no llama directamente a los servicios ni usa la cuenta de Ana.
+
+**Requisitos:** Node.js 20 o posterior, backend en `http://localhost:3000`, MySQL/MongoDB/Redis normales del proyecto levantados, migraciones aplicadas y la cuenta vendedora `luis.ramirez@example.com` creada por el seed.
+
+La preparación y la ejecución están separadas. Desde la raíz del repositorio, primero se crean o verifican los usuarios y el producto sintético, se restaura el inventario a 50 y se reinicia el cupo de 5 unidades:
+
+```powershell
+node .\flash-sale-tests\prepare.js
+```
+
+Después se ejecuta la única prueba combinada: tres compradores salen al mismo tiempo y los demás se incorporan en grupos con retrasos de 10, 100, 500 y 1,000 milisegundos:
+
+```powershell
+node .\flash-sale-tests\run.js
+```
+
+`prepare.js` registra las cuentas que todavía no existan entre `flash.test.01@example.com` y `flash.test.15@example.com`, y crea una dirección y un método de pago sintéticos para cada una. También busca por descripción exacta un producto exclusivo de prueba; si no existe, crea mediante la API su categoría, subcategoría y producto usando la cuenta de Luis. No modifica el inventario ni la oferta de los productos reales del catálogo.
+
+`run.js` no crea ni restaura datos: solo comprueba que exista una preparación vigente, inicia sesión con las cuentas ya preparadas y lanza las solicitudes. Una preparación se consume al iniciar la ráfaga. Para repetir la prueba o devolver el producto de 45 a 50 unidades, hay que ejecutar nuevamente `prepare.js`; intentar correr `run.js` dos veces seguidas se rechaza con un mensaje claro.
+
+La prueba sí crea pedidos y pagos reales para las cuentas sintéticas ganadoras. Esos pedidos se conservan entre ejecuciones, pero no afectan la validación: cada reporte compara el inventario inmediatamente anterior y posterior a su propia ráfaga. El historial de compras de Ana no se modifica.
+
+Cada corrida crea una carpeta ignorada por Git bajo `flash-sale-tests/results/` con:
+
+- `attempts.jsonl`: usuario sintético, instante programado y real, desviación de planificación, status, cuerpo y latencia de cada solicitud.
+- `probes.json`: disponibilidad de `/api/health` y del stock de la oferta mientras ocurre la ráfaga.
+- `summary.json`: conteos, percentiles, inventario MySQL, remanente Redis e invariantes aprobadas o fallidas.
+
+El comando termina con código de salida `1` si detecta timeouts, errores inesperados, inventario negativo, diferencias entre compras e inventario, inconsistencia con Redis o indisponibilidad durante las sondas. `flash-sale-tests/users.example.json` contiene exclusivamente credenciales y métodos de pago sintéticos de desarrollo; no se deben colocar cuentas reales en ese archivo.
+
 ## Verificar las recomendaciones por tendencia (Entrega 2)
 
 ```bash
@@ -230,6 +262,12 @@ backend/
     services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, oferta flash, recomendaciones por tendencia, historial, sync admin)
     routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
+flash-sale-tests/
+  prepare.js                Prepara usuarios, producto, inventario y oferta
+  run.js                    Ejecutor HTTP parametrizado y verificador MySQL/Redis
+  users.example.json        Compradores sintéticos reutilizables
+  scenarios/combined.json   Única ráfaga: simultáneos + grupos con retraso
+  results/                  Reportes generados por corrida (ignorado por Git)
 frontend/
   src/
     api/                   Cliente HTTP hacia el backend
