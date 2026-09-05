@@ -42,4 +42,11 @@ function conectar() {
   return cliente;
 }
 
-module.exports = { conectar };
+// Cierra únicamente el cliente ya abierto, sin crear conexiones al apagar ni
+// continuar reintentando contra un Redis que podría estar fuera de servicio.
+function cerrar() {
+  if (cliente) cliente.disconnect();
+  cliente = undefined;
+}
+
+module.exports = { conectar, cerrar };

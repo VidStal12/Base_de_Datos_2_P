@@ -3,6 +3,7 @@ const { esEnteroPositivo } = require('../utils/validation');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const cartService = require('./cartService');
+const { encolarCompra } = require('./ventasOutboxService');
 
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
@@ -88,6 +89,10 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
         referencia_transaccion: `TX-${compra.id}-${Date.now()}`,
       },
     });
+
+    // El pendiente de analítica se confirma con el pago. Una caída posterior de
+    // Cassandra no pierde esta venta ni requiere volver a ejecutar el checkout.
+    await encolarCompra(tx, compra);
 
     return { compra, pago };
   }).then(async (resultado) => {
@@ -211,6 +216,10 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
         referencia_transaccion: `TX-OFERTA-${compra.id}-${Date.now()}`,
       },
     });
+
+    // Oferta flash y compra por recomendación usan este checkout: ambas generan
+    // el mismo snapshot con el importe neto que quedó guardado en MySQL.
+    await encolarCompra(tx, compra);
 
     return { compra, pago };
   }).then(async (resultado) => {

@@ -70,6 +70,35 @@ services:
       timeout: 5s
       retries: 10
 
+  cassandra:
+    image: cassandra:5.0
+    container_name: tiendaya-cassandra
+    restart: unless-stopped
+    # Un nodo para desarrollo: la copia analítica se puede reconstruir desde
+    # MySQL. Esto no pretende ofrecer alta disponibilidad con una sola réplica.
+    environment:
+      CASSANDRA_CLUSTER_NAME: TiendaYaAnalytics
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 200M
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+      # Cassandra no ejecuta /docker-entrypoint-initdb.d como MySQL: el cliente
+      # Node aplica este CQL idempotente. El montaje permite inspeccionarlo con cqlsh.
+      - ./docker/cassandra-init:/scripts:ro
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT release_version FROM system.local;' > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
 volumes:
   mysql_data:
   mongo_data:
+  cassandra_data:

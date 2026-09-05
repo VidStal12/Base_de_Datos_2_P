@@ -1,29 +1,29 @@
-# Plan — Entrega 2 (Clave-Valor, Grafos)
+# Plan — Entrega 2 (Clave-Valor, Columnar)
 
-> Creado: 2026-08-30. Este documento es el plan de trabajo para Entrega 2 — qué pide el PRD, qué hay hoy en el proyecto relevante a cada punto, la decisión grafos-vs-columnar (con formato ADR, ya que el PRD la exige documentada así), y el plan de implementación por pieza. Se agrega a los tres ADR existentes en vez de convertirse en un cuarto: cubre una entrega completa, no una única decisión puntual — el patrón que ya sigue [ENTREGA-1-TRAZABILIDAD.md](ENTREGA-1-TRAZABILIDAD.md) para Entrega 1.
+> Creado: 2026-08-30. Actualizado: 2026-09-04. Este documento conserva el plan y la evidencia previa de Redis y registra el cambio de alcance a ventas. La decisión vigente se desarrolla en [ADR-004](ADR-004-analitica-ventas-cassandra.md); las propuestas de reseñas y Neo4j de §4.3/§4.4 quedan identificadas como históricas y aplazadas.
 >
-> **Decisión de stack para esta entrega (dada por el equipo, no derivada acá):** almacén clave-valor → **Redis**. Familia grafos/columnar → **Neo4j** (grafos).
+> **Decisión vigente del equipo:** almacén clave-valor → **Redis**. Familia grafos/columnar → **Apache Cassandra** (columnas anchas, *wide-column*, incluida por el PRD en la familia columnar). Implementación y evidencia local registradas el 2026-09-05 en ADR-004 §9.
 
 ---
 
 ## 1. Alcance: qué pide el PRD
 
-Transcripción de [PRD.md §5](PRD.md#5-entregas-y-requerimientos), sección Entrega 2, para que este documento sea autocontenido.
+Resumen de [PRD.md §5](PRD.md#5-entregas-y-requerimientos), sección Entrega 2, con el estado y la familia elegida por el equipo.
 
 > **Contexto del PRD:** El carrito relacional genera escrituras/lecturas frecuentes de datos transitorios. La venta de unidades limitadas bajo concurrencia exige atomicidad sin bloqueos de aplicación. Las necesidades de análisis de fraude y tendencias requieren evaluación de familias distintas.
 
 **Funcionalidades:**
 - Carrito persistente por sesión con expiración automática por inactividad
 - Oferta flash: N unidades disponibles bajo múltiples solicitudes concurrentes, sin sobreventa
-- Panel administrativo: patrones de posible manipulación de reseñas *(aplica — elegimos grafos)*
-- ~~Panel de actividad de ventas por intervalos de tiempo~~ *(no aplica — solo si se elige columnar)*
+- Panel administrativo: patrones de posible manipulación de reseñas *(aplazado — familia de grafos no seleccionada)*
+- Panel de actividad de ventas por intervalos de tiempo y productos en ascenso *(aplica — elegimos Cassandra)*
 
 **Requerimientos técnicos:**
-- [ ] Carrito sobre almacén clave-valor (Redis) con **TTL configurado explícitamente** y **efecto documentado sobre el checkout**
-- [ ] Oferta de inventario limitado mediante **operaciones atómicas** del almacén clave-valor, validada bajo **concurrencia simulada** (sin bloqueos a nivel de aplicación)
-- [ ] **Evaluación comparativa** de grafos vs. columnar para los dos requerimientos de análisis (criterios específicos al sistema, no genéricos)
-- [ ] Implementación de grafos (Neo4j): modelo cuentas-reseñas-productos + **consulta multi-salto** que detecte patrón anómalo de interacción
-- [ ] Para columnar (no seleccionada): documentación de condiciones bajo las cuales su incorporación estaría justificada
+- [x] Carrito sobre almacén clave-valor (Redis) con **TTL configurado explícitamente** y **efecto documentado sobre el checkout**
+- [x] Oferta de inventario limitado mediante **operaciones atómicas** del almacén clave-valor, validada bajo **concurrencia simulada** (sin bloqueos a nivel de aplicación), según evidencia previa de §4.2
+- [x] **Evaluación comparativa** de grafos vs. columnar para ambos análisis, actualizada en [ADR-004 §2](ADR-004-analitica-ventas-cassandra.md#2-alternativas-y-decisión)
+- [x] Implementación de **al menos una familia**: Cassandra, modelo por intervalos y comparación de demanda entre períodos; evidencia en ADR-004 §9
+- [x] Para grafos (no seleccionada): condiciones de incorporación en [ADR-004 §8](ADR-004-analitica-ventas-cassandra.md#8-cuándo-incorporar-grafos)
 
 **Rúbrica (10 pts):**
 
@@ -59,19 +59,19 @@ El ítem de mayor peso individual (3.0 pts) es la oferta de inventario limitado 
 
 `Producto.inventario` (Mongo) ya es una copia de lectura de `inventario` (MySQL), reenviada en cada escritura (ver [ADR-002 §3.3/§3.6](ADR-002-migracion-catalogo-documental.md)) — mismo patrón de "una base transaccional + reenvío a una copia de lectura en otra" que se puede reutilizar para relacionar Redis con MySQL en la oferta flash.
 
-### 2.3 Reseñas — decididas, no construidas — **prerrequisito real para grafos**
+### 2.3 Reseñas — decididas, no construidas; dependencia de la opción de grafos aplazada
 
-[ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.1 "Reseñas de producto", ya decidió el modelo (colección `resenas` en Mongo, `resenas_resumen` embebido en el producto), pero **no existe ni una sola reseña real en el sistema** — no hay colección, no hay endpoint, no hay UI. Esto no bloqueaba Entrega 1 (el PRD solo exigía la decisión embed/reference, no la implementación), pero **sí bloquea Entrega 2**: el requerimiento de grafos es "modelo cuentas-reseñas-productos + consulta multi-salto que detecte patrón anómalo" — sin reseñas reales (o al menos simuladas a propósito), no hay datos de qué patrón detectar. Ver §4.3 y §5.
+[ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.1 "Reseñas de producto", decidió el modelo (colección `resenas` en Mongo, `resenas_resumen` embebido en el producto), pero no existen su colección, endpoint o UI implementados. Esa ausencia sería una dependencia de un detector en Neo4j. **No bloquea el panel Cassandra seleccionado**: sus datos de origen son las compras ya registradas en MySQL.
 
-### 2.4 Redis / Neo4j — no existen en el stack todavía
+### 2.4 Infraestructura vigente y siguiente incorporación
 
-`docker-compose.yml` tiene `mysql` y `mongo` únicamente. Sin dependencia `redis`/`ioredis` ni `neo4j-driver` en `backend/package.json`. Sin ningún archivo bajo `backend/src/config/` para ninguna de las dos. Se empieza de cero en ambas — no hay nada que migrar de una versión previa a diferencia de, por ejemplo, la migración a Mongo que sí tenía datos relacionales de origen.
+MySQL, MongoDB y Redis ya tienen integración en el proyecto. Se incorpora Cassandra al mismo `docker-compose.yml`, con driver del backend, volumen persistente y un nodo de desarrollo. No se incorpora `neo4j-driver`. Los comandos de arranque, migración de outbox, carga histórica y pruebas de ventas están en el [README](../README.md); que estén documentados no acredita todavía ejecución ni disponibilidad de los servicios.
 
 ---
 
-## 3. Decisión: grafos (Neo4j) vs. columnar — formato ADR
+## 3. Decisión vigente: Cassandra; Neo4j aplazado
 
-Formato exigido por [PRD §6](PRD.md#6-registro-de-decisiones-arquitectónicas-adr).
+El registro formal vigente, con el formato exigido por [PRD §6](PRD.md#6-registro-de-decisiones-arquitectónicas-adr), es [ADR-004 — Analítica de ventas por intervalos con Cassandra](ADR-004-analitica-ventas-cassandra.md).
 
 ### Contexto
 
@@ -79,50 +79,51 @@ Dos necesidades de análisis, cada una candidata a una familia distinta:
 1. **Detección de fraude en reseñas** — identificar relaciones anómalas entre cuentas, reseñas y productos (p. ej. cuentas coordinadas que reseñan en bloque). Es un problema de **relaciones y su forma**, no de agregación tabular.
 2. **Panel de tendencias de venta** — ventas por intervalos de tiempo, productos en ascenso de demanda. Es un problema de **series de tiempo y agregación por rango**, no de relaciones.
 
-El PRD exige implementar *una* de las dos familias con su reto específico, y documentar formalmente por qué la otra no se justifica todavía.
+El PRD exige implementar **al menos una** de las dos familias con su reto específico y documentar las condiciones para incorporar la no seleccionada. Permite ambas; no exige exactamente una.
 
 ### Alternativas consideradas
 
-| Opción | Resuelve | Descartada por |
+| Opción | Resuelve | Decisión vigente |
 |---|---|---|
-| **Grafos (Neo4j)** — elegida | Fraude en reseñas | — |
-| Columnar (Cassandra/ScyllaDB) | Tendencias de venta | Ver Justificación |
-| Ambas familias | Los dos análisis | Fuera de alcance — el PRD pide una, y sumar la segunda sin necesidad va contra el criterio explícito del PRD de que la *calidad* del análisis pesa más que la *cantidad* de tecnologías (§2, §6) |
+| Grafos (Neo4j) | Fraude en reseñas | Aplazado; primero harían falta reseñas y una necesidad de recorrer sus relaciones |
+| **Columnar (Cassandra)** — elegida | Tendencias de venta | Aprovecha el historial SQL existente y desarrolla el panel priorizado por el equipo |
+| Ambas familias | Los dos análisis | Permitido, pero fuera del alcance actual acordado; no se demuestra necesidad de ambas |
 | Ninguna | — | No viable — el PRD exige al menos una implementada |
 
 ### Decisión
 
-Grafos (Neo4j), implementando detección de fraude en reseñas. Columnar queda documentado como no seleccionado (ver §3.4 de este documento, la sección de condiciones).
+Cassandra como copia analítica desde MySQL, consultada por particiones temporales y de producto. Express agrupa resultados acotados para una gráfica de ventas y una comparación de demanda entre períodos. El checkout sigue siendo transaccional en MySQL; un outbox captura cada venta y un worker la replica con reintentos idempotentes.
+
+**Histórico de la decisión:** el 2026-08-30 se había elegido preliminarmente Neo4j para demostrar consultas multi-salto sobre cuentas, reseñas y productos. Esa elección quedó reemplazada el 2026-09-04 al priorizar el equipo el panel de ventas. Las propuestas de §4.3/§4.4 se conservan como antecedente aplazado, no como tareas obligatorias de esta entrega.
 
 ### Justificación (criterios específicos al sistema, no genéricos)
 
-- **Patrón de consulta real de cada problema:**
-  - Fraude en reseñas necesita **traversal multi-salto**: "cuentas que reseñaron el mismo conjunto acotado de productos en una ventana de tiempo corta, todas con calificación alta" no es una fila ni un rango — es un patrón de conexión entre nodos que en SQL o en Mongo requeriría varios self-joins/lookups encadenados y no escala legible. Es exactamente el caso de uso de referencia de un grafo (Cypher resuelve esto con un patrón de camino de N saltos en una sola consulta).
-  - Tendencias de venta, en cambio, es agregación por bucket de tiempo sobre datos append-only — el patrón que Cassandra/ScyllaDB resuelve bien a **escala de escritura sostenida en cluster**. Este proyecto ya tiene precedente de resolver exactamente ese patrón (bucket de tiempo + agregación) sin una base columnar: `estadisticasEdiciones()` ([ADR-003 §3.4](ADR-003-historial-cambios-eventos.md)) agrupa `producto_eventos` por fecha con el framework de agregación de Mongo, y `total_vendido` (Mongo) ya cachea una métrica de venta acumulada. El patrón "tendencias por intervalo" es una extensión natural de algo que el proyecto ya sabe hacer sin sumar una base nueva.
-  - Conclusión: el problema que *sí* necesita una familia nueva de verdad es el de fraude — el de tendencias es resoluble con lo que ya hay.
-- **Diversificación real de la evaluación técnica:** Fase Inicial ya cubrió relacional, Entrega 1 ya cubrió documental (con agregación e índices compuestos). Un panel de tendencias en columnar seguiría ejercitando "agregación por rango", una habilidad que el proyecto ya demostró en Entrega 1. Grafos ejercita algo genuinamente nuevo (traversal de relaciones), que es más alineado con el objetivo del PRD (§2) de demostrar criterio técnico sobre familias *distintas*, no repetir el mismo tipo de consulta con otro motor.
-- **Costo operativo comparable:** ambas opciones agregan un contenedor Docker nuevo y un driver nuevo — ninguna es claramente más barata de operar que la otra a la escala de este proyecto, así que el costo operativo no inclina la decisión en ningún sentido (a diferencia de, por ejemplo, ADR-002 §3.2, donde el costo de romper la atomicidad del checkout sí fue decisivo).
+- **Datos disponibles:** las tres modalidades de compra ya producen detalle, importe, cantidad y fecha en MySQL; no hace falta construir antes el sistema de reseñas.
+- **Patrones de acceso concretos:** todos los productos de un día y un producto en un mes. Dos proyecciones Cassandra permiten consultar esas particiones sin joins ni búsquedas globales con `ALLOW FILTERING`.
+- **Separación de responsabilidades:** MySQL confirma ventas y el panel consulta su copia. `total_vendido` de Mongo sigue siendo una caché acumulada para catálogo, sin confundirla con una serie temporal.
+- **Alcance docente explícito:** el volumen actual podría analizarse en SQL. Incorporar columnas anchas permite demostrar el modelado por consultas pedido por el PRD, sin atribuir a Cassandra una necesidad de escala que no se ha medido.
 
 ### Consecuencias
 
 **Beneficios:**
-- Cubre un patrón de consulta (traversal multi-salto) que ningún otro componente del stack resuelve bien hoy.
-- Reutiliza un patrón de sincronización ya probado en este proyecto (base transaccional + reenvío de mejor esfuerzo a una copia especializada en otra base, ver ADR-002 §3.3) — la relación Mongo (reseñas, fuente de verdad) → Neo4j (grafo, copia especializada para el análisis) es la misma forma que MySQL (`inventario`) → Mongo (`Producto.inventario`).
+- Entrega el panel de ventas seleccionado con filtros compartidos y comparación de ventanas.
+- Conserva la atomicidad MySQL y agrega entrega recuperable mediante outbox, sin hacer depender una compra de la disponibilidad de Cassandra.
 
 **Limitaciones asumidas:**
-- **Las reseñas no existen todavía** (§2.3) — implementar grafos sin datos reales de reseñas obliga a construir primero una versión mínima de esa funcionalidad, que no era parte de esta entrega según el PRD original. Es trabajo adicional real, no un detalle menor.
-- **No hay fraude real que detectar** en los datos de prueba de un proyecto de curso — la consulta multi-salto necesita datos sembrados a propósito (un pequeño "anillo" de cuentas de prueba con patrón de reseña coordinado) para tener algo concreto que encontrar. Hay que documentar esos datos como sintéticos y deliberados, no presentarlos como hallazgo orgánico.
-- Un componente más para operar, respaldar y en el que razonar (mismo trade-off ya asumido en ADR-002 §5 al sumar Mongo).
+- Copia eventual: el panel puede demorarse al menos hasta el siguiente ciclo del worker y más si hay fallos o reintentos.
+- Agregación en backend sobre lectura acotada a 90 días recientes más la ventana anterior; la cantidad de filas todavía influye en el costo.
+- Un nodo Cassandra en Docker para desarrollo no ofrece alta disponibilidad. Un rango temporal acotado tampoco prueba rendimiento a gran escala.
+- Cancelaciones y reembolsos no están implementados; el modelo deberá incorporar ajustes si se agregan.
 
-### 3.4 Condiciones bajo las cuales columnar (Cassandra/ScyllaDB) sí estaría justificado
+### 3.4 Condiciones bajo las cuales grafos (Neo4j) estaría justificado
 
 Requerimiento explícito del PRD para la familia no seleccionada:
 
-- **Volumen de escritura sostenido que un solo nodo de Mongo no pueda absorber** — p. ej., miles de eventos de venta por segundo en horas pico, donde la necesidad real ya no es "agregar por intervalo" (que Mongo resuelve) sino "ingerir sin caerse" a una tasa que exige escalado horizontal de escritura entre varios nodos, el punto fuerte real de Cassandra/ScyllaDB.
-- **Retención masiva de series de tiempo con TTL nativo por partición** — si el panel de tendencias necesitara conservar datos crudos (no agregados) durante años a un volumen que hiciera cara la retención en Mongo, el modelo de particionamiento por tiempo de una base columnar (con expiración nativa por partición) sería la herramienta correcta.
-- **Necesidad de lecturas de rango extremadamente predecibles a gran escala** (p. ej. dashboards de BI consultados constantemente por muchos analistas a la vez) — el modelo de fila ancha de Cassandra está optimizado específicamente para ese acceso, más que la agregación general de Mongo.
+- Reseñas persistidas y suficientes relaciones entre cuentas, productos y vendedores para que el análisis tenga datos de origen.
+- Una consulta real de varios saltos, como grupos de cuentas que coinciden de manera reiterada en reseñas de los mismos productos dentro de ventanas cortas.
+- Un flujo de revisión de señales y una estrategia de reconstrucción del grafo desde las fuentes; datos sintéticos identificados como tales si se usan para demostrar el patrón.
 
-Ninguna de estas tres condiciones aplica a la escala actual del proyecto (5 productos de prueba, un puñado de compras) — es la razón concreta, no genérica, de por qué no se justifica sumarla ahora.
+La ausencia actual de reseñas y la prioridad acordada del panel permiten aplazar esa incorporación. La comparación completa y las consecuencias están en [ADR-004](ADR-004-analitica-ventas-cassandra.md).
 
 ---
 
@@ -182,7 +183,9 @@ oferta:{ofertaId}:stock      → entero, inicializado desde una porción de inve
 
 **Validación bajo concurrencia simulada** (requerimiento explícito): un script (`backend/scripts/verificarOfertaFlash.js`, mismo espíritu que `verificarCheckout.js`) que dispare **N requests concurrentes** (`Promise.all` con más solicitudes que unidades disponibles) contra el endpoint de la oferta y verifique: exactamente `stock inicial` ganadores, el resto rechazado, y el contador final en Redis en exactamente `0` (no negativo, no positivo de más).
 
-### 4.3 Reseñas — versión mínima (prerrequisito, Mongo)
+### 4.3 Reseñas — propuesta histórica aplazada (Mongo)
+
+> Antecedente del plan Neo4j del 2026-08-30. No es dependencia del panel Cassandra seleccionado; si se retoma grafos, habrá que revisar conjuntamente el modelo, sus señales y la política de creación de reseñas.
 
 Alcance acotado a lo que el grafo necesita, no la funcionalidad completa que describe ADR-002 §6.1:
 - Colección `resenas` (Mongo): `{ producto_id, usuario_id, calificacion, comentario, fecha }`.
@@ -191,7 +194,9 @@ Alcance acotado a lo que el grafo necesita, no la funcionalidad completa que des
 - UI mínima: mostrar reseñas en `ProductDetailPage`, formulario simple para dejar una.
 - **Datos sembrados a propósito**: un pequeño conjunto de cuentas de prueba con patrón de reseña coordinado (mismos productos, calificación alta, ventana de tiempo corta), documentado explícitamente como sintético — es lo que le da a la consulta de grafos algo real que encontrar (ver §3, Limitaciones asumidas).
 
-### 4.4 Grafos: detección de fraude (Neo4j)
+### 4.4 Grafos: detección de fraude (Neo4j) — propuesta histórica aplazada
+
+> Este diseño no está implementado ni forma parte del alcance vigente. Se conserva para mostrar el análisis previo; el registro actual es ADR-004. La propuesta debe revisarse antes de retomarla: §4.3 exige compra previa para reseñar, mientras que el ejemplo de consulta siguiente busca reseñas sin compra, un caso que ese flujo normal no produciría.
 
 **Modelo propuesto:**
 ```
@@ -243,11 +248,27 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 ---
 
+### 4.6 Panel de ventas por intervalos y ascenso de demanda (Cassandra)
+
+Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md). **Estado: implementado; carga histórica, conciliación, permisos HTTP y build verificados.** La inspección visual autenticada queda pendiente; límites y evidencia en ADR-004 §9.
+
+- **Fuente:** `compra_detalle` + `compra.fecha` en MySQL, con existencia de un pago aprobado. El detalle puede seguir `pendiente`. `precio_final` ya es total neto de línea; `descuento` es ahorro total y no se resta de nuevo.
+- **Captura:** tabla MySQL `venta_outbox`, PK `detalle_id`, con `payload`, `procesado_en`, `intentos`, `proximo_intento`, `ultimo_error`; se escribe en la transacción de ambos métodos de checkout. Abarca compras normales, flash y recomendadas.
+- **Entrega:** worker cada 30 s por defecto, reintentos programados y marcado de procesado solo después de escribir las dos proyecciones. La misma clave y valores permiten repetir una entrega sin duplicar ventas.
+- **Cassandra:** `ventas_por_dia`, clave `((dia), fecha_venta, detalle_id)`, y `ventas_por_producto_mes`, clave `((producto_id, mes), fecha_venta, detalle_id)`. Dinero en decimal. Consultas por particiones conocidas y agregación acotada en Express.
+- **Panel:** `/admin/ventas` consume `GET /api/admin/ventas`, solo para administrador. Fechas inclusivas Guatemala UTC−6, intervalo día/semana/mes, producto y mínimo de unidades recientes (5 por defecto). Rango máximo de 90 días, sin fechas futuras.
+- **Comparación:** período inmediatamente anterior de igual duración, incremento en unidades y porcentaje. Base anterior cero produce porcentaje `null`, mostrado sin base de comparación. Si se incluye hoy, el último día puede estar incompleto.
+- **Lecturas:** Cassandra aporta las métricas y Mongo las descripciones actuales. Si Cassandra falla, se informa indisponibilidad; no hay sustitución financiera por MySQL.
+- **Operación:** `npm run ventas:historico` para historial/reconstrucción, `npm run ventas:sincronizar` para una pasada y `npm run test:ventas` para comprobar las reglas. Variables y comandos completos en el [README](../README.md).
+- **Datos de desarrollo:** las compras sintéticas conservadas por las pruebas flash forman parte de ese historial. Deben presentarse como datos de prueba.
+
 ## 5. Riesgos y dependencias
 
-- **Reseñas es una dependencia dura, no un detalle** — sin §4.3 completo, §4.4 no tiene nada que consultar. Conviene planificarlo en ese orden explícitamente, no en paralelo asumiendo que "ya va a estar listo".
+- **MySQL sigue siendo autoridad:** hay que aplicar la migración de outbox y capturar el evento dentro de ambos checkouts; escribir después del commit sin una cola durable dejaría huecos si el proceso cae.
 - **La oferta de inventario limitado (§4.2) es el ítem de mayor riesgo de diseño** — dos guardas (Redis + MySQL) que tienen que coordinarse sin desincronizarse ni bloquearse mutuamente. Vale prototipar y validar la concurrencia simulada temprano, no dejarlo para el final.
-- Dos infraestructuras nuevas (Redis, Neo4j) suman a las dos que ya corren (MySQL, Mongo) — cuatro contenedores Docker en desarrollo. Vale confirmar que el entorno de todo el equipo los soporta cómodamente antes de la semana de entrega. Redis ya está sumado y probado; falta Neo4j.
+- **Entrega eventual:** un ciclo de 30 s no es un SLA; fallos, cola pendiente y reintentos pueden aumentar la demora. La disponibilidad de Cassandra debe verificarse y el panel debe hacer visible su estado.
+- **Capacidad local:** MySQL, Mongo, Redis y Cassandra requieren recursos del entorno Docker. Un nodo de Cassandra sirve para desarrollo, no para afirmar alta disponibilidad.
+- **Alcance de datos:** no hay cancelaciones ni reembolsos; futuros flujos exigirán eventos de ajuste. Un mínimo de unidades reduce ruido, pero promociones o faltantes de stock aún influyen en las ventas observadas.
 
 ---
 
@@ -256,7 +277,9 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 - ~~¿Carrito anónimo o solo con sesión iniciada?~~ — resuelto: requiere sesión (§4.1).
 - ~~Valor de TTL por inactividad~~ — resuelto: 7.5 min / 450s (§4.1).
 - ~~Cuántas unidades y qué producto(s) usar para demostrar la oferta flash~~ — resuelto: un producto real del catálogo, marcado con `oferta_flash` (§4.2). La cantidad es configurable por el vendedor/administrador; la verificación automática usa 5 unidades contra 15 intentos concurrentes.
-- Alcance real de la UI de reseñas — ¿algo mínimo (solo lo que el grafo necesita, §4.3) o la funcionalidad completa que ya describe ADR-002 §6.1 (con `resenas_resumen` visible en el catálogo, no solo en el detalle)?
+- ~~Familia para el análisis~~ — resuelto: Cassandra y panel de ventas; reemplaza Neo4j (ADR-004).
+- Alcance de reseñas y posible detección en grafos — aplazado; no bloquea esta entrega con la familia columnar seleccionada.
+- Formato final del informe y evidencia esperada por el curso — pendiente de definir con el equipo.
 
 ---
 
@@ -264,9 +287,10 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 
 1. ~~Redis + migración del carrito (§4.1)~~ — ✅ hecho (2026-08-30).
 2. ~~Oferta de inventario limitado (§4.2)~~ — ✅ hecho (2026-08-30).
-3. Reseñas mínimas (§4.3) — en paralelo a 1-2 si el equipo lo divide, pero **antes** del paso 4 sin excepción.
-4. Neo4j + detección de fraude + panel admin (§4.4) — depende del paso 3.
-5. Redacción final: evaluación comparativa (§3), diagrama de arquitectura actualizado, informe.
+3. Cassandra en Docker + migración de outbox y captura transaccional de ventas (§4.6).
+4. Worker idempotente, carga histórica y API por particiones; panel React con filtros y comparación.
+5. Verificación de reglas, integración, reintentos, permisos y visualización; registrar evidencia efectiva.
+6. Redacción final: ADR-004, [diagrama de arquitectura](ERD-ARQUITECTURA-POLIGLOTA.md) e informe.
 
 ---
 
@@ -276,6 +300,6 @@ Dos saltos (`Usuario`→`Producto`→`Usuario`) con condiciones sobre ambas rela
 |---|---|---|
 | Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
 | Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md §3.8 |
-| Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Redactada en este documento (§3) |
-| Implementación de grafos + reto específico (consulta multi-salto) | 3.0 pts | ⬜ No iniciado — plan en §4.3/§4.4, bloqueado por reseñas |
-| Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | ⬜ Diagrama de arquitectura todavía no existe como artefacto versionado — pendiente para el cierre de la entrega |
+| Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Actualizada en §3 y ADR-004; grafos aplazado con condiciones explícitas |
+| Implementación columnar + reto específico (variación de demanda) | 3.0 pts | 🟡 Incorporación en curso — §4.6; falta registrar validación efectiva |
+| Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | 🟡 Diagrama actualizado en ERD-ARQUITECTURA-POLIGLOTA.md; evidencia analítica y formato final del informe pendientes |

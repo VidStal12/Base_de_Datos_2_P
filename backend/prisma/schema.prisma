@@ -153,3 +153,19 @@ model compra_detalle {
   compra   compra   @relation(fields: [id_compra], references: [id])
   producto producto @relation(fields: [id_producto], references: [id])
 }
+
+// Outbox transaccional: la venta y su pendiente de envío se confirman juntos.
+// Se conserva el snapshot financiero aunque después cambie el catálogo; no
+// incluye información personal. detalle_id evita encolar dos veces una línea.
+// No lleva FK con borrado en cascada: el evento debe sobrevivir por sí mismo.
+model venta_outbox {
+  detalle_id      Int       @id
+  payload         Json
+  creado_en       DateTime  @default(now())
+  procesado_en    DateTime?
+  intentos        Int       @default(0)
+  proximo_intento DateTime  @default(now())
+  ultimo_error    String?   @db.Text
+
+  @@index([procesado_en, proximo_intento, detalle_id])
+}

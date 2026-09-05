@@ -14,6 +14,9 @@
     "verificar:carrito": "node scripts/verificarCarrito.js",
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",
     "verificar:recomendaciones": "node scripts/verificarRecomendaciones.js",
+    "ventas:sincronizar": "node scripts/sincronizarVentas.js",
+    "ventas:historico": "node scripts/sincronizarVentas.js --historico",
+    "test:ventas": "node --test tests/ventas*.test.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -24,6 +27,7 @@
     "@prisma/adapter-mariadb": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "bcryptjs": "^3.0.3",
+    "cassandra-driver": "^4.9.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

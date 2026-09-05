@@ -124,9 +124,13 @@ export function AdminDashboardPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-bold text-neutral-900">Panel de administrador</h1>
-        <Button as={Link} to="/admin/productos/nuevo" variant="accent">
-          + Nuevo producto
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {/* Acceso al análisis de ventas y productos con aumento de demanda. */}
+          <Button as={Link} to="/admin/ventas" variant="outline">Ventas y demanda</Button>
+          <Button as={Link} to="/admin/productos/nuevo" variant="accent">
+            + Nuevo producto
+          </Button>
+        </div>
       </div>
 
       <EstadisticasEdicionesWidget />

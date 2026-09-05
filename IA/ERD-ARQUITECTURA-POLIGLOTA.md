@@ -1,8 +1,8 @@
-# ERD — Arquitectura políglota (estado actual, 2026-08-30)
+# ERD — Arquitectura políglota (actualizado, 2026-09-04)
 
-> Este documento cubre las **tres bases de datos que corren hoy** (MySQL, MongoDB, Redis) y, sobre todo, **cómo interactúan entre sí** — que es lo que ningún documento individual cubre de punta a punta. No reemplaza a [ERD.md](ERD.md), que sigue siendo el registro histórico del modelo 100% relacional de la Fase Inicial (se mantiene sin editar a propósito). Tampoco reemplaza las decisiones ya documentadas en los ADR — acá se **consolida** lo que ya está decidido y construido, con referencias a cada ADR para el razonamiento completo, no se re-argumenta nada de cero.
+> Este documento reúne el modelo de MySQL, MongoDB y Redis, y la incorporación de Cassandra como copia analítica de ventas. Describe responsabilidades y relaciones; no acredita que los contenedores estén corriendo ni que la incorporación nueva esté validada. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
 >
-> Neo4j (grafos, Entrega 2) todavía no es parte del sistema en funcionamiento — el modelo propuesto vive en [ENTREGA-2-PLAN.md §4.4](ENTREGA-2-PLAN.md#44-grafos-detección-de-fraude-neo4j), no acá. Este documento se actualizará cuando esa pieza exista de verdad.
+> La elección preliminar de Neo4j queda aplazada y reemplazada por **Cassandra**, según [ADR-004](ADR-004-analitica-ventas-cassandra.md). El PRD admite Cassandra en la familia columnar y exige implementar al menos una de las familias evaluadas. Las propuestas históricas de grafos se conservan identificadas en ENTREGA-2-PLAN.md.
 
 ---
 
@@ -10,11 +10,12 @@
 
 | Base | Rol | Qué le pertenece |
 |---|---|---|
-| **MySQL** | Fuente transaccional única | Usuarios/auth, direcciones, métodos de pago, inventario (precio/cantidad reales), compras/pagos — todo lo que necesita ACID fuerte y ya tenía el checkout atómico de la Fase Inicial |
+| **MySQL** | Fuente transaccional única | Usuarios/auth, direcciones, métodos de pago, inventario (precio/cantidad reales), compras/pagos y `venta_outbox` capturado en la misma transacción de la venta |
 | **MongoDB** | Fuente del catálogo descriptivo + historial | Categorías, subcategorías, contenido de producto (descripción/atributos/imágenes/estado), historial de cambios por evento |
-| **Redis** | Dato transitorio | Carrito de compra — TTL de 7.5 min, se puede perder sin consecuencia (no es fuente de verdad de nada) |
+| **Redis** | Estado temporal y admisión atómica | Carrito con TTL de 7.5 min, cupos de ofertas y recomendaciones cacheadas; MySQL sigue siendo autoridad del inventario vendido |
+| **Cassandra** | Copia analítica de ventas | Proyecciones por día y por producto/mes, reconstruibles desde las ventas pagadas en MySQL; importes y unidades del panel |
 
-Ninguna base es dueña de un dato que otra también posea de forma autoritativa — donde una base necesita algo que "vive" en otra, lo tiene como **copia de lectura reenviada** (mejor esfuerzo, después del hecho) o como **referencia simple** (un id sin garantía de integridad referencial entre bases). El detalle exacto de cada caso está en la §5.
+Las copias no cambian la autoridad de cada dato. El catálogo conserva reenvíos de mejor esfuerzo ya documentados; las ventas hacia Cassandra incorporan **outbox durable con reintentos idempotentes**. Las referencias entre bases son IDs sin claves foráneas distribuidas. El detalle está en §5 y el modelo de Cassandra en §6.
 
 ### 1.1 Diagrama de interacción
 
@@ -25,6 +26,7 @@ flowchart LR
         M_inventario[inventario]
         M_producto[producto — solo ancla de FK]
         M_compra[compra / compra_detalle / pago]
+        M_outbox[venta_outbox]
         M_carrito["carrito (tabla vestigial, sin uso)"]
     end
 
@@ -36,7 +38,18 @@ flowchart LR
 
     subgraph Redis["Redis (clave-valor)"]
         R_carrito["carrito:usuario_id"]
+        R_oferta["oferta:producto_id:stock"]
+        R_recomendacion["recomendaciones y cupos personales"]
     end
+
+    subgraph Cassandra["Cassandra (columnas anchas)"]
+        C_dia[ventas_por_dia]
+        C_producto[ventas_por_producto_mes]
+    end
+
+    W[Worker de ventas: 30 s y reintentos]
+    API[Express: GET /api/admin/ventas]
+    UI[React: /admin/ventas]
 
     M_inventario -- "precio/cantidad, en cada alta/edición" --> MG_producto
     M_compra -- "cantidad descontada + total_vendido, tras checkout" --> MG_producto
@@ -48,11 +61,19 @@ flowchart LR
     M_usuarios -. "id_usuario ancla la clave" .-> R_carrito
     M_compra -- "vacía el carrito, tras checkout exitoso" --> R_carrito
     R_carrito -- "resuelve cada productoId, en cada lectura del carrito" --> MG_producto
+    M_compra -- "misma transacción MySQL" --> M_outbox
+    M_outbox --> W
+    W -- "inserciones idempotentes" --> C_dia
+    W -- "inserciones idempotentes" --> C_producto
+    C_dia -- "particiones diarias" --> API
+    C_producto -- "particiones por producto y mes" --> API
+    MG_producto -- "descripciones actuales" --> API
+    API -- "métricas y comparación; solo administrador" --> UI
 ```
 
-**Cómo leer las flechas:** línea sólida = dato que se copia/empuja de una base a otra (reenvío de mejor esfuerzo, o una lectura de resolución en el momento). Línea punteada = referencia simple — un id guardado como número/ObjectId plano, sin garantía de integridad entre bases (documentado así a propósito, ver [ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.3 "Relación producto–vendedor").
+**Cómo leer las flechas:** línea sólida = escritura, entrega o lectura identificada por su etiqueta. Los reenvíos del catálogo son de mejor esfuerzo; la entrega a Cassandra queda respaldada por outbox en MySQL. Línea punteada = referencia simple sin integridad referencial entre bases (ver [ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.3).
 
-**Lo que NO existe, a propósito:** ninguna flecha vuelve de Mongo hacia MySQL, ni de Redis hacia MySQL o Mongo. Se evaluó y se descartó explícitamente un mecanismo bidireccional (worker de sincronización basado en el binlog de MySQL + Change Streams de Mongo) — ver [ADR-002 §3.5](ADR-002-migracion-catalogo-documental.md#35-considerado-y-descartado-2026-08-30-worker-de-sincronización-cdc-bidireccional): mapeado campo por campo, no apareció ningún dato real que necesitara viajar en sentido inverso.
+**Dirección de autoridad:** ninguna copia reconstruye ventas o inventario SQL desde Mongo, Redis o Cassandra. El worker sí marca el estado de entrega de su outbox en MySQL después de escribir Cassandra; eso no convierte a Cassandra en fuente de las ventas. La decisión previa de descartar CDC bidireccional de catálogo sigue vigente ([ADR-002 §3.5](ADR-002-migracion-catalogo-documental.md#35-considerado-y-descartado-2026-08-30-worker-de-sincronización-cdc-bidireccional)); el outbox unidireccional de ventas resuelve otro alcance.
 
 ---
 
@@ -74,6 +95,9 @@ Esquema completo en [`backend/prisma/schema.prisma`](../backend/prisma/schema.pr
 | `compra` | id | id_usuario, id_direccion | total, fecha | — |
 | `pago` | id | id_compra, id_metodo_pago | monto, estado, fecha_pago, referencia_transaccion | — |
 | `compra_detalle` | id | id_compra, id_producto | cantidad, precio_final, descuento, estado | — |
+| `venta_outbox` | detalle_id | — | payload, procesado_en, intentos, proximo_intento, ultimo_error | Identidad de `compra_detalle.id`; captura en la misma transacción, entrega posterior a Cassandra |
+
+`precio_final` es total neto de línea y `descuento` ahorro total. La venta analítica exige existencia de un pago aprobado; el detalle puede continuar `pendiente`. La extracción debe evitar un join que multiplique líneas si hay varios pagos.
 
 ### 2.2 Diagrama
 
@@ -149,6 +173,14 @@ erDiagram
         date fecha_pago
         varchar referencia_transaccion
     }
+    VENTA_OUTBOX {
+        int detalle_id PK
+        json payload
+        datetime procesado_en
+        int intentos
+        datetime proximo_intento
+        varchar ultimo_error
+    }
 
     USUARIOS }o--|| ROL_USUARIO : tiene
     USUARIOS ||--o{ DIRECCIONES : registra
@@ -163,6 +195,7 @@ erDiagram
     COMPRA ||--o{ COMPRA_DETALLE : contiene
     COMPRA ||--o{ PAGO : cobra
     METODO_PAGO ||--o{ PAGO : usado_en
+    COMPRA_DETALLE ||..o| VENTA_OUTBOX : identidad_logica
 ```
 
 ---
@@ -236,11 +269,14 @@ Mermaid `erDiagram` no representa bien objetos anidados ni arrays variables (el 
 
 ## 4. Redis (clave-valor)
 
-Un único patrón de clave hoy — ver [`backend/src/services/cartService.js`](../backend/src/services/cartService.js) y [ENTREGA-2-PLAN.md §4.1](ENTREGA-2-PLAN.md#41-carrito-en-redis-implementado-y-verificado-2026-08-30).
+Patrones del carrito, la oferta flash y las recomendaciones — ver servicios y [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md).
 
 | Clave | Tipo | Forma | TTL |
 |---|---|---|---|
 | `carrito:{usuario.id_usuario}` | Hash | `{ "productoId": "cantidad", ... }` | 450s (7.5 min), reiniciado en **cualquier** interacción (lectura o escritura) — expiración por inactividad, no fija |
+| `oferta:{productoId}:stock` | String entero | Cupo de oferta restante, descontado mediante Lua atómico | Hasta el fin de la oferta |
+| `recomendaciones:{usuarioId}` | String JSON | Resultado temporal del análisis personalizado | 3600s |
+| `oferta-recomendada:{productoId}:{usuarioId}:stock` | String entero | Cupo personal restante, descontado mediante el mismo Lua | 3600s al inicializar el cupo |
 
 `usuario.id_usuario` en la clave es la misma referencia entera que en MySQL — no hay una tabla `carrito` real detrás en Redis, ni falta: el hash completo es el carrito. Al leer (`GET /api/carrito`), cada `productoId` se resuelve contra `productos` (Mongo) para traer descripción/precio/imagen vigentes — el carrito en sí nunca guarda una copia de esos datos, solo cantidades.
 
@@ -248,20 +284,24 @@ Un único patrón de clave hoy — ver [`backend/src/services/cartService.js`](.
 
 ## 5. Interacciones cruzadas — detalle completo
 
-Cada fila de acá es una flecha de la §1.1. `Mecanismo` distingue **reenvío** (push, después de un commit, mejor esfuerzo) de **referencia** (un id guardado, sin push) de **resolución en lectura** (se consulta la otra base en el momento de leer, no se copia nada).
+`Mecanismo` distingue reenvío de mejor esfuerzo, referencia, resolución en lectura y entrega durable por outbox. Estas responsabilidades no requieren una transacción compartida entre motores.
 
 | Origen → Destino | Dato | Mecanismo | Disparador | Dónde vive el código |
 |---|---|---|---|---|
 | MySQL `inventario` → Mongo `Producto.inventario` | precio, cantidad | Reenvío | Alta o edición de producto | `productoService.crear()` / `actualizar()` |
-| MySQL `compra`/`compra_detalle` → Mongo `Producto.total_vendido` + `Producto.inventario.cantidad` | unidades vendidas, descuento de stock | Reenvío | Checkout exitoso (después de confirmada la transacción) | `checkoutService.checkout()` |
+| MySQL `compra`/`compra_detalle` → Mongo `Producto.total_vendido` + `Producto.inventario.cantidad` | unidades vendidas, descuento de stock | Reenvío | Checkout exitoso (después de confirmada la transacción) | `checkoutService.checkout()` / `checkoutOferta()` |
 | MySQL `usuarios` → Mongo `Producto.vendedor_nombre` | nombre completo del vendedor | Reenvío (una sola vez) | Alta de producto | `productoService.crear()` |
 | MySQL `usuarios` → Redis `carrito:{id}` | — | Referencia (la clave misma) | — | `cartService.js` |
-| MySQL `compra` → Redis `carrito:{id}` | — (borra la clave entera) | Reenvío | Checkout exitoso | `checkoutService.checkout()` (server-side, garantizado) + `CartContext.jsx` (cliente, redundante) |
+| MySQL `compra` → Redis `carrito:{id}` | — (borra la clave entera) | Reenvío de mejor esfuerzo | Checkout normal exitoso | `checkoutService.checkout()` (servidor) + `CartContext.jsx` (cliente) |
 | Mongo `Producto.producto_id` → MySQL `producto.id` | — | Referencia, sin FK real | — | Todo el catálogo |
 | Mongo `Producto.vendedor_id` → MySQL `usuarios.id_usuario` | — | Referencia, sin FK real | — | Todo el catálogo |
 | Mongo `ProductoEvento.usuario_id` → MySQL `usuarios.id_usuario` | — | Referencia, sin FK real | — | Historial de cambios |
 | Redis `carrito:{id}` → Mongo `productos` | descripción, precio, imagen vigentes | Resolución en lectura | Cada `GET /api/carrito` | `cartService.obtener()` |
 | Mongo `producto_eventos` | snapshot completo de `Producto` | (interno a Mongo, no cruza bases) | Cada alta/edición | `productoService.crear()` / `actualizar()` |
+| MySQL `compra_detalle` → MySQL `venta_outbox` | Línea de venta pagada e identidad estable | Captura dentro de la transacción | Ambos métodos de checkout | Integración de outbox de ventas |
+| MySQL `venta_outbox` → Cassandra | Misma línea en dos proyecciones | Entrega con reintentos; inserciones idempotentes | Worker cada 30s por defecto o sincronización manual | Worker de ventas |
+| Cassandra → API de ventas | Importes, cantidades y fechas | Lecturas de particiones conocidas | `GET /api/admin/ventas`, solo administrador | Servicio analítico |
+| Mongo `Producto` → API de ventas | Descripción actual | Resolución de IDs en lectura | Consulta del panel | Enriquecimiento del resultado |
 
 **Reconciliación manual (admin), cuando el reenvío de mejor esfuerzo falla silenciosamente:**
 
@@ -272,10 +312,30 @@ Cada fila de acá es una flecha de la §1.1. `Mecanismo` distingue **reenvío** 
 
 Ninguna de las dos reconstruye lo contrario (MySQL nunca se recalcula desde Mongo) — la dirección de "quién es la verdad" es siempre la misma, nunca se invierte.
 
+Para Cassandra, `npm run ventas:historico` carga o reconstruye la copia desde las compras con pago aprobado en MySQL; `npm run ventas:sincronizar` ejecuta una pasada del worker. La confirmación de entrega se registra únicamente tras escribir ambas tablas. Si una escritura o esa confirmación falla, las mismas claves permiten reintentar sin duplicar ventas.
+
 ---
 
-## 6. Qué falta (Entrega 2 en curso)
+## 6. Cassandra (columnas anchas): proyección analítica
 
-- **Oferta de inventario limitado**: sumará un segundo patrón de clave en Redis (`oferta:{id}:stock`, contador atómico) — ver [ENTREGA-2-PLAN.md §4.2](ENTREGA-2-PLAN.md#42-oferta-de-inventario-limitado-el-ítem-de-mayor-peso-30-pts). Todavía no implementado.
-- **Neo4j**: modelo cuentas-reseñas-productos propuesto en [ENTREGA-2-PLAN.md §4.4](ENTREGA-2-PLAN.md#44-grafos-detección-de-fraude-neo4j), bloqueado por implementar reseñas primero (§4.3 del mismo documento). No es parte del sistema todavía — este ERD no lo diagrama para no describir algo que no existe.
-- **Reseñas** (Mongo, colección `resenas`): modelo decidido desde Entrega 1 ([ADR-002 §6.1](ADR-002-migracion-catalogo-documental.md#6-decisiones-de-modelado-embed-vs-reference)), nunca implementado. `Producto.resenas_resumen` ya existe en el schema, siempre en su valor por defecto.
+La familia columnar del PRD incluye Cassandra, una base de columnas anchas (*wide-column*). Se diseña por accesos a particiones, con agregación acotada en Express, no con joins o agregaciones arbitrarias ejecutados por Cassandra. Decisión completa en [ADR-004](ADR-004-analitica-ventas-cassandra.md).
+
+| Tabla | Partición | Orden dentro de la partición | Patrón |
+|---|---|---|---|
+| `ventas_por_dia` | `(dia)` | `fecha_venta`, `detalle_id` | Todos los productos dentro de los días solicitados |
+| `ventas_por_producto_mes` | `(producto_id, mes)` | `fecha_venta`, `detalle_id` | Un producto dentro de los meses y límites del rango |
+
+Ambas conservan la identidad de detalle, compra y producto, fecha, cantidad, importe neto y descuento. El dinero usa `decimal`. Se inserta el mismo hecho en dos formas para resolver los dos accesos; no se incrementan contadores por cada entrega. `detalle_id` evita colisiones entre líneas con la misma fecha. Los buckets de partición se derivan del instante de venta en Guatemala.
+
+**Filtros compartidos:** fechas inclusivas en UTC−6, intervalo día/semana/mes, producto y mínimo de unidades recientes (5 por defecto). Se rechazan futuro y rangos superiores a 90 días. Se consulta también la ventana inmediatamente anterior de igual duración. Los extremos se convierten a instantes `[inicio, fin exclusivo)`; si se incluye hoy puede haber un último día incompleto.
+
+El ranking compara unidades: aumento `reciente − anterior`; porcentaje `((reciente − anterior) / anterior) × 100` solo con base anterior positiva. Con base cero devuelve `null` y se muestra sin base de comparación. Mongo resuelve descripciones actuales; los importes financieros siempre proceden de Cassandra. Su indisponibilidad se informa sin sustituir la consulta por SQL.
+
+**Desarrollo:** un nodo en Docker con volumen persistente; no hay alta disponibilidad. El worker tiene intervalo configurable (`VENTAS_SYNC_INTERVAL_MS`, `30000` ms por defecto) y habilitación mediante `VENTAS_SYNC_ENABLED`. La conexión usa `CASSANDRA_CONTACT_POINTS`, `CASSANDRA_PORT`, `CASSANDRA_LOCAL_DATACENTER` y `CASSANDRA_KEYSPACE`.
+
+## 7. Pendientes y límites
+
+- **Validación Cassandra:** registrar migración, tablas disponibles, carga/reconstrucción, reintentos idempotentes, permisos, pruebas de cálculo y revisión visual. Este documento no afirma que se haya ejecutado esa validación.
+- **Cancelaciones/reembolsos:** no implementados; se necesitarán eventos de ajuste y nuevas reglas de proyección.
+- **Datos de desarrollo:** las compras sintéticas conservadas por pruebas flash forman parte del historial que se carga; deben identificarse como pruebas al presentar métricas.
+- **Reseñas y Neo4j:** siguen aplazados. `Producto.resenas_resumen` existe como estructura, sin flujo de reseñas implementado. No bloquean el panel de la familia seleccionada.

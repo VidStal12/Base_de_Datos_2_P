@@ -1,6 +1,6 @@
 # Estado del proyecto — TiendaYa
 
-> Última actualización: 2026-08-23. Este documento resume qué se construyó, qué se decidió y qué falta, para que cualquiera (o una sesión futura) pueda retomar el proyecto sin releer todo el historial. El detalle técnico de cada decisión vive en [ERD.md](ERD.md) y [ADR-001-stack-y-migraciones.md](ADR-001-stack-y-migraciones.md); acá se resume y se enlaza.
+> Última actualización: 2026-09-05. Este documento resume qué se construyó, qué se decidió y qué falta, para que cualquiera (o una sesión futura) pueda retomar el proyecto sin releer todo el historial. El detalle técnico vive en los ADR y en [ERD-ARQUITECTURA-POLIGLOTA.md](ERD-ARQUITECTURA-POLIGLOTA.md). Las comprobaciones históricas conservan sus fechas; la evidencia de Cassandra está registrada en §3.10 y ADR-004 §9.
 
 ---
 
@@ -8,7 +8,7 @@
 
 La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquema relacional normalizado, ERD documentado, checkout como transacción atómica, DDL versionado y datos de prueba. Sobre esa base ya se construyó bastante más de lo mínimo: backend completo (auth, catálogo con atributos variables por categoría, pedidos) y un frontend funcional (tienda + panel de vendedor).
 
-**No se empezó** la migración a MongoDB de Entrega 1 (el catálogo sigue 100% relacional) ni ninguna pieza de Entregas 2/3/Final. El plan acordado es: terminar el backend/frontend relacional → función de ETL hacia MongoDB después (ver §6).
+El catálogo descriptivo y su historial ya viven en **MongoDB**; MySQL conserva la autoridad transaccional. **Redis** resuelve carrito, ofertas limitadas y recomendaciones. El panel de ventas por intervalos está implementado sobre **Cassandra**, reemplazando la propuesta preliminar de Neo4j ([ADR-004](ADR-004-analitica-ventas-cassandra.md)). El contenedor está saludable, la carga histórica está conciliada y las 17 pruebas aisladas pasaron; ver §3.10 para los límites de validación.
 
 ---
 
@@ -19,17 +19,19 @@ La **Fase Inicial** del PRD está completa y verificada de punta a punta: esquem
 | Fase Inicial | Esquema 3FN + ERD + checkout atómico + DDL versionado | ✅ Completo y verificado |
 | — (extra, no pedido por el PRD todavía) | Auth completa, CRUD de catálogo, pedidos, panel de vendedor, panel de administrador, frontend | ✅ Completo (ver §3) |
 | Entrega 1 | Migración de productos a base documental (MongoDB) + historial de cambios por eventos | 🟡 Los 6 requerimientos técnicos del PRD están implementados y verificados (5/6 puntos de la rúbrica, ver §3.5); solo falta "calidad del informe" (0.5 pt), que depende de confirmar el formato esperado, no de código. Reseñas/imágenes como feature son opcionales — el PRD solo exige la decisión embed/reference, ya documentada |
-| Entrega 2 | Carrito en Redis + oferta de inventario limitado + grafos/columnar | 🟡 En curso (planificada 2026-08-30, ver [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md)) — **carrito en Redis** (§3.7) y **oferta de inventario limitado atómica bajo concurrencia** (§3.8, el ítem de mayor peso de la rúbrica) implementados y verificados, ambos 2026-08-30; **recomendaciones por tendencia** agregadas como complemento (§3.9, 2026-08-31, no es un requerimiento del PRD por sí solo); reseñas y grafos siguen pendientes |
+| Entrega 2 | Carrito Redis + oferta de inventario limitado + Cassandra para ventas | 🟡 Carrito y oferta verificados según evidencia del 2026-08-30 (§3.7/§3.8); recomendaciones del 2026-08-31 (§3.9). Panel Cassandra implementado, carga histórica y API verificadas (§3.10). Inspección visual autenticada e informe académico pendientes. Grafos aplazado, no bloqueante |
 | Entrega 3 | Motor de búsqueda + consistencia distribuida del checkout | ⬜ No iniciada |
 | Entrega Final | Búsqueda vectorial + control de acceso NoSQL + retrospectiva | ⬜ No iniciada |
 
-**Pendientes del PRD (§9) que siguen sin resolver:** nombres del equipo, enlace al repositorio, estrategia preliminar de consistencia distribuida, cronograma interno del equipo. La decisión preliminar grafos vs. columnar (Entrega 2) ya no está pendiente — resuelta en [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md) (grafos/Neo4j). El resto sigue sin resolver porque no depende de código — hace falta que el equipo lo defina.
+**Pendientes del PRD (§9):** nombres del equipo, enlace al repositorio, estrategia general de consistencia distribuida de Entrega 3 y cronograma interno. La decisión grafos/columnar está resuelta en [ADR-004](ADR-004-analitica-ventas-cassandra.md): **Cassandra** reemplaza la elección preliminar de Neo4j. El PRD exige al menos una familia. El outbox de ventas define la entrega recuperable a la copia analítica, pero no resuelve por sí solo todos los cruces de bases de Entrega 3.
 
 ---
 
 ## 3. Qué se construyó
 
-### 3.1 Backend — núcleo de la Fase Inicial
+### 3.1 Backend — núcleo de la Fase Inicial (registro histórico)
+
+Esta subsección conserva el punto de partida relacional. Las tablas de catálogo citadas abajo se retiraron después (§3.5); el modelo vigente, incluida la incorporación de outbox, está en `prisma/schema.prisma` y ERD-ARQUITECTURA-POLIGLOTA.md.
 
 - **Esquema relacional** (`backend/prisma/schema.prisma`): 15 entidades — usuarios, rol_usuario, direcciones, metodo_pago, categoria, subcategoria, producto, inventario, atributo_categoria, atributo_producto, categoria_producto, carrito, compra, pago, compra_detalle. Basado en la Página 1 del ERD original, confirmada como base (ver [ERD.md](ERD.md) §0).
 - **4 migraciones versionadas** en `backend/prisma/migrations/`: esquema inicial, `id_vendedor` en producto, `cantidad` en compra_detalle, restricción unique en atributo_producto.
@@ -145,6 +147,21 @@ Agregada a pedido, complementaria a §3.8 (no la reemplaza) — plan completo en
 
 ---
 
+### 3.10 Entrega 2 — panel de ventas con Cassandra
+
+**Implementado; validación local registrada el 2026-09-05.** [ADR-004](ADR-004-analitica-ventas-cassandra.md) define el modelo; [ENTREGA-2-PLAN.md §4.6](ENTREGA-2-PLAN.md#46-panel-de-ventas-por-intervalos-y-ascenso-de-demanda-cassandra) mapea el alcance. La propuesta Neo4j del 2026-08-30 queda como antecedente aplazado.
+
+- **Fuente:** las compras de los clientes son ventas del comercio. Se usa `compra_detalle` y la fecha de `compra`, exigiendo existencia de pago aprobado sin multiplicar líneas por múltiples pagos. El detalle puede continuar `pendiente`; `precio_final` es el importe neto total de línea, ya descontado.
+- **Captura recuperable:** MySQL guarda `venta_outbox` en la misma transacción de ambos checkouts, con PK `detalle_id`, payload, estado de procesamiento y reintentos. Así se incluyen carrito, flash y recomendación. Un worker cada 30 s replica las entradas pendientes y solo marca procesado al terminar las dos escrituras Cassandra.
+- **Modelo:** `ventas_por_dia`, clave `((dia), fecha_venta, detalle_id)`, y `ventas_por_producto_mes`, clave `((producto_id, mes), fecha_venta, detalle_id)`. Son proyecciones idempotentes con dinero decimal; no contadores que crezcan con cada reintento.
+- **Consulta:** particiones conocidas y agregación acotada en Express; Cassandra es *wide-column*, la familia columnar admitida por el PRD. No se atribuyen joins o análisis SQL arbitrario al motor.
+- **UI/API:** `/admin/ventas` y `GET /api/admin/ventas`, solo administrador. Fechas inclusivas Guatemala UTC−6, día/semana/mes, producto, mínimo de unidades recientes 5; hasta 90 días, sin futuro. Comparación con el período anterior de igual duración; base cero produce porcentaje `null`. Las descripciones corresponden al catálogo actual de Mongo. Si se incluye hoy, su día puede seguir incompleto.
+- **Límite de disponibilidad:** las métricas salen de Cassandra. Una caída se informa; no se sustituye por una consulta financiera a MySQL. La venta SQL puede confirmarse aun cuando su copia demore.
+- **Operación:** `ventas:historico` carga o reconstruye el historial; `ventas:sincronizar` ejecuta una pasada y `test:ventas` comprueba reglas. Variables Cassandra y `VENTAS_SYNC_ENABLED`/`VENTAS_SYNC_INTERVAL_MS` documentadas en README.
+- **Entorno:** Cassandra de un nodo para desarrollo, sin alta disponibilidad. Las ventas sintéticas conservadas por pruebas flash se incluyen como datos de ese entorno; no representan comercio real. Cancelaciones/reembolsos todavía requieren diseño de ajustes.
+
+**Evidencia:** Prisma generado y esquema válido; seis migraciones aplicadas; cuatro contenedores `healthy`; 17 pruebas aisladas aprobadas; cuatro detalles históricos sincronizados, cero pendientes y errores. Consulta real de 30 días conciliada: cinco unidades, tres pedidos, Q68,069.80. HTTP devolvió 401 sin sesión, 403 para comprador y 200 para administrador. Build aprobado y nuevos archivos frontend sin advertencias de lint. El recorrido sin sesión redirige al login; queda pendiente la inspección visual autenticada. Los fallos/reintentos se simularon con dobles de dependencias, sin detener servicios ni crear compras reales. Detalle en ADR-004 §9.
+
 ## 4. Problemas reales encontrados y resueltos
 
 Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el diagrama), y cada uno se corrigió en el momento en vez de quedar como deuda:
@@ -178,18 +195,18 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 
 ## 5. Limitaciones conocidas (decisiones explícitas, no descuidos)
 
-- **El carrito es solo de navegador** (`localStorage`), no hay endpoints de carrito en el backend. Es intencional: el PRD migra el carrito a Redis en Entrega 2, y a diferencia del catálogo (que sí necesita datos relacionales como fuente para el ETL de Entrega 1), el carrito no tiene ese mismo argumento — construir una versión relacional completa ahora era trabajo que se iba a tirar.
+- **El carrito expira en Redis** tras 450 s de inactividad y exige sesión. La limitación inicial de carrito exclusivamente en `localStorage` quedó resuelta en §3.7.
 - **No hay forma de crear cuentas `vendedor`/`administrador`** desde el registro público — es a propósito (evita que cualquiera se autoasigne un rol con privilegios). Por ahora esas cuentas se crean a mano o por el seed.
 - **No se puede recategorizar un producto** ni editar/borrar categorías, subcategorías o atributos ya creados.
-- **El panel de administrador (§3.6) cubre catálogo, no pedidos** — un `administrador` ya puede ver y editar el catálogo de todos los vendedores, pero no hay todavía una vista que liste los pedidos de todos los usuarios (`GET /api/compras` sigue devolviendo solo los del usuario autenticado, sin excepción para `administrador`).
-- **Sin suite de tests automatizados** (Jest o similar) — toda la verificación en esta sesión fue manual/scripteada (`verificar:checkout`, pruebas por HTTP y por navegador).
+- **El panel de ventas no es un gestor de pedidos** — agrega métricas para administrador; `GET /api/compras` sigue devolviendo los pedidos del usuario autenticado. No hay una vista de administración de pedidos de todos los compradores.
+- **Cobertura de verificación parcial:** se conservan scripts de checkout, carrito, ofertas y recomendaciones. La incorporación analítica agrega `test:ventas`; ejecutar ese comando no sustituye la validación completa de integración, cuyo estado se registra en §3.10.
 - **Crear/editar un producto escribe en MySQL y Mongo sin una transacción conjunta** — cada base queda consistente *dentro de sí misma*, pero no hay garantía atómica entre ambas. `crear()` intenta una compensación de mejor esfuerzo (si falla el paso de Mongo, se borra la fila de MySQL ya creada), pero no es una solución completa — esa es explícitamente tarea de Entrega 3. Ver [ADR-002 §5](ADR-002-migracion-catalogo-documental.md).
 
 ---
 
 ## 6. Próximos pasos acordados
 
-De los 5 puntos de Entrega 1, quedan pendientes:
+Del cierre de Entrega 1 y las mejoras opcionales, quedan pendientes:
 
 1. **Reseñas de producto** — colección `resenas` + `resenas_resumen` cacheado en el producto (modelo ya decidido en ADR-002 §6.1, no implementado).
 2. **Imágenes múltiples** — el modelo ya soporta un array de imágenes (`producto.imagenes`), pero no hay UI para cargar más de una por producto; el formulario de vendedor sigue pidiendo una sola URL.
@@ -197,7 +214,7 @@ De los 5 puntos de Entrega 1, quedan pendientes:
 
 (La limpieza de columnas/tablas relacionales vestigiales, que figuraba acá como pendiente, se completó el 2026-08-30 — ver §3.5. El índice compuesto + agregación real que pedía el PRD también está cumplido, ver §2 y ENTREGA-1-TRAZABILIDAD.md.)
 
-Después de Entrega 1, seguir el roadmap del PRD: Entrega 2 (Redis + grafos/columnar, ya planificada en detalle — ver [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md)) → Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
+Para Entrega 2, completar y registrar la validación Cassandra de §3.10 y cerrar informe/diagrama con la decisión vigente. Reseñas y grafos aplazados no bloquean el reto columnar seleccionado. Después sigue el roadmap del PRD: Entrega 3 (búsqueda + consistencia distribuida) → Entrega Final (vectorial + seguridad).
 
 ---
 

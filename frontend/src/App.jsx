@@ -18,6 +18,7 @@ import { AccountPage } from './pages/AccountPage';
 import { SellerDashboardPage } from './pages/seller/SellerDashboardPage';
 import { SellerProductFormPage } from './pages/seller/SellerProductFormPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
+import { AdminVentasPage } from './pages/admin/AdminVentasPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 const ROLES_VENDEDOR = ['vendedor', 'administrador'];
@@ -119,6 +120,15 @@ export default function App() {
                 element={
                   <RequireRole roles={ROLES_ADMIN}>
                     <AdminDashboardPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="admin/ventas"
+                element={
+                  // El panel de ventas comparte la protección del resto de administración.
+                  <RequireRole roles={ROLES_ADMIN}>
+                    <AdminVentasPage />
                   </RequireRole>
                 }
               />

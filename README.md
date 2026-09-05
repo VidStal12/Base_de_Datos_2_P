@@ -2,24 +2,28 @@
 
 Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construido de forma incremental sobre una arquitectura políglota de bases de datos. Contexto completo, alcance por entrega y rúbricas en [IA/PRD.md](IA/PRD.md); el modelo de datos de la Fase Inicial está documentado en [IA/ERD.md](IA/ERD.md) y las decisiones de stack en [IA/ADR-001-stack-y-migraciones.md](IA/ADR-001-stack-y-migraciones.md). Para un resumen de qué se construyó y en qué estado está el proyecto, ver [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
 
-## Estado actual: Fase Inicial completa, Entrega 1 con los requerimientos técnicos implementados
+## Estado actual: Entrega 2, Redis y analítica de ventas con Cassandra
 
 Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Los 6 requerimientos técnicos de Entrega 1 (PRD §5) están implementados y verificados — ver [IA/ENTREGA-1-TRAZABILIDAD.md](IA/ENTREGA-1-TRAZABILIDAD.md) para el detalle punto por punto con referencias al código, o [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md) para el resumen general de qué está hecho y qué falta.
+
+Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, y **Cassandra** para el panel de ventas por intervalos y productos en ascenso. La decisión vigente reemplaza la propuesta preliminar de Neo4j: Cassandra es la base de columnas anchas admitida por el PRD; la API consulta particiones temporales y agrega resultados acotados. Diseño, límites y evidencia de validación local en [IA/ADR-004](IA/ADR-004-analitica-ventas-cassandra.md).
 
 ## Requisitos
 
 - Node.js 20+
-- Docker Desktop (para los contenedores de MySQL y MongoDB)
+- Docker Desktop (para MySQL, MongoDB, Redis y Cassandra)
 
 ## Puesta en marcha
 
-1. **Levantar MySQL, MongoDB y Redis en Docker** (desde la raíz del repo):
+1. **Levantar MySQL, MongoDB, Redis y Cassandra en Docker** (desde la raíz del repo):
 
    ```bash
    docker compose up -d
    ```
 
    MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis es para el carrito (Entrega 2, ver [IA/ENTREGA-2-PLAN.md](IA/ENTREGA-2-PLAN.md)) — sin volumen a propósito, es dato transitorio.
+
+   Cassandra utiliza un nodo con volumen persistente para desarrollo: esta configuración no ofrece alta disponibilidad. Esperar a que los servicios estén listos antes de aplicar migraciones o sincronizar ventas.
 
 2. **Instalar dependencias del backend**:
 
@@ -34,13 +38,23 @@ Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccion
    cp .env.example .env
    ```
 
-   Los valores por defecto ya coinciden con `docker-compose.yml`; solo hace falta ajustar `DATABASE_URL` si cambiaste las credenciales del contenedor.
+   Los valores de `.env.example` corresponden a `docker-compose.yml`. Si ya existe `.env`, incorporar las variables nuevas sin reemplazar las credenciales y la configuración propia.
+
+   | Variable | Uso |
+   |---|---|
+   | `CASSANDRA_CONTACT_POINTS` | Hosts de Cassandra; en desarrollo local, `localhost` |
+   | `CASSANDRA_PORT` | Puerto CQL, `9042` |
+   | `CASSANDRA_LOCAL_DATACENTER` | Datacenter configurado en Compose |
+   | `CASSANDRA_KEYSPACE` | Keyspace de la copia analítica |
+   | `VENTAS_SYNC_ENABLED` | Habilita el worker de ventas del backend |
+   | `VENTAS_SYNC_INTERVAL_MS` | Intervalo del worker; `30000` ms por defecto |
 
 4. **Aplicar el esquema**:
 
-   - Ya existe una migración inicial versionada en `prisma/migrations/`. Para clonar el repo y aplicar tal cual está (no crea migraciones nuevas, no necesita permisos de shadow database):
+   - Aplicar las migraciones versionadas de `prisma/migrations/`, incluida la tabla de outbox, y generar el cliente Prisma (no crea migraciones nuevas ni necesita permisos de shadow database):
      ```bash
      npm run prisma:deploy
+     npm run prisma:generate
      ```
    - Para seguir desarrollando el esquema y generar nuevas migraciones a partir de cambios en `schema.prisma`:
      ```bash
@@ -61,6 +75,36 @@ Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccion
    ```
 
    Por defecto queda escuchando en `http://localhost:3000`. `GET /api/health` confirma que está arriba.
+
+## Panel de ventas con Cassandra (Entrega 2)
+
+La pantalla `/admin/ventas` y `GET /api/admin/ventas` requieren una cuenta con rol **administrador**. Muestran ingresos, unidades, evolución por día/semana/mes y productos con aumento reciente de unidades vendidas.
+
+Se filtra por fechas inclusivas de Guatemala (UTC−6), intervalo y producto. Se permite un máximo de 90 días y se rechazan fechas futuras. El ranking usa un mínimo de 5 unidades recientes por defecto y compara con el período inmediatamente anterior de igual duración. Si no hubo ventas anteriores, el porcentaje es `null` y se muestra sin base de comparación. Si se incluye hoy, sus ventas todavía pueden estar incompletas.
+
+MySQL conserva la venta y registra su evento en `venta_outbox` dentro de la misma transacción del checkout. Un worker, cada 30 segundos por defecto, replica con reintentos a `ventas_por_dia` y `ventas_por_producto_mes`. Las claves incluyen `detalle_id`, por lo que reejecutar una inserción no duplica cantidades. Las descripciones vienen del catálogo actual de Mongo. Los importes y unidades consultados por el dashboard salen de Cassandra; su indisponibilidad se informa como error, sin sustituir la consulta financiera por MySQL.
+
+Para incorporar compras anteriores o reconstruir la copia analítica, después de instalar dependencias, aplicar migraciones y tener las bases disponibles, desde `backend/`:
+
+```bash
+npm run ventas:historico
+npm run ventas:sincronizar
+```
+
+El primer comando recorre el historial SQL de compras con pago aprobado y permite reenviarlo de forma idempotente. El segundo ejecuta una pasada de sincronización. El backend mantiene el worker periódico cuando `VENTAS_SYNC_ENABLED` está habilitado:
+
+```bash
+npm run test:ventas
+npm run dev
+```
+
+`test:ventas` ejecuta pruebas aisladas, sin escribir en las bases reales. Las 17 comprobaciones pasaron; también se verificaron carga histórica, conciliación de totales MySQL/Cassandra y permisos HTTP. La evidencia y sus límites están en [IA/ADR-004 §9](IA/ADR-004-analitica-ventas-cassandra.md#9-validación-registrada--2026-09-05).
+
+El panel comienza con los últimos siete días completos; para ver ventas de hoy, cambia **Hasta** a la fecha actual. La comparación se marca como provisional mientras el día está en curso. El mínimo de unidades afecta únicamente el ranking. Si la consulta supera 100,000 líneas entre ambos períodos, pide reducir el rango o seleccionar un producto; no presenta totales truncados.
+
+**Semántica:** `compra_detalle` representa productos comprados por clientes, es decir, ventas del comercio. `compra.fecha` aporta el instante. Un pago aprobado confirma la venta aunque el detalle siga `pendiente`; se comprueba la existencia del pago para evitar multiplicar líneas por reintentos de cobro. `precio_final` ya es el total neto de la línea y `descuento` es el ahorro total: no se vuelve a descontar ni a multiplicar el importe por cantidad. No existen cancelaciones o reembolsos implementados; agregarlos requerirá eventos de ajuste.
+
+Las compras sintéticas conservadas por `flash-sale-tests/` forman parte de la base de desarrollo y se incluirán al cargar su historial. Son datos de prueba, no actividad comercial real. Este panel es distinto de las recomendaciones personalizadas de `tendenciaService` y de la caché acumulada `Producto.total_vendido`.
 
 ## Verificar el checkout transaccional
 
@@ -225,7 +269,7 @@ Storefront en React con el patrón de layout de Amazon (header oscuro con búsqu
 
 Al navegar dentro de una subcategoría (`HomePage.jsx`), aparece un sidebar de filtros por atributo (RAM, color, talla, lo que la subcategoría tenga definido) — estilo Amazon/Walmart, un checkbox por valor. Las opciones se calculan del lado del cliente a partir del catálogo completo de esa subcategoría (`calcularFacetas`), no de una llamada aparte; el filtrado en sí lo hace Mongo (`?atributos=`, ver sección Catálogo). Simplificación deliberada: las opciones no se recalculan a medida que se marcan casillas (no hay conteos tipo "128GB (3)" que se actualicen), a diferencia de un sitio real — suficiente para el tamaño de este catálogo.
 
-El carrito vive en el navegador (localStorage), no en el backend — no hay endpoints de carrito porque esa pieza se migra a Redis en Entrega 2 (ver PRD), así que no tenía sentido construir una versión relacional completa ahora. El checkout sigue pasando por el backend igual.
+El carrito vive en Redis y se accede mediante los endpoints autenticados de `/api/carrito`; `CartContext` mantiene su representación en pantalla. Expira tras 450 segundos de inactividad y se vacía después de un checkout confirmado. La versión inicial en `localStorage` quedó reemplazada en Entrega 2.
 
 ```bash
 cd frontend
@@ -234,7 +278,7 @@ cp .env.example .env      # apunta a http://localhost:3000/api por defecto
 npm run dev
 ```
 
-Corre en `http://localhost:5173`. Necesita el backend (`cd backend && npm run dev`) y MySQL (`docker compose up -d`) corriendo en paralelo.
+Corre en `http://localhost:5173`. Necesita el backend (`npm run dev` desde `backend/`) y los servicios de Docker Compose disponibles en paralelo. El panel de ventas requiere además Cassandra y su historial sincronizado.
 
 **Mi cuenta** (`/cuenta`, requiere sesión): listar, agregar y borrar direcciones y métodos de pago — los mismos formularios que aparecen embebidos en Checkout, ahora también accesibles fuera del flujo de compra. Borrar algo que ya se usó en un pedido se rechaza con un mensaje claro (`409 No se puede eliminar: ... tiene pedidos/pagos asociados`) en vez de un error de base de datos.
 
@@ -259,7 +303,7 @@ backend/
     config/mongo.js        Conexión de Mongoose (MongoDB)
     config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua compartido por la oferta flash y las recomendaciones)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, oferta flash, recomendaciones por tendencia, historial, sync admin)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, ofertas, recomendaciones, historial, outbox y analítica de ventas)
     routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
 flash-sale-tests/
@@ -276,9 +320,9 @@ frontend/
     components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash, recomendaciones...)
     pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
-    pages/admin/             Panel de administrador (catálogo de todos los vendedores + sync)
+    pages/admin/             Panel de administrador (catálogo de todos los vendedores + ventas por intervalos)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL
-docker-compose.yml     Contenedores de MySQL, MongoDB y Redis para desarrollo
+docker-compose.yml     Contenedores de MySQL, MongoDB, Redis y Cassandra para desarrollo
 ```
