@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth, requireRole, optionalAuth } = require('../middleware/auth');
 const productoService = require('../services/productoService');
+const resenaService = require('../services/resenaService');
 
 const router = express.Router();
 
@@ -52,6 +53,25 @@ router.get('/:id/historial', requireAuth, requireRole('vendedor', 'administrador
     }
   } catch (err) {
     res.status(404).json({ error: err.message });
+  }
+});
+// Reseñas (reference, ver ADR-002 §6.1 y Resena.js) — listar es público,
+// crear requiere sesión (cualquier rol, no solo comprador).
+router.get('/:id/resenas', async (req, res) => {
+  try {
+    const resenas = await resenaService.listarPorProducto(Number(req.params.id));
+    res.json(resenas);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/resenas', requireAuth, async (req, res) => {
+  try {
+    const resena = await resenaService.crear(req.usuario, Number(req.params.id), req.body);
+    res.status(201).json(resena);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

@@ -32,6 +32,7 @@ function formatear(doc) {
     version: doc.version,
     inventario: doc.inventario || null,
     oferta_flash: doc.oferta_flash || null,
+        resenas_resumen: doc.resenas_resumen || { promedio: 0, cantidad: 0 },
   };
 }
 

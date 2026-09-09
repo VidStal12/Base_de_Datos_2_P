@@ -8,13 +8,15 @@ import { useCart } from '../context/CartContext';
 import { Spinner } from '../components/common/Spinner';
 import { Button } from '../components/common/Button';
 import { HistorialSection } from '../components/product/HistorialSection';
+import { ResenasSection } from '../components/product/ResenasSection';
+import { StarRating } from '../components/common/StarRating';
 
 const ROLES_VEN_HISTORIAL = ['vendedor', 'administrador'];
 
 export function ProductDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { usuario, token } = useAuth();
+  const { usuario, token, estaAutenticado } = useAuth();
   const { agregar } = useCart();
   const [producto, setProducto] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -73,7 +75,16 @@ export function ProductDetailPage() {
                 {subcategoria.subcategoria}
               </Link>
             )}
-            <h1 className="mt-1 text-2xl font-bold text-neutral-900">{producto.descripcion}</h1>
+                        <h1 className="mt-1 text-2xl font-bold text-neutral-900">{producto.descripcion}</h1>
+            {producto.resenas_resumen?.cantidad > 0 && (
+              <div className="mt-1 flex items-center gap-1.5">
+                <StarRating valor={producto.resenas_resumen.promedio} />
+                <span className="text-xs text-neutral-500">
+                  {producto.resenas_resumen.promedio.toFixed(1)} ({producto.resenas_resumen.cantidad}{' '}
+                  reseña{producto.resenas_resumen.cantidad !== 1 ? 's' : ''})
+                </span>
+              </div>
+            )}
             {producto.vendedor_nombre && (
               <p className="mt-1 text-sm text-neutral-500">
                 Vendido por <span className="font-medium text-neutral-700">{producto.vendedor_nombre}</span>
@@ -162,9 +173,11 @@ export function ProductDetailPage() {
           vendedorId={producto.vendedor_id}
           vendedorNombre={producto.vendedor_nombre}
           subcategoriaNombre={producto.subcategoria?.subcategoria}
-          token={token}
+                    token={token}
         />
       )}
+
+      <ResenasSection productoId={producto.id} token={token} estaAutenticado={estaAutenticado} />
     </div>
   );
 }

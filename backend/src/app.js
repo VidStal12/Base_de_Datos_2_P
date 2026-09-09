@@ -37,6 +37,8 @@ app.get('/', (req, res) => {
       'GET /api/productos/estadisticas/ediciones (agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
       'GET /api/productos/:id',
       'GET /api/productos/:id/historial (requiere token, rol vendedor/administrador — ?fecha=AAAA-MM-DD para reconstrucción; sin fecha, línea de tiempo completa)',
+            'GET /api/productos/:id/resenas (reseñas de un producto, público)',
+      'POST /api/productos/:id/resenas (requiere token — {calificacion, comentario})',
       'POST /api/productos (requiere token, rol vendedor/administrador)',
       'PATCH /api/productos/:id (requiere token, rol vendedor/administrador — dueño del producto o administrador)',
       'GET /api/carrito (requiere token — Redis, TTL de 7.5 min por inactividad, ver IA/ENTREGA-2-PLAN.md §4.1)',
