@@ -1,8 +1,8 @@
-# ERD — Arquitectura políglota (actualizado, 2026-09-04)
+# ERD — Arquitectura políglota (actualizado, 2026-09-09)
 
-> Este documento reúne el modelo de MySQL, MongoDB y Redis, y la incorporación de Cassandra como copia analítica de ventas. Describe responsabilidades y relaciones; no acredita que los contenedores estén corriendo ni que la incorporación nueva esté validada. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
+> Este documento reúne el modelo de MySQL, MongoDB, Redis, Cassandra (copia analítica de ventas) y Neo4j (detección de fraude). Describe responsabilidades y relaciones; no acredita por sí solo que los contenedores estén corriendo. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra) (Cassandra) y §3.11 (Neo4j). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
 >
-> La elección preliminar de Neo4j queda aplazada y reemplazada por **Cassandra**, según [ADR-004](ADR-004-analitica-ventas-cassandra.md). El PRD admite Cassandra en la familia columnar y exige implementar al menos una de las familias evaluadas. Las propuestas históricas de grafos se conservan identificadas en ENTREGA-2-PLAN.md.
+> El PRD exige implementar **al menos una** familia entre grafos y columnar. El equipo terminó incorporando las dos — Cassandra para ventas ([ADR-004](ADR-004-analitica-ventas-cassandra.md)), Neo4j para fraude ([PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md)) — no una en lugar de la otra. La versión anterior de este documento (2026-09-04) todavía decía que Cassandra reemplazaba a Neo4j; eso quedó desactualizado el mismo día que se implementó Neo4j (2026-09-08).
 
 ---
 
@@ -14,8 +14,9 @@
 | **MongoDB** | Fuente del catálogo descriptivo + historial | Categorías, subcategorías, contenido de producto (descripción/atributos/imágenes/estado), historial de cambios por evento |
 | **Redis** | Estado temporal y admisión atómica | Carrito con TTL de 7.5 min, cupos de ofertas y recomendaciones cacheadas; MySQL sigue siendo autoridad del inventario vendido |
 | **Cassandra** | Copia analítica de ventas | Proyecciones por día y por producto/mes, reconstruibles desde las ventas pagadas en MySQL; importes y unidades del panel |
+| **Neo4j** | Copia analítica de fraude | Grafo de usuarios/productos/direcciones/métodos de pago derivado de compras y reseñas ya confirmadas; reconstruible con `fraude:backfill` |
 
-Las copias no cambian la autoridad de cada dato. El catálogo conserva reenvíos de mejor esfuerzo ya documentados; las ventas hacia Cassandra incorporan **outbox durable con reintentos idempotentes**. Las referencias entre bases son IDs sin claves foráneas distribuidas. El detalle está en §5 y el modelo de Cassandra en §6.
+Las copias no cambian la autoridad de cada dato. El catálogo conserva reenvíos de mejor esfuerzo ya documentados; las ventas hacia Cassandra incorporan **outbox durable con reintentos idempotentes**; el fraude hacia Neo4j es mejor esfuerzo, como el catálogo (ver §7, por qué no necesita la garantía dura de Cassandra). Las referencias entre bases son IDs sin claves foráneas distribuidas. El detalle está en §5, el modelo de Cassandra en §6 y el de Neo4j en §7.
 
 ### 1.1 Diagrama de interacción
 
@@ -47,9 +48,18 @@ flowchart LR
         C_producto[ventas_por_producto_mes]
     end
 
+    subgraph Neo4j["Neo4j (grafo)"]
+        N_usuario[Usuario]
+        N_producto[Producto]
+        N_direccion[Direccion]
+        N_pago[MetodoPago]
+    end
+
     W[Worker de ventas: 30 s y reintentos]
     API[Express: GET /api/admin/ventas]
     UI[React: /admin/ventas]
+    API2[Express: GET /api/admin/fraude]
+    UI2[React: /admin/fraude]
 
     M_inventario -- "precio/cantidad, en cada alta/edición" --> MG_producto
     M_compra -- "cantidad descontada + total_vendido, tras checkout" --> MG_producto
@@ -69,6 +79,15 @@ flowchart LR
     C_producto -- "particiones por producto y mes" --> API
     MG_producto -- "descripciones actuales" --> API
     API -- "métricas y comparación; solo administrador" --> UI
+
+    M_compra -- "MERGE, mejor esfuerzo, tras checkout" --> N_usuario
+    M_compra -- "MERGE, mejor esfuerzo, tras checkout" --> N_producto
+    M_compra -- "MERGE COMPRÓ (detalle_id) + ENVIÓ_A/PAGÓ_CON" --> N_direccion
+    M_compra -- " " --> N_pago
+    MG_producto -. "reseñó, mejor esfuerzo, tras crear la reseña" .-> N_usuario
+    N_usuario -- "reseñas coordinadas + desviación de patrón" --> API2
+    N_direccion -- "dirección/pago compartido entre cuentas" --> API2
+    API2 -- "candidatos para revisión; solo administrador" --> UI2
 ```
 
 **Cómo leer las flechas:** línea sólida = escritura, entrega o lectura identificada por su etiqueta. Los reenvíos del catálogo son de mejor esfuerzo; la entrega a Cassandra queda respaldada por outbox en MySQL. Línea punteada = referencia simple sin integridad referencial entre bases (ver [ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.3).
@@ -333,9 +352,34 @@ El ranking compara unidades: aumento `reciente − anterior`; porcentaje `((reci
 
 **Desarrollo:** un nodo en Docker con volumen persistente; no hay alta disponibilidad. El worker tiene intervalo configurable (`VENTAS_SYNC_INTERVAL_MS`, `30000` ms por defecto) y habilitación mediante `VENTAS_SYNC_ENABLED`. La conexión usa `CASSANDRA_CONTACT_POINTS`, `CASSANDRA_PORT`, `CASSANDRA_LOCAL_DATACENTER` y `CASSANDRA_KEYSPACE`.
 
-## 7. Pendientes y límites
+## 7. Neo4j (grafo): detección de fraude
+
+La familia de grafos del PRD, incorporada además de Cassandra, no en su lugar — el equipo decidió sumar las dos (ver la nota al inicio del documento). Diseño completo, incluida una corrección real al modelo encontrada al implementar, en [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md).
+
+| Nodo/relación | Clave | Nota |
+|---|---|---|
+| `Usuario` | `id_usuario` | Un solo label, `rol` como propiedad — no `Comprador`/`Vendedor` separados |
+| `Producto` | `producto_id` | Incluye `subcategoria` (el id de Mongo, no el nombre) |
+| `Direccion` | **texto normalizado** (`pais\|dirección\|código_postal`), no `id_direccion` | Ver por qué abajo |
+| `MetodoPago` | **`token_pasarela`**, no `id_metodo_pago` | Ver por qué abajo |
+| `COMPRÓ` | `detalle_id` (= `compra_detalle.id`) como parte de la clave del `MERGE` | Sin esto, compras repetidas del mismo producto por el mismo usuario colapsarían en una sola arista |
+| `RESEÑÓ` | Extremos del `MERGE` alcanzan | El índice único de `Resena.js` ya garantiza una sola reseña por (producto, usuario) |
+| `ENVIÓ_A` / `PAGÓ_CON` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta usó esta dirección/instrumento alguna vez |
+
+**Por qué `Direccion`/`MetodoPago` no se clavan por el id de MySQL:** cada fila de `direcciones`/`metodo_pago` pertenece a un solo usuario (`id_usuario`), así que dos cuentas nunca podrían compartir ese id por construcción — la señal de "dos cuentas apuntan al mismo domicilio/tarjeta" jamás habría encontrado nada, sin importar qué datos existieran. Encontrado como error propio al verificar, corregido antes de terminar la implementación.
+
+**Dos señales**, ninguna una acusación por sí sola:
+- **Reseñas coordinadas:** cuentas distintas, mismos productos (≥3 por defecto), calificación alta, ventana de tiempo corta (1h por defecto). Ya no busca "reseñó sin comprar" — imposible desde que `resenaService.crear()` exige una compra real (ver ESTADO-PROYECTO.md, corrección del 2026-09-08).
+- **Desviación de patrón de compra:** una compra en una subcategoría nueva para esa cuenta, Y esa misma compra usó una dirección que otra cuenta distinta también usó — atado a la compra puntual que se señala, no a "esta cuenta comparte algo en algún momento" (dos condiciones ciertas por separado, de compras distintas, no dicen nada).
+
+**Sincronización:** mejor esfuerzo (no outbox durable como Cassandra) — enganchada en `checkout()`, `checkoutOferta()` y `resenaService.crear()`, con su propio `try/catch` independiente de los reenvíos a Mongo/Redis/outbox de ventas que ya corren en el mismo lugar. Una señal de fraude tarde de más no tiene el mismo costo que una venta perdida (ver [ENTREGA-3-CONSISTENCIA.md §3](ENTREGA-3-CONSISTENCIA.md)) — si el reenvío falla, el próximo `fraude:backfill` lo recupera, reutilizando las mismas funciones que el camino en vivo.
+
+**Desarrollo:** un nodo en Docker con volumen persistente (a diferencia de Redis, sí interesa que el grafo sobreviva un reinicio mientras se prueban las consultas). Conexión vía `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`. Panel en `/admin/fraude`, `GET /api/admin/fraude`, solo administrador.
+
+## 8. Pendientes y límites
 
 - **Validación Cassandra:** registrar migración, tablas disponibles, carga/reconstrucción, reintentos idempotentes, permisos, pruebas de cálculo y revisión visual. Este documento no afirma que se haya ejecutado esa validación.
 - **Cancelaciones/reembolsos:** no implementados; se necesitarán eventos de ajuste y nuevas reglas de proyección.
-- **Datos de desarrollo:** las compras sintéticas conservadas por pruebas flash forman parte del historial que se carga; deben identificarse como pruebas al presentar métricas.
-- **Reseñas y Neo4j:** siguen aplazados. `Producto.resenas_resumen` existe como estructura, sin flujo de reseñas implementado. No bloquean el panel de la familia seleccionada.
+- **Datos de desarrollo:** las compras sintéticas conservadas por pruebas flash forman parte del historial que se carga; deben identificarse como pruebas al presentar métricas. Lo mismo aplica a los patrones sembrados a propósito para verificar las señales de fraude (ver PLAN-NEO4J-DETECCION-FRAUDE.md §8).
+- **Fraude en Neo4j — sin outbox durable:** a diferencia de Cassandra, un reenvío fallido no queda en una cola con reintento automático; se recupera recién en el próximo `fraude:backfill` manual. Aceptado a propósito (ver §7), pero es una asimetría real entre las dos copias analíticas, no un descuido.
+- **Cancelaciones/reembolsos tampoco existen del lado de fraude:** una compra reembolsada seguiría contando como señal en el grafo — no hay todavía un evento de ajuste que la retire.

@@ -266,11 +266,12 @@ Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md
 
 ## 5. Riesgos y dependencias
 
-- **MySQL sigue siendo autoridad:** hay que aplicar la migración de outbox y capturar el evento dentro de ambos checkouts; escribir después del commit sin una cola durable dejaría huecos si el proceso cae.
-- **La oferta de inventario limitado (§4.2) es el ítem de mayor riesgo de diseño** — dos guardas (Redis + MySQL) que tienen que coordinarse sin desincronizarse ni bloquearse mutuamente. Vale prototipar y validar la concurrencia simulada temprano, no dejarlo para el final.
-- **Entrega eventual:** un ciclo de 30 s no es un SLA; fallos, cola pendiente y reintentos pueden aumentar la demora. La disponibilidad de Cassandra debe verificarse y el panel debe hacer visible su estado.
-- **Capacidad local:** MySQL, Mongo, Redis y Cassandra requieren recursos del entorno Docker. Un nodo de Cassandra sirve para desarrollo, no para afirmar alta disponibilidad.
-- **Alcance de datos:** no hay cancelaciones ni reembolsos; futuros flujos exigirán eventos de ajuste. Un mínimo de unidades reduce ruido, pero promociones o faltantes de stock aún influyen en las ventas observadas.
+> Actualizado 2026-09-09 — los riesgos de diseño de carrito/oferta/Cassandra ya se resolvieron (implementados y verificados); lo que queda es sobre todo riesgo de **alcance del informe**, no de código.
+
+- **Ninguno de los riesgos técnicos originales sigue abierto:** la coordinación de las dos guardas de la oferta flash, la entrega eventual de Cassandra y la capacidad local con cinco contenedores Docker (MySQL, Mongo, Redis, Cassandra, Neo4j) están todas verificadas con evidencia real, no solo diseñadas — ver ESTADO-PROYECTO.md §3.7-§3.11.
+- **Alcance de datos, todavía real:** no hay cancelaciones ni reembolsos en ningún flujo (checkout, ventas, fraude). Una compra reembolsada seguiría contando en Cassandra y en el grafo de fraude — no hay evento de ajuste que la retire. Documentado como límite conocido, no bloqueante para esta entrega.
+- **Asimetría de sincronización, documentada a propósito:** Cassandra tiene outbox durable con reintentos; Neo4j es mejor esfuerzo, recuperable solo con `fraude:backfill` manual si algo falla. Es una decisión deliberada (una señal de fraude tarde no cuesta lo mismo que una venta perdida, ver ENTREGA-3-CONSISTENCIA.md §3), no una inconsistencia sin explicar.
+- **El riesgo real que queda es el informe académico**, no la implementación — ver §6.
 
 ---
 
@@ -278,21 +279,24 @@ Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md
 
 - ~~¿Carrito anónimo o solo con sesión iniciada?~~ — resuelto: requiere sesión (§4.1).
 - ~~Valor de TTL por inactividad~~ — resuelto: 7.5 min / 450s (§4.1).
-- ~~Cuántas unidades y qué producto(s) usar para demostrar la oferta flash~~ — resuelto: un producto real del catálogo, marcado con `oferta_flash` (§4.2). La cantidad es configurable por el vendedor/administrador; la verificación automática usa 5 unidades contra 15 intentos concurrentes.
-- ~~Familia para el análisis~~ — resuelto: Cassandra y panel de ventas; reemplaza Neo4j (ADR-004).
-- Alcance de reseñas y posible detección en grafos — aplazado; no bloquea esta entrega con la familia columnar seleccionada.
-- Formato final del informe y evidencia esperada por el curso — pendiente de definir con el equipo.
+- ~~Cuántas unidades y qué producto(s) usar para demostrar la oferta flash~~ — resuelto: un producto real del catálogo, marcado con `oferta_flash` (§4.2).
+- ~~Familia para el análisis~~ — resuelto, dos veces: primero Cassandra en lugar de Neo4j (ADR-004, 2026-09-04), después el equipo decidió sumar Neo4j además de Cassandra, no en su lugar (2026-09-08) — ver PLAN-NEO4J-DETECCION-FRAUDE.md.
+- ~~Alcance de reseñas~~ — resuelto: implementadas (`Resena.js`, 2026-09-08), con la exigencia de compra real agregada el mismo día (motivada por combatir cuentas bot que inflan una calificación, no por el requisito de grafos — pero terminó siendo también el prerrequisito real que grafos necesitaba).
+- **Formato final del informe y evidencia esperada por el curso — el único punto genuinamente pendiente de esta entrega.** Todo lo demás en esta lista ya tiene código, verificación y documento de diseño; lo que falta es decidir en qué formato se entrega (¿el propio `IA/*.md` alcanza, o hace falta un documento aparte con otro formato?) y armarlo.
 
 ---
 
-## 7. Orden de trabajo sugerido
+## 7. Orden de trabajo — retrospectiva de lo que realmente se hizo
 
-1. ~~Redis + migración del carrito (§4.1)~~ — ✅ hecho (2026-08-30).
-2. ~~Oferta de inventario limitado (§4.2)~~ — ✅ hecho (2026-08-30).
-3. Cassandra en Docker + migración de outbox y captura transaccional de ventas (§4.6).
-4. Worker idempotente, carga histórica y API por particiones; panel React con filtros y comparación.
-5. Verificación de reglas, integración, reintentos, permisos y visualización; registrar evidencia efectiva.
-6. Redacción final: ADR-004, [diagrama de arquitectura](ERD-ARQUITECTURA-POLIGLOTA.md) e informe.
+El orden real no siguió exactamente el plan original (se agregaron reseñas y Neo4j sobre la marcha, no estaban en la secuencia original de 6 pasos) — se deja como referencia honesta, no reescrita para parecer prevista:
+
+1. ~~Redis + migración del carrito (§4.1)~~ — ✅ 2026-08-30.
+2. ~~Oferta de inventario limitado (§4.2)~~ — ✅ 2026-08-30.
+3. ~~Recomendaciones por tendencia (§4.5, agregada a pedido, no estaba en el plan original)~~ — ✅ 2026-08-31.
+4. ~~Cassandra: outbox, worker, API por particiones, panel React (§4.6)~~ — ✅ 2026-09-05.
+5. ~~Reseñas mínimas + exigencia de compra real~~ — ✅ 2026-09-08 (no en el orden original — se retomó cuando el equipo decidió sumar Neo4j).
+6. ~~Neo4j: modelo, sincronización, dos señales, panel~~ — ✅ 2026-09-08 — ver PLAN-NEO4J-DETECCION-FRAUDE.md.
+7. **Redacción final: informe en el formato que pida el curso.** Único paso que queda.
 
 ---
 
@@ -303,5 +307,7 @@ Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md
 | Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
 | Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md §3.8 |
 | Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Actualizada en §3 y ADR-004; el equipo decidió sumar Neo4j además de Cassandra (2026-09-08) — ver PLAN-NEO4J-DETECCION-FRAUDE.md |
-| Implementación de familia(s) + reto específico | 3.0 pts | ✅ Columnar (Cassandra, §4.6) implementado y verificado con navegador real, panel `/admin/ventas` — ver ESTADO-PROYECTO.md §3.10. Grafos (Neo4j) también implementado y verificado, no exigido por el PRD como segunda familia pero incorporado — ver ESTADO-PROYECTO.md §3.11 y PLAN-NEO4J-DETECCION-FRAUDE.md |
-| Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | 🟡 Diagrama actualizado en ERD-ARQUITECTURA-POLIGLOTA.md; evidencia analítica y formato final del informe pendientes |
+| Implementación de familia(s) + reto específico | 3.0 pts | ✅ Columnar (Cassandra, §4.6) implementado y verificado con navegador real, panel `/admin/ventas` — ver ESTADO-PROYECTO.md §3.10. Grafos (Neo4j) también implementado y verificado, panel `/admin/fraude` — ver ESTADO-PROYECTO.md §3.11 |
+| Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | 🟡 Diagrama actualizado con Neo4j en ERD-ARQUITECTURA-POLIGLOTA.md (2026-09-09) — la parte de diagrama ya está. Solo falta el formato final del informe (§6). |
+
+**Estado real de Entrega 2: técnicamente completa.** Los 4 requerimientos técnicos del PRD (carrito, oferta, evaluación comparativa, implementación de familia) están implementados y verificados con evidencia real, no solo diseñados — varios verificados dos veces (script propio + navegador real, o script propio + herramienta independiente de un compañero de equipo, como el harness de `flash-sale-tests/`). Lo único que falta para cerrar la entrega es redactar el informe en el formato que pida el curso — un trabajo de redacción, no de código.
