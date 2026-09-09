@@ -71,7 +71,7 @@ router.post('/:id/resenas', requireAuth, async (req, res) => {
     const resena = await resenaService.crear(req.usuario, Number(req.params.id), req.body);
     res.status(201).json(resena);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 

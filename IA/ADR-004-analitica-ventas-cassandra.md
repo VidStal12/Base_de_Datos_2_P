@@ -128,6 +128,8 @@ Neo4j tendría sentido cuando existan reseñas persistidas y una necesidad concr
 
 La ausencia actual de reseñas y la prioridad del panel permiten aplazar esa familia sin contradecir el PRD, que exige **al menos una**, no ambas ni exactamente una.
 
+**Actualización 2026-09-08:** las condiciones de esta sección ya no son hipotéticas — las reseñas existen (`Resena.js`/`resenaService.js`) y el equipo decidió incorporar Neo4j además de Cassandra, no en su lugar. Diseño completo en [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md). No cambia nada de lo decidido acá para el panel de ventas — Cassandra sigue siendo la fuente de esas métricas tal como está descrito arriba.
+
 ## 9. Validación registrada — 2026-09-05
 
 Comprobaciones ejecutadas en el entorno local:

@@ -62,8 +62,18 @@ services:
     # por inactividad. Sin auth ni persistencia especial: es un dato
     # transitorio a propósito, se puede perder sin consecuencia (no es la
     # fuente de verdad de nada, a diferencia de MySQL/Mongo).
+    #
+    # Puerto del host parametrizado (default sin cambios, 6379): en Windows,
+    # Hyper-V/WSL2 reserva rangos de puertos efímeros de forma dinámica (ver
+    # `netsh int ipv4 show excludedportrange protocol=tcp`) y a veces 6379 cae
+    # adentro — el bind falla con "forbidden by its access permissions", no
+    # con "address already in use", aunque nada esté escuchando ahí de
+    # verdad. Si te pasa, poné REDIS_HOST_PORT=<otro puerto> en un .env en la
+    # raíz del repo (al lado de este archivo) y actualizá REDIS_URL en
+    # backend/.env con el mismo puerto — el contenedor sigue hablando 6379
+    # puertas adentro, esto solo cambia a qué puerto del host se publica.
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

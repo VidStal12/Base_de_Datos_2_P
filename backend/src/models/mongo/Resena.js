@@ -27,4 +27,13 @@ const resenaSchema = new Schema(
 // mismo criterio que {producto_id, fecha} en ProductoEvento.js.
 resenaSchema.index({ producto_id: 1, fecha: -1 });
 
+// Único por (producto, usuario) — un comprador reseña un producto una sola
+// vez. La garantía real vive acá, a nivel de base; resenaService.crear()
+// también chequea antes de escribir, para devolver un 409 claro en vez de un
+// error crudo de índice duplicado, pero el índice es lo que de verdad evita
+// dos reseñas si dos POST llegan casi al mismo tiempo (misma lógica que el
+// resto del proyecto prefiere una garantía atómica en la base a un chequeo
+// de aplicación solo).
+resenaSchema.index({ producto_id: 1, usuario_id: 1 }, { unique: true });
+
 module.exports = model('Resena', resenaSchema, 'resenas');

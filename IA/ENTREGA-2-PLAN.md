@@ -183,9 +183,9 @@ oferta:{ofertaId}:stock      → entero, inicializado desde una porción de inve
 
 **Validación bajo concurrencia simulada** (requerimiento explícito): un script (`backend/scripts/verificarOfertaFlash.js`, mismo espíritu que `verificarCheckout.js`) que dispare **N requests concurrentes** (`Promise.all` con más solicitudes que unidades disponibles) contra el endpoint de la oferta y verifique: exactamente `stock inicial` ganadores, el resto rechazado, y el contador final en Redis en exactamente `0` (no negativo, no positivo de más).
 
-### 4.3 Reseñas — propuesta histórica aplazada (Mongo)
+### 4.3 Reseñas — implementadas (Mongo)
 
-> Antecedente del plan Neo4j del 2026-08-30. No es dependencia del panel Cassandra seleccionado; si se retoma grafos, habrá que revisar conjuntamente el modelo, sus señales y la política de creación de reseñas.
+> **Actualización 2026-09-08:** ya no es una propuesta aplazada — `Resena.js`/`resenaService.js` existen y están en uso, incluida la exigencia de compra real con pago aprobado antes de reseñar (agregada el mismo día, motivada por combatir cuentas bot que inflan una calificación). El texto de abajo queda como registro del diseño original; el estado real está en ESTADO-PROYECTO.md.
 
 Alcance acotado a lo que el grafo necesita, no la funcionalidad completa que describe ADR-002 §6.1:
 - Colección `resenas` (Mongo): `{ producto_id, usuario_id, calificacion, comentario, fecha }`.
@@ -194,9 +194,11 @@ Alcance acotado a lo que el grafo necesita, no la funcionalidad completa que des
 - UI mínima: mostrar reseñas en `ProductDetailPage`, formulario simple para dejar una.
 - **Datos sembrados a propósito**: un pequeño conjunto de cuentas de prueba con patrón de reseña coordinado (mismos productos, calificación alta, ventana de tiempo corta), documentado explícitamente como sintético — es lo que le da a la consulta de grafos algo real que encontrar (ver §3, Limitaciones asumidas).
 
-### 4.4 Grafos: detección de fraude (Neo4j) — propuesta histórica aplazada
+### 4.4 Grafos: detección de fraude (Neo4j) — diseño histórico, ver plan vigente
 
-> Este diseño no está implementado ni forma parte del alcance vigente. Se conserva para mostrar el análisis previo; el registro actual es ADR-004. La propuesta debe revisarse antes de retomarla: §4.3 exige compra previa para reseñar, mientras que el ejemplo de consulta siguiente busca reseñas sin compra, un caso que ese flujo normal no produciría.
+> **Actualización 2026-09-08:** el equipo decidió retomar Neo4j, además de Cassandra (no en su lugar) — ver [ADR-004 §8](ADR-004-analitica-ventas-cassandra.md) y el diseño completo en [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md), que reemplaza lo de abajo. La inconsistencia que menciona el párrafo original (reseña exige compra, pero la consulta buscaba reseñas sin compra) ya se resolvió — sigue documentada acá tal cual se encontró, y el plan vigente explica por qué y cómo se adaptó la consulta.
+>
+> Texto original, sin editar, como registro del análisis previo:
 
 **Modelo propuesto:**
 ```
@@ -300,6 +302,6 @@ Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md
 |---|---|---|
 | Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
 | Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md §3.8 |
-| Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Actualizada en §3 y ADR-004; grafos aplazado con condiciones explícitas |
+| Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Actualizada en §3 y ADR-004; el equipo decidió sumar Neo4j además de Cassandra (2026-09-08) — ver PLAN-NEO4J-DETECCION-FRAUDE.md |
 | Implementación columnar + reto específico (variación de demanda) | 3.0 pts | 🟡 Incorporación en curso — §4.6; falta registrar validación efectiva |
 | Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | 🟡 Diagrama actualizado en ERD-ARQUITECTURA-POLIGLOTA.md; evidencia analítica y formato final del informe pendientes |

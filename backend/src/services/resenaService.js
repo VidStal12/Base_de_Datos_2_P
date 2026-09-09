@@ -40,10 +40,34 @@ async function recalcularResumen(productoId) {
   );
 }
 
+// Misma definición de "compra real" que ya usa ventasSyncService.js/ADR-004
+// para las ventas del panel de Cassandra — un compra_detalle de este producto
+// en una compra con al menos un pago aprobado. Un solo lugar decide qué
+// cuenta como "compró de verdad", no una versión propia acá que pudiera
+// desalinearse con la del panel de ventas.
+async function tienePermisoDeResenar(usuarioId, productoId) {
+  const detalle = await prisma.compra_detalle.findFirst({
+    where: {
+      id_producto: productoId,
+      compra: { id_usuario: usuarioId, pagos: { some: { estado: 'aprobado' } } },
+    },
+    select: { id: true },
+  });
+  return Boolean(detalle);
+}
+
 // usuario: { id_usuario, rol } — sale del token, nunca del body (mismo
 // criterio que productoService.crear() con el vendedor). usuario_nombre se
 // resuelve una sola vez acá y queda cacheado en la reseña — igual que
 // vendedor_nombre en Producto.js.
+//
+// Exige una compra real (con pago aprobado) del producto — sin esto,
+// cualquier cuenta podía reseñar cualquier producto sin haberlo comprado,
+// abriendo la puerta a inflar/hundir una calificación con cuentas creadas
+// solo para eso (el registro público no tiene fricción ni costo). Una sola
+// reseña por (producto, usuario): el índice único de Resena.js es la
+// garantía real bajo concurrencia, este chequeo previo es solo para devolver
+// un 409 legible en el caso normal en vez de un error crudo de Mongo.
 async function crear(usuario, productoId, { calificacion, comentario }) {
   if (!Number.isInteger(calificacion) || calificacion < 1 || calificacion > 5) {
     throw new Error('La calificación debe ser un entero entre 1 y 5');
@@ -56,14 +80,39 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuario.id_usuario } });
   if (!usuarioDb) throw new Error('Usuario no encontrado');
 
-  const doc = await Resena.create({
-    producto_id: productoId,
-    usuario_id: usuario.id_usuario,
-    usuario_nombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
-    calificacion,
-    comentario: comentario || '',
-    fecha: new Date(),
-  });
+  if (!(await tienePermisoDeResenar(usuario.id_usuario, productoId))) {
+    const err = new Error('Solo podés reseñar productos que compraste');
+    err.status = 403;
+    throw err;
+  }
+
+  if (await Resena.findOne({ producto_id: productoId, usuario_id: usuario.id_usuario }).select('_id')) {
+    const err = new Error('Ya dejaste una reseña para este producto');
+    err.status = 409;
+    throw err;
+  }
+
+  let doc;
+  try {
+    doc = await Resena.create({
+      producto_id: productoId,
+      usuario_id: usuario.id_usuario,
+      usuario_nombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
+      calificacion,
+      comentario: comentario || '',
+      fecha: new Date(),
+    });
+  } catch (err) {
+    // Código 11000 = choque contra el índice único — dos POST casi
+    // simultáneos del mismo usuario pasaron el chequeo de arriba a la vez;
+    // el segundo pierde la carrera en la base, no en la aplicación.
+    if (err.code === 11000) {
+      const duplicado = new Error('Ya dejaste una reseña para este producto');
+      duplicado.status = 409;
+      throw duplicado;
+    }
+    throw err;
+  }
 
   await recalcularResumen(productoId);
 
