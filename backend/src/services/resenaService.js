@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const Resena = require('../models/mongo/Resena');
+const fraudeSyncService = require('./fraudeSyncService');
 
 function formatear(doc) {
   return {
@@ -74,7 +75,7 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   }
 
   await conectar();
-  const producto = await Producto.findOne({ producto_id: productoId }).select('_id');
+  const producto = await Producto.findOne({ producto_id: productoId }).select('_id descripcion subcategoria_id');
   if (!producto) throw new Error('Producto no encontrado');
 
   const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuario.id_usuario } });
@@ -115,6 +116,25 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   }
 
   await recalcularResumen(productoId);
+
+  // Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md) —
+  // mejor esfuerzo, con su propio try/catch: que esto falle no debe impedir
+  // que la reseña quede guardada, que ya sucedió arriba. `usuario.rol` sale
+  // del token, no hace falta volver a consultar MySQL para eso.
+  try {
+    await fraudeSyncService.registrarResena({
+      usuarioId: usuario.id_usuario,
+      usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
+      usuarioRol: usuario.rol,
+      productoId,
+      productoDescripcion: producto.descripcion,
+      subcategoriaId: producto.subcategoria_id,
+      calificacion,
+      fecha: doc.fecha,
+    });
+  } catch (err) {
+    console.error('No se pudo reenviar la reseña a Neo4j:', err.message);
+  }
 
   return formatear(doc);
 }

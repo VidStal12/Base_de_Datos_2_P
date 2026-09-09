@@ -14,8 +14,10 @@
     "verificar:carrito": "node scripts/verificarCarrito.js",
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",
     "verificar:recomendaciones": "node scripts/verificarRecomendaciones.js",
+    "verificar:fraude": "node scripts/verificarFraudeNeo4j.js",
     "ventas:sincronizar": "node scripts/sincronizarVentas.js",
     "ventas:historico": "node scripts/sincronizarVentas.js --historico",
+    "fraude:backfill": "node scripts/backfillNeo4j.js",
     "test:ventas": "node --test tests/ventas*.test.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -33,7 +35,8 @@
     "express": "^5.2.1",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.9.3"
+    "mongoose": "^9.9.3",
+    "neo4j-driver": "^6.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14",

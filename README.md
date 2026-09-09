@@ -2,28 +2,28 @@
 
 Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construido de forma incremental sobre una arquitectura políglota de bases de datos. Contexto completo, alcance por entrega y rúbricas en [IA/PRD.md](IA/PRD.md); el modelo de datos de la Fase Inicial está documentado en [IA/ERD.md](IA/ERD.md) y las decisiones de stack en [IA/ADR-001-stack-y-migraciones.md](IA/ADR-001-stack-y-migraciones.md). Para un resumen de qué se construyó y en qué estado está el proyecto, ver [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md).
 
-## Estado actual: Entrega 2, Redis y analítica de ventas con Cassandra
+## Estado actual: Entrega 2 — Redis, Cassandra (ventas) y Neo4j (fraude)
 
 Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Los 6 requerimientos técnicos de Entrega 1 (PRD §5) están implementados y verificados — ver [IA/ENTREGA-1-TRAZABILIDAD.md](IA/ENTREGA-1-TRAZABILIDAD.md) para el detalle punto por punto con referencias al código, o [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md) para el resumen general de qué está hecho y qué falta.
 
-Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, y **Cassandra** para el panel de ventas por intervalos y productos en ascenso. La decisión vigente reemplaza la propuesta preliminar de Neo4j: Cassandra es la base de columnas anchas admitida por el PRD; la API consulta particiones temporales y agrega resultados acotados. Diseño, límites y evidencia de validación local en [IA/ADR-004](IA/ADR-004-analitica-ventas-cassandra.md).
+Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra** para el panel de ventas por intervalos y productos en ascenso, y **Neo4j** para detección de fraude (reseñas coordinadas y desviación de patrón de compra). El PRD exige implementar al menos una familia entre grafos y columnar; el equipo terminó incorporando las dos, cada una con su propio propósito — Cassandra no reemplaza a Neo4j ni viceversa. Diseño, límites y evidencia de validación en [IA/ADR-004](IA/ADR-004-analitica-ventas-cassandra.md) (Cassandra) y [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md) (Neo4j).
 
 ## Requisitos
 
 - Node.js 20+
-- Docker Desktop (para MySQL, MongoDB, Redis y Cassandra)
+- Docker Desktop (para MySQL, MongoDB, Redis, Cassandra y Neo4j)
 
 ## Puesta en marcha
 
-1. **Levantar MySQL, MongoDB, Redis y Cassandra en Docker** (desde la raíz del repo):
+1. **Levantar MySQL, MongoDB, Redis, Cassandra y Neo4j en Docker** (desde la raíz del repo):
 
    ```bash
    docker compose up -d
    ```
 
-   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis es para el carrito (Entrega 2, ver [IA/ENTREGA-2-PLAN.md](IA/ENTREGA-2-PLAN.md)) — sin volumen a propósito, es dato transitorio.
+   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis es para el carrito (Entrega 2, ver [IA/ENTREGA-2-PLAN.md](IA/ENTREGA-2-PLAN.md)) — sin volumen a propósito, es dato transitorio. Si Redis no arranca en Windows con un error de *permisos* de bind (no "puerto ocupado"), ver el comentario del servicio `redis` en `docker-compose.yml` — 6379 puede caer en un rango que Hyper-V/WSL2 reserva en esa máquina.
 
-   Cassandra utiliza un nodo con volumen persistente para desarrollo: esta configuración no ofrece alta disponibilidad. Esperar a que los servicios estén listos antes de aplicar migraciones o sincronizar ventas.
+   Cassandra y Neo4j usan un nodo con volumen persistente para desarrollo: esta configuración no ofrece alta disponibilidad. Esperar a que los servicios estén listos antes de aplicar migraciones o sincronizar ventas/fraude.
 
 2. **Instalar dependencias del backend**:
 
@@ -48,6 +48,9 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, y **Cassandra
    | `CASSANDRA_KEYSPACE` | Keyspace de la copia analítica |
    | `VENTAS_SYNC_ENABLED` | Habilita el worker de ventas del backend |
    | `VENTAS_SYNC_INTERVAL_MS` | Intervalo del worker; `30000` ms por defecto |
+   | `NEO4J_URI` | `bolt://localhost:7687` en desarrollo local |
+   | `NEO4J_USER` | `neo4j` |
+   | `NEO4J_PASSWORD` | Debe coincidir con `NEO4J_PASSWORD` (o el default `tiendaya_dev`) de `docker-compose.yml` |
 
 4. **Aplicar el esquema**:
 
@@ -105,6 +108,24 @@ El panel comienza con los últimos siete días completos; para ver ventas de hoy
 **Semántica:** `compra_detalle` representa productos comprados por clientes, es decir, ventas del comercio. `compra.fecha` aporta el instante. Un pago aprobado confirma la venta aunque el detalle siga `pendiente`; se comprueba la existencia del pago para evitar multiplicar líneas por reintentos de cobro. `precio_final` ya es el total neto de la línea y `descuento` es el ahorro total: no se vuelve a descontar ni a multiplicar el importe por cantidad. No existen cancelaciones o reembolsos implementados; agregarlos requerirá eventos de ajuste.
 
 Las compras sintéticas conservadas por `flash-sale-tests/` forman parte de la base de desarrollo y se incluirán al cargar su historial. Son datos de prueba, no actividad comercial real. Este panel es distinto de las recomendaciones personalizadas de `tendenciaService` y de la caché acumulada `Producto.total_vendido`.
+
+## Detección de fraude con Neo4j (Entrega 2)
+
+La pantalla `/admin/fraude` y `GET /api/admin/fraude` requieren rol **administrador**. Dos señales, ninguna una acusación por sí sola: **reseñas coordinadas** (cuentas distintas reseñando los mismos productos, calificación alta, ventana de tiempo corta) y **desviación de patrón de compra** (una compra en una categoría nueva para esa cuenta, enviada a una dirección — o pagada con un instrumento — que otra cuenta distinta también usó). Diseño completo, incluida una corrección real al modelo encontrada al implementar, en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
+
+Compras y reseñas se reenvían a Neo4j de mejor esfuerzo (no outbox durable como Cassandra — una señal de fraude tarde de más no tiene el mismo costo que una venta perdida) al confirmarse en `checkout()`/`checkoutOferta()`/`resenaService.crear()`. Para incorporar datos anteriores a que ese reenvío existiera:
+
+```bash
+npm run fraude:backfill
+```
+
+Recorre `compra_detalle` (con pago aprobado) y la colección `resenas`, reenviando con las mismas funciones que usa el camino en vivo — seguro de correr de nuevo, no duplica.
+
+```bash
+npm run verificar:fraude
+```
+
+Siembra un patrón sintético de cada señal (documentado como tal, no se presenta como hallazgo orgánico) corriendo checkout y creación de reseñas **reales**, no escrituras directas a Neo4j, y confirma que las dos consultas las encuentran.
 
 ## Verificar el checkout transaccional
 
@@ -298,13 +319,17 @@ backend/
     verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
     verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
     verificarRecomendaciones.js  Evidencia de las recomendaciones por tendencia (Entrega 2)
+    backfillNeo4j.js          Reenvía compras/reseñas históricas a Neo4j (Entrega 2)
+    verificarFraudeNeo4j.js   Evidencia de las dos señales de fraude, con datos sembrados (Entrega 2)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)
     config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua compartido por la oferta flash y las recomendaciones)
-    models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento)
-    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, ofertas, recomendaciones, historial, outbox y analítica de ventas)
-    routes/                 Endpoints Express (incluye adminRoutes.js, ofertaRoutes.js, recomendacionRoutes.js)
+    config/cassandra.js      Cliente de cassandra-driver (analítica de ventas, Entrega 2)
+    config/neo4j.js           Cliente de neo4j-driver (detección de fraude, Entrega 2)
+    models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento, Resena)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, catálogo, carrito, ofertas, recomendaciones, reseñas, historial, outbox y analítica de ventas, sincronización y consultas de fraude)
+    routes/                 Endpoints Express (incluye adminRoutes.js — ventas y fraude —, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
 flash-sale-tests/
   prepare.js                Prepara usuarios, producto, inventario y oferta
@@ -320,9 +345,9 @@ frontend/
     components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash, recomendaciones...)
     pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
-    pages/admin/             Panel de administrador (catálogo de todos los vendedores + ventas por intervalos)
+    pages/admin/             Panel de administrador (catálogo de todos los vendedores, ventas por intervalos, señales de fraude)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL
-docker-compose.yml     Contenedores de MySQL, MongoDB, Redis y Cassandra para desarrollo
+docker-compose.yml     Contenedores de MySQL, MongoDB, Redis, Cassandra y Neo4j para desarrollo
 ```

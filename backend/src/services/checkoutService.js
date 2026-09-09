@@ -4,6 +4,7 @@ const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const cartService = require('./cartService');
 const { encolarCompra } = require('./ventasOutboxService');
+const fraudeSyncService = require('./fraudeSyncService');
 
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
@@ -128,6 +129,39 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
       console.error('No se pudo vaciar el carrito en Redis tras el checkout:', err.message);
     }
 
+    // Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md)
+    // — mismo mejor esfuerzo que los dos de arriba, con su propio try/catch:
+    // que esto falle no debe afectar el reenvío a Mongo ni el vaciado del
+    // carrito, y viceversa. Sin garantía de reintento durable (a diferencia
+    // del outbox de ventas) — si falla, el próximo backfillNeo4j.js lo
+    // recupera; ver ENTREGA-3-CONSISTENCIA.md §3 para el porqué.
+    try {
+      const [usuarioDb, direccionDb, metodoPagoDb] = await Promise.all([
+        prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } }),
+        prisma.direcciones.findUnique({ where: { id: direccionId } }),
+        prisma.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
+      ]);
+      for (const detalle of resultado.compra.compra_detalles) {
+        const producto = await Producto.findOne({ producto_id: detalle.id_producto }).select('descripcion subcategoria_id').lean();
+        if (!producto) continue;
+        await fraudeSyncService.registrarCompra({
+          detalleId: detalle.id,
+          usuarioId,
+          usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
+          usuarioRol: usuarioDb.rol.tipo_rol,
+          productoId: detalle.id_producto,
+          productoDescripcion: producto.descripcion,
+          subcategoriaId: producto.subcategoria_id,
+          direccion: direccionDb,
+          metodoPago: metodoPagoDb,
+          fecha: resultado.compra.fecha,
+          monto: detalle.precio_final,
+        });
+      }
+    } catch (err) {
+      console.error('No se pudo reenviar la compra a Neo4j:', err.message);
+    }
+
     return resultado;
   });
 }
@@ -235,6 +269,36 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo (oferta flash):', err.message);
     }
+
+    // Detección de fraude — mismo criterio que checkout(), ver el comentario
+    // de arriba. Cubre oferta flash Y recomendaciones, ambas pasan por acá.
+    try {
+      const [usuarioDb, direccionDb, metodoPagoDb] = await Promise.all([
+        prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } }),
+        prisma.direcciones.findUnique({ where: { id: direccionId } }),
+        prisma.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
+      ]);
+      const producto = await Producto.findOne({ producto_id: productoId }).select('descripcion subcategoria_id').lean();
+      const detalle = resultado.compra.compra_detalles[0];
+      if (producto && detalle) {
+        await fraudeSyncService.registrarCompra({
+          detalleId: detalle.id,
+          usuarioId,
+          usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
+          usuarioRol: usuarioDb.rol.tipo_rol,
+          productoId,
+          productoDescripcion: producto.descripcion,
+          subcategoriaId: producto.subcategoria_id,
+          direccion: direccionDb,
+          metodoPago: metodoPagoDb,
+          fecha: resultado.compra.fecha,
+          monto: detalle.precio_final,
+        });
+      }
+    } catch (err) {
+      console.error('No se pudo reenviar la compra a Neo4j (oferta flash):', err.message);
+    }
+
     return resultado;
   });
 }

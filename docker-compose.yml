@@ -108,7 +108,33 @@ services:
       retries: 20
       start_period: 60s
 
+  neo4j:
+    image: neo4j:5
+    container_name: tiendaya-neo4j
+    restart: unless-stopped
+    # Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md) —
+    # copia derivada de compras/reseñas ya confirmadas en MySQL/Mongo, igual
+    # criterio que Cassandra: se puede reconstruir desde las fuentes con el
+    # script de backfill, no es la autoridad de nada. Con volumen (a
+    # diferencia de Redis): reconstruir el grafo entero en cada reinicio de
+    # desarrollo sería más fricción que beneficio mientras se prueban las
+    # consultas.
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-tiendaya_dev}
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O /dev/null -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
 volumes:
   mysql_data:
   mongo_data:
   cassandra_data:
+  neo4j_data:

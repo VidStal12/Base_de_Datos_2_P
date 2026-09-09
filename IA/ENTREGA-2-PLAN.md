@@ -303,5 +303,5 @@ Decisión y modelo detallados en [ADR-004](ADR-004-analitica-ventas-cassandra.md
 | Carrito clave-valor + TTL justificado | 1.5 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md |
 | Oferta de inventario limitado, atómica, bajo concurrencia | 3.0 pts | ✅ Implementado y verificado (2026-08-30) — ver ESTADO-PROYECTO.md §3.8 |
 | Evaluación comparativa grafos vs. columnar | 1.5 pts | ✅ Actualizada en §3 y ADR-004; el equipo decidió sumar Neo4j además de Cassandra (2026-09-08) — ver PLAN-NEO4J-DETECCION-FRAUDE.md |
-| Implementación columnar + reto específico (variación de demanda) | 3.0 pts | 🟡 Incorporación en curso — §4.6; falta registrar validación efectiva |
+| Implementación de familia(s) + reto específico | 3.0 pts | ✅ Columnar (Cassandra, §4.6) implementado y verificado con navegador real, panel `/admin/ventas` — ver ESTADO-PROYECTO.md §3.10. Grafos (Neo4j) también implementado y verificado, no exigido por el PRD como segunda familia pero incorporado — ver ESTADO-PROYECTO.md §3.11 y PLAN-NEO4J-DETECCION-FRAUDE.md |
 | Calidad del informe + diagrama de arquitectura actualizado | 1.0 pt | 🟡 Diagrama actualizado en ERD-ARQUITECTURA-POLIGLOTA.md; evidencia analítica y formato final del informe pendientes |

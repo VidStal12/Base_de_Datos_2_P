@@ -127,6 +127,7 @@ export function AdminDashboardPage() {
         <div className="flex flex-wrap gap-2">
           {/* Acceso al análisis de ventas y productos con aumento de demanda. */}
           <Button as={Link} to="/admin/ventas" variant="outline">Ventas y demanda</Button>
+          <Button as={Link} to="/admin/fraude" variant="outline">Señales de fraude</Button>
           <Button as={Link} to="/admin/productos/nuevo" variant="accent">
             + Nuevo producto
           </Button>

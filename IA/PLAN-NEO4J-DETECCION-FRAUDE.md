@@ -1,6 +1,6 @@
 # Plan — Neo4j para detección de fraude (Entrega 2)
 
-> Creado: 2026-09-08. Plan de implementación, no implementación todavía — la idea es cerrar el diseño acá, con confirmación explícita, antes de tocar código o `docker-compose.yml` (mismo criterio que se usó antes de construir §4.2/§4.5 de [ENTREGA-2-PLAN.md](ENTREGA-2-PLAN.md)).
+> Creado: 2026-09-08. **Actualizado 2026-09-08: implementado y verificado.** Infraestructura, sincronización en vivo (checkout + reseñas), backfill histórico, las dos consultas y el panel en `/admin/fraude` — todo corriendo contra datos reales, no solo diseñado. Detalle de la verificación al final de este documento (§12) y en ESTADO-PROYECTO.md.
 
 ## 1. Por qué esto y por qué ahora
 
@@ -88,9 +88,21 @@ Un solo label `:Usuario` con `rol` como propiedad, no `:Comprador`/`:Vendedor` s
 
 Mismo criterio ya establecido en el proyecto (ADR-002 §3.3, reenvío de mejor esfuerzo) — no la versión de outbox durable que sí se justificó para ventas (ADR-004 §5). La diferencia: si una compra tarda unos segundos de más en aparecer en el grafo de fraude, no pasa nada grave (es una revisión periódica, no una consulta que alguien espera en el momento, a diferencia de un pago). Si más adelante se decide que las señales de fraude necesitan la misma garantía dura que las ventas, migrar al mismo patrón de outbox es directo — ya existe el ejemplo funcionando.
 
-- `checkoutService.checkout()` y `checkoutService.checkoutOferta()`: después de confirmar la compra (mismo punto donde ya se reenvía a Mongo/Redis/outbox de ventas), reenviar de mejor esfuerzo: `MERGE` del nodo `Usuario` y `Producto` si no existen, relación `COMPRÓ`, y `MERGE` de `Direccion`/`MetodoPago` + `ENVIÓ_A`/`PAGÓ_CON` a partir de `direccionId`/`metodoPagoId` ya presentes en la misma llamada.
-- `resenaService.crear()`: después de guardar la reseña, reenviar de mejor esfuerzo la relación `RESEÑÓ`.
+- `checkoutService.checkout()` y `checkoutService.checkoutOferta()`: después de confirmar la compra (mismo punto donde ya se reenvía a Mongo/Redis/outbox de ventas), reenviar de mejor esfuerzo, por cada línea:
+  ```cypher
+  MERGE (u:Usuario {id_usuario:$usuarioId}) SET u.nombre=$nombre, u.rol=$rol
+  MERGE (p:Producto {producto_id:$productoId}) SET p.descripcion=$descripcion, p.subcategoria=$subcategoriaId
+  MERGE (d:Direccion {id_direccion:$direccionId})
+  MERGE (m:MetodoPago {id_metodo_pago:$metodoPagoId})
+  MERGE (u)-[c:COMPRÓ {detalle_id:$detalleId}]->(p)
+    SET c.fecha=$fecha, c.monto=$monto, c.direccion_id=$direccionId, c.metodo_pago_id=$metodoPagoId
+  MERGE (u)-[:ENVIÓ_A]->(d)
+  MERGE (u)-[:PAGÓ_CON]->(m)
+  ```
+  El `MERGE` de `COMPRÓ` va con `detalle_id` (= `compra_detalle.id`, mismo identificador natural que ya usa el outbox de ventas) como parte de la clave — no solo los extremos de la relación. Sin eso, dos compras distintas del mismo producto por el mismo usuario (algo que pasa todo el tiempo, ver el historial real de Ana) colapsarían en una sola arista, y la Señal B necesita poder mirar cada compra por separado.
+- `resenaService.crear()`: después de guardar la reseña, reenviar de mejor esfuerzo `MERGE (u)-[r:RESEÑÓ]->(p) SET r.calificacion=$calificacion, r.fecha=$fecha` — acá sí alcanza con los extremos, sin clave extra: el índice único de `Resena.js` ya garantiza una sola reseña por (producto, usuario), así que una sola arista por par es lo correcto, no una pérdida de datos.
 - `MERGE`, no `CREATE`, en todos los casos — reintentar un reenvío que ya se aplicó no debe duplicar nodos ni relaciones (mismo principio de idempotencia que ya rige en Cassandra, ADR-004 §4).
+- **Datos históricos:** el checkout/reseña en vivo solo cubre lo que pase de acá en adelante — lo ya existente en MySQL/Mongo necesita un backfill (`backend/scripts/backfillNeo4j.js`, mismo patrón de paginación que `ventasSyncService.backfillHistorico()`) que recorre `compra_detalle` (con pago aprobado) y `Resena`, llamando a las mismas funciones de `fraudeSyncService.js` que usa el camino en vivo — no una segunda implementación que se pueda desalinear de la primera.
 
 ## 7. Panel administrativo
 
@@ -136,4 +148,15 @@ Va en un script de verificación (`backend/scripts/verificarFraudeNeo4j.js`, mis
 
 ---
 
-¿Avanzamos con esto tal cual, o hay algo del modelo (§5), las señales (§3/§4) o los parámetros (§10) que preferís ajustar antes de que empiece a construirlo?
+## 12. Corrección real al diseño, encontrada al implementar
+
+`Direccion`/`MetodoPago` (§5) **no** se clavaron por `id_direccion`/`id_metodo_pago` como decía el diseño original — cada fila de esas tablas pertenece a un solo usuario (`id_usuario`), así que dos cuentas nunca podrían compartir el mismo id por construcción, y la Señal B jamás habría encontrado nada, sin importar qué datos existieran. La clave real terminó siendo el **contenido**: `Direccion` por `pais|dirección|código_postal` normalizado, `MetodoPago` por `token_pasarela` (el identificador estable de la pasarela de pago, nunca el número de tarjeta) — dos cuentas "independientes" que en realidad cargaron el mismo domicilio físico o la misma tarjeta sí es la señal. `COMPRÓ` guarda `direccion_texto`/`metodo_pago_token` (no los ids) por la misma razón, y la consulta de la Señal B ata la desviación a la dirección de ESA compra puntual, no a "esta cuenta tiene alguna dirección compartida en algún momento" (dos condiciones ciertas por separado, de compras distintas, no dicen nada). Ver `fraudeSyncService.js`/`fraudeService.js` para el código real.
+
+## 13. Verificación — evidencia real
+
+- **Backfill** (`npm run fraude:backfill`): 52 compras y 1 reseña históricas reenviadas, 0 omitidas, contra los datos reales acumulados en el resto de esta sesión.
+- **`npm run verificar:fraude`** (`backend/scripts/verificarFraudeNeo4j.js`) — siembra el patrón sintético (documentado como tal, ver §8) corriendo `checkout()`/`resenaService.crear()` REALES, no `MERGE` directo a Neo4j, para probar el camino en vivo de punta a punta:
+  - Señal A: dos cuentas nuevas compran y reseñan los mismos 3 productos con 5 estrellas — encontrado correctamente, 3 productos compartidos.
+  - Señal B: una cuenta nueva, sin ningún historial, compra por primera vez enviando a una dirección cuyo texto coincide con el de otra cuenta — encontrado correctamente.
+- **Panel `/admin/fraude`**, verificado con navegador real, logueado como administrador: las dos tablas renderizan correctamente. Encontró, además del patrón sembrado, un patrón **orgánico** no planeado — dos cuentas de prueba de sesiones anteriores ("Luis Ramírez", "vid asas") comparten dirección en varias compras reales — buena señal de que la consulta generaliza más allá de los datos sembrados a propósito.
+- Bug real encontrado y corregido en el camino: los campos enteros que devuelve el driver de Neo4j necesitaban conversión antes de mandarlos al frontend en versiones anteriores del driver (`Integer` en vez de `number`) — con `neo4j-driver@6.2.0` ya vienen como `number` nativo, pero se dejó `aNumero()` en `fraudeService.js` como conversión defensiva, sin costo si ya es un número.
