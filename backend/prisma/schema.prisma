@@ -35,6 +35,14 @@ model usuarios {
   correo           String   @unique
   contrasena       String
   fecha_nacimiento DateTime @db.Date
+  // Antigüedad de la cuenta — señal real de fraude (una cuenta creada hace
+  // minutos que ya dispara una señal pesa distinto que una con meses de
+  // historial), pero no existía ningún campo de alta hasta ahora. Al
+  // agregarlo sobre una tabla con filas ya existentes, esas filas quedan con
+  // la fecha de esta migración, no su alta real — no hay forma de recuperar
+  // ese dato porque nunca se guardó. Solo es confiable desde acá en
+  // adelante, ver comentario en fraudeService.js.
+  creado_en        DateTime @default(now())
 
   rol          rol_usuario   @relation(fields: [rol_id], references: [id])
   direcciones  direcciones[]
