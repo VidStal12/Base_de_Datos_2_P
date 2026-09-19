@@ -46,7 +46,8 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
    | `CASSANDRA_PORT` | Puerto CQL, `9042` |
    | `CASSANDRA_LOCAL_DATACENTER` | Datacenter configurado en Compose |
    | `CASSANDRA_KEYSPACE` | Keyspace de la copia analítica |
-   | `VENTAS_SYNC_ENABLED` | Habilita el worker de ventas del backend |
+   | `VENTAS_OUTBOX_ENABLED` | Captura eventos de ventas dentro del checkout; `false` en la configuración temporal |
+   | `VENTAS_SYNC_ENABLED` | Habilita el worker de ventas del backend; `false` en la configuración temporal |
    | `VENTAS_SYNC_INTERVAL_MS` | Intervalo del worker; `30000` ms por defecto |
    | `NEO4J_URI` | `bolt://localhost:7687` en desarrollo local |
    | `NEO4J_USER` | `neo4j` |
@@ -85,7 +86,11 @@ La pantalla `/admin/ventas` y `GET /api/admin/ventas` requieren una cuenta con r
 
 Se filtra por fechas inclusivas de Guatemala (UTC−6), intervalo y producto. Se permite un máximo de 90 días y se rechazan fechas futuras. El ranking usa un mínimo de 5 unidades recientes por defecto y compara con el período inmediatamente anterior de igual duración. Si no hubo ventas anteriores, el porcentaje es `null` y se muestra sin base de comparación. Si se incluye hoy, sus ventas todavía pueden estar incompletas.
 
-MySQL conserva la venta y registra su evento en `venta_outbox` dentro de la misma transacción del checkout. Un worker, cada 30 segundos por defecto, replica con reintentos a `ventas_por_dia` y `ventas_por_producto_mes`. Las claves incluyen `detalle_id`, por lo que reejecutar una inserción no duplica cantidades. Las descripciones vienen del catálogo actual de Mongo. Los importes y unidades consultados por el dashboard salen de Cassandra; su indisponibilidad se informa como error, sin sustituir la consulta financiera por MySQL.
+Con `VENTAS_OUTBOX_ENABLED=true`, MySQL conserva la venta y registra su evento en `venta_outbox` dentro de la misma transacción del checkout. Con `VENTAS_SYNC_ENABLED=true`, un worker, cada 30 segundos por defecto, replica con reintentos a `ventas_por_dia` y `ventas_por_producto_mes`. Las claves incluyen `detalle_id`, por lo que reejecutar una inserción no duplica cantidades. Las descripciones vienen del catálogo actual de Mongo. Los importes y unidades consultados por el dashboard salen de Cassandra; su indisponibilidad se informa como error, sin sustituir la consulta financiera por MySQL.
+
+**Pausa temporal para las pruebas de oferta flash:** `backend/.env.example` deja ambas variables en `false`. Aplicar esos valores también en `backend/.env` y reiniciar el backend. Esto omite las consultas SQL de captura en el checkout y detiene el worker; las compras, pagos e inventario siguen guardándose en MySQL. Los eventos pendientes y los datos existentes de Cassandra se conservan. El panel de ventas deja de incorporar compras nuevas mientras dure la pausa. Si Cassandra no se necesita, se puede detener únicamente su contenedor con `docker compose stop cassandra`.
+
+Para reactivar, levantar Cassandra con `docker compose up -d cassandra`, poner ambas variables en `true`, reiniciar el backend y ejecutar `npm run ventas:historico` desde `backend/`. Este paso recupera las compras realizadas durante la pausa; activar solo el worker no crea los eventos omitidos. Si las variables no están definidas, el código conserva el comportamiento previo de captura y sincronización habilitadas.
 
 Para incorporar compras anteriores o reconstruir la copia analítica, después de instalar dependencias, aplicar migraciones y tener las bases disponibles, desde `backend/`:
 
@@ -155,35 +160,44 @@ Siembra una oferta de 5 unidades sobre un producto real y dispara 15 intentos de
 
 ### Prueba reutilizable contra el endpoint HTTP real
 
-Además de la verificación interna anterior, `flash-sale-tests/` prueba el endpoint `POST /api/ofertas/:productoId/comprar` atravesando Express, autenticación JWT, Redis, MySQL y Mongo. Usa 15 compradores sintéticos distintos; no llama directamente a los servicios ni usa la cuenta de Ana.
+Además de la verificación interna anterior, `flash-sale-tests/` prueba el endpoint `POST /api/ofertas/:productoId/comprar` atravesando Express, autenticación JWT, Redis, MySQL y Mongo. Usa 100 compradores sintéticos distintos, con un intento de una unidad por comprador; no llama directamente a los servicios ni usa la cuenta de Ana.
 
 **Requisitos:** Node.js 20 o posterior, backend en `http://localhost:3000`, MySQL/MongoDB/Redis normales del proyecto levantados, migraciones aplicadas y la cuenta vendedora `luis.ramirez@example.com` creada por el seed.
 
-La preparación y la ejecución están separadas. Desde la raíz del repositorio, primero se crean o verifican los usuarios y el producto sintético, se restaura el inventario a 50 y se reinicia el cupo de 5 unidades:
+La preparación y la ejecución están separadas. Desde la raíz del repositorio, primero se crean o verifican los usuarios y el producto sintético, se restaura el inventario a 100 y se reinicia el cupo de 20 unidades:
 
 ```powershell
 node .\flash-sale-tests\prepare.js
 ```
 
-Después se ejecuta la única prueba combinada: tres compradores salen al mismo tiempo y los demás se incorporan en grupos con retrasos de 10, 100, 500 y 1,000 milisegundos:
+Después se ejecuta la única prueba combinada: 20 compradores tienen el mismo instante de salida (retraso cero) y los otros 80 se incorporan en grupos de 10 con retrasos de 100, 250, 400, 600, 900, 1,200, 1,600 y 2,000 milisegundos respecto de ese instante. Las solicitudes se lanzan concurrentemente; el reporte registra el instante real de cada envío, que puede variar por la planificación del proceso y la red:
 
 ```powershell
 node .\flash-sale-tests\run.js
 ```
 
-`prepare.js` registra las cuentas que todavía no existan entre `flash.test.01@example.com` y `flash.test.15@example.com`, y crea una dirección y un método de pago sintéticos para cada una. También busca por descripción exacta un producto exclusivo de prueba; si no existe, crea mediante la API su categoría, subcategoría y producto usando la cuenta de Luis. No modifica el inventario ni la oferta de los productos reales del catálogo.
+`prepare.js` registra las cuentas que todavía no existan entre `flash.test.01@example.com` y `flash.test.100@example.com`, y crea una dirección y un método de pago sintéticos para cada una. También busca por descripción exacta un producto exclusivo de prueba; si no existe, crea mediante la API su categoría, subcategoría y producto usando la cuenta de Luis. No modifica el inventario ni la oferta de los productos reales del catálogo.
 
-`run.js` no crea ni restaura datos: solo comprueba que exista una preparación vigente, inicia sesión con las cuentas ya preparadas y lanza las solicitudes. Una preparación se consume al iniciar la ráfaga. Para repetir la prueba o devolver el producto de 45 a 50 unidades, hay que ejecutar nuevamente `prepare.js`; intentar correr `run.js` dos veces seguidas se rechaza con un mensaje claro.
+`run.js` comprueba que exista una preparación vigente, inicia sesión con las cuentas ya preparadas y lanza las solicitudes. **APROBADO significa ausencia de sobreventa y consistencia de inventario**, sin exigir agotar las 20 unidades de oferta ni recibir una cantidad fija de respuestas HTTP 201. Por ejemplo, 14 unidades compradas, inventario MySQL de 86 y remanente Redis de 6 aprueban aunque alguna compra haya respondido fuera de tiempo. Los timeouts, errores HTTP, disponibilidad y latencias se informan como diagnóstico y no deciden el veredicto.
 
-La prueba sí crea pedidos y pagos reales para las cuentas sintéticas ganadoras. Esos pedidos se conservan entre ejecuciones, pero no afectan la validación: cada reporte compara el inventario inmediatamente anterior y posterior a su propia ráfaga. El historial de compras de Ana no se modifica.
+El ejecutor guarda los IDs de los detalles de compra existentes antes de la ráfaga y consulta los nuevos pedidos y pagos en MySQL al finalizar. Así cuenta las compras persistidas aunque el cliente no haya recibido HTTP 201, y excluye el historial conservado. Verifica que las unidades flash no superen el cupo, que no se venda más que el inventario inicial, que el descuento de MySQL coincida con las unidades guardadas y que Redis refleje el cupo restante. También comprueba que las respuestas HTTP 201 tengan su compra persistida y que los pedidos observados tengan pago aprobado.
+
+La sección `reconciliation` del escenario configura una ventana de hasta 30 segundos después de las respuestas HTTP, con lecturas cada 500 ms, estabilidad de al menos 2 segundos y límite de 5 segundos por lectura. Puede terminar antes cuando todas las solicitudes sin respuesta tengan una compra correspondiente y las lecturas estén estables. Si un timeout no tiene compra registrada, observa toda la ventana: **un timeout no cancela automáticamente la compra en el servidor**. El reporte indica «sin compra observada», sin afirmar una cancelación. Este veredicto cubre la ventana observada; si el servidor puede confirmar operaciones todavía más tarde, hay que ampliar `timeoutMs`. No poder leer o estabilizar las bases impide aprobar. Los valores de `thresholds` solo generan diagnósticos de rendimiento.
+
+Una preparación se consume al iniciar la ráfaga. Para repetir la prueba o restaurar el inventario del producto a 100 unidades, hay que ejecutar nuevamente `prepare.js`; intentar correr `run.js` dos veces seguidas se rechaza con un mensaje claro. Ejecutar una corrida a la vez sobre este producto sintético.
+
+La prueba sí crea pedidos y pagos reales para las cuentas sintéticas ganadoras. Esos pedidos se conservan entre ejecuciones, pero no afectan la validación: cada reporte compara las compras nuevas y el inventario anterior a su propia ráfaga con el estado conciliado. El historial de compras de Ana no se modifica.
 
 Cada corrida crea una carpeta ignorada por Git bajo `flash-sale-tests/results/` con:
 
 - `attempts.jsonl`: usuario sintético, instante programado y real, desviación de planificación, status, cuerpo y latencia de cada solicitud.
 - `probes.json`: disponibilidad de `/api/health` y del stock de la oferta mientras ocurre la ráfaga.
-- `summary.json`: conteos, percentiles, inventario MySQL, remanente Redis e invariantes aprobadas o fallidas.
+- `reconciliation.json`: lecturas de conciliación, compras persistidas, asociación con solicitudes sin respuesta y errores de lectura.
+- `summary.json`: conteos HTTP y de compras persistidas por separado, percentiles, inventario MySQL, remanente Redis, `invariants` que deciden el resultado y `diagnostics` informativos.
 
-El comando termina con código de salida `1` si detecta timeouts, errores inesperados, inventario negativo, diferencias entre compras e inventario, inconsistencia con Redis o indisponibilidad durante las sondas. `flash-sale-tests/users.example.json` contiene exclusivamente credenciales y métodos de pago sintéticos de desarrollo; no se deben colocar cuentas reales en ese archivo.
+El comando termina con código de salida `0` si aprueba la conciliación de inventario y ausencia de sobreventa; usa `1` si detecta sobreventa, inconsistencias o no puede verificar el resultado. Los timeouts y errores de las solicitudes no provocan por sí solos una reprobación. La consola conserva el total de requests, HTTP 201, rechazos por agotamiento, errores inesperados, timeouts, latencias y sondas, y agrega las compras confirmadas en MySQL y las confirmadas sin HTTP 201.
+
+Para verificar la lógica del veredicto y la conciliación sin escribir en las bases: `node --test flash-sale-tests/reconcile.test.js`. `flash-sale-tests/users.example.json` contiene exclusivamente credenciales y métodos de pago sintéticos de desarrollo; no se deben colocar cuentas reales en ese archivo.
 
 ## Verificar las recomendaciones por tendencia (Entrega 2)
 
@@ -334,6 +348,8 @@ backend/
 flash-sale-tests/
   prepare.js                Prepara usuarios, producto, inventario y oferta
   run.js                    Ejecutor HTTP parametrizado y verificador MySQL/Redis
+  reconcile.js              Conciliación de compras tardías y criterios de integridad
+  reconcile.test.js         Pruebas aisladas de sobreventa y conciliación
   users.example.json        Compradores sintéticos reutilizables
   scenarios/combined.json   Única ráfaga: simultáneos + grupos con retraso
   results/                  Reportes generados por corrida (ignorado por Git)

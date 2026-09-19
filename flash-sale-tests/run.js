@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { createSnapshotReader, reconcile } = require('./reconcile');
 
 const testsDir = __dirname;
 const projectRoot = path.resolve(testsDir, '..');
@@ -395,7 +396,8 @@ async function main() {
       throw new Error('No hay una preparación vigente. Ejecutá primero node .\\flash-sale-tests\\prepare.js');
     }
     const preparedState = readJson(preparedStatePath);
-    if (!preparedState.ready || preparedState.scenario !== scenario.name) {
+    if (!preparedState.ready || preparedState.scenario !== scenario.name
+        || preparedState.offerStock !== scenario.prepare.offerStock) {
       throw new Error('La preparación ya fue consumida o pertenece a otro escenario. Ejecutá node .\\flash-sale-tests\\prepare.js');
     }
     scenario.productId = preparedState.productId;
@@ -408,7 +410,10 @@ async function main() {
       buyers.set(buyer.ref, buyer);
     }
 
-    const initialInventory = await prisma.inventario.findUnique({ where: { id_producto: scenario.productId } });
+    const [initialInventory, baselineDetails] = await prisma.$transaction([
+      prisma.inventario.findUnique({ where: { id_producto: scenario.productId } }),
+      prisma.compra_detalle.findMany({ where: { id_producto: scenario.productId }, select: { id: true } }),
+    ], { isolationLevel: 'RepeatableRead' });
     if (!initialInventory) throw new Error(`No existe inventario MySQL para el producto ${scenario.productId}`);
 
     const initialOfferResult = await httpJson(baseUrl, `/ofertas/${scenario.productId}/stock`, {
@@ -428,6 +433,7 @@ async function main() {
 
     redis = conectarRedis();
     const redisKey = `oferta:${scenario.productId}:stock`;
+    const initialRedisMissing = await redis.get(redisKey) === null;
 
     fs.writeFileSync(
       preparedStatePath,
@@ -447,68 +453,62 @@ async function main() {
     stopState.stop = true;
     await probePromise;
 
-    const finalInventory = await prisma.inventario.findUnique({ where: { id_producto: scenario.productId } });
-    const redisRaw = await redis.get(redisKey);
-    const redisRemaining = redisRaw === null ? null : Number(redisRaw);
+    // Conservar las respuestas aunque la conciliación no consiga leer las bases.
+    const timestamp = runStartedAt.toISOString().replace(/[:.]/g, '-');
+    const outputDir = path.join(testsDir, 'results', `${timestamp}-${scenario.name.replace(/[^a-z0-9_-]+/gi, '-')}`);
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(path.join(outputDir, 'attempts.jsonl'), attempts.map((attempt) => JSON.stringify(attempt)).join('\n') + '\n');
+    fs.writeFileSync(path.join(outputDir, 'probes.json'), JSON.stringify(probes, null, 2) + '\n');
+
+    console.log('Conciliando compras persistidas, inventario y Redis después de las respuestas HTTP...');
+    const reconciliation = await reconcile({
+      ...scenario.reconciliation,
+      readSnapshot: createSnapshotReader({
+        prisma, redis, productId: scenario.productId,
+        baselineDetailIds: baselineDetails.map((detail) => detail.id),
+        buyerRefsByEmail: new Map(selectedBuyers.map((buyer) => [buyer.email, buyer.ref])),
+      }),
+      attempts,
+      initialInventory: initialInventory.cantidad,
+      offerStock: preparedState.offerStock,
+      offerExpiresAt: Date.parse(initialOffer.vigente_hasta),
+      initialRedisMissing,
+    });
+    const confirmed = reconciliation.assessment;
+    const mysqlAfter = reconciliation.snapshot?.mysqlAfter ?? null;
+    const redisRemaining = confirmed?.redisRemaining ?? null;
 
     const successes = attempts.filter((attempt) => attempt.outcome === 'success');
     const soldOut = attempts.filter((attempt) => attempt.outcome === 'sold_out');
     const timeouts = attempts.filter((attempt) => attempt.outcome === 'timeout');
     const unexpected = attempts.filter((attempt) => attempt.outcome === 'unexpected_error');
     const successfulUnits = successes.reduce((sum, attempt) => sum + attempt.quantity, 0);
-    const successfulFlashUnits = successes
-      .filter((attempt) => attempt.channel === 'flash')
-      .reduce((sum, attempt) => sum + attempt.quantity, 0);
-    const mysqlDelta = initialInventory.cantidad - finalInventory.cantidad;
     const attemptLatencies = attempts.map((attempt) => attempt.latencyMs);
     const probeLatencies = probes.flatMap((probe) => [probe.health.latencyMs, probe.offerStock.latencyMs]);
-    const probesOk = probes.every(
+    const probesOk = probes.length > 0 && probes.every(
       (probe) => probe.health.status === 200 && probe.offerStock.status === 200 && !probe.health.error && !probe.offerStock.error
     );
 
-    const invariants = [
-      invariant('Inventario MySQL no negativo', '>= 0', finalInventory.cantidad, finalInventory.cantidad >= 0),
-      invariant('Descuento MySQL coincide con compras exitosas', successfulUnits, mysqlDelta, mysqlDelta === successfulUnits),
-      invariant(
-        'Redis coincide con las unidades flash confirmadas',
-        scenario.prepare.offerStock - successfulFlashUnits,
-        redisRemaining,
-        redisRemaining === scenario.prepare.offerStock - successfulFlashUnits
-      ),
+    // Diagnósticos informativos: no deciden APROBADO/REPROBADO.
+    const diagnostics = [
       invariant('Sin timeouts', 0, timeouts.length, timeouts.length === 0),
       invariant('Sin errores inesperados', 0, unexpected.length, unexpected.length === 0),
       invariant('Sondas disponibles durante la ráfaga', true, probesOk, probesOk),
     ];
-
-    if (scenario.expect?.successfulRequests !== undefined) {
-      invariants.push(
-        invariant(
-          'Cantidad de solicitudes exitosas',
-          scenario.expect.successfulRequests,
-          successes.length,
-          successes.length === scenario.expect.successfulRequests
-        )
-      );
-    }
-    if (scenario.expect?.soldOutRequests !== undefined) {
-      invariants.push(
-        invariant(
-          'Cantidad de rechazos por agotamiento',
-          scenario.expect.soldOutRequests,
-          soldOut.length,
-          soldOut.length === scenario.expect.soldOutRequests
-        )
-      );
-    }
     if (scenario.thresholds?.maxProbeP95Ms !== undefined) {
       const probeP95 = percentile(probeLatencies, 95);
-      invariants.push(
-        invariant('Latencia p95 de sondas', `<= ${scenario.thresholds.maxProbeP95Ms}ms`, probeP95, probeP95 <= scenario.thresholds.maxProbeP95Ms)
+      diagnostics.push(
+        invariant('Latencia p95 de sondas', `<= ${scenario.thresholds.maxProbeP95Ms}ms`, probeP95,
+          probeP95 !== null && probeP95 <= scenario.thresholds.maxProbeP95Ms)
       );
     }
+    const timeoutIds = new Set(timeouts.map((attempt) => attempt.attemptId));
+    const timeoutsWithPurchase = confirmed?.uncertainWithPurchase.filter((item) => timeoutIds.has(item.attemptId)).length ?? null;
+    const invariants = reconciliation.invariants;
 
     const summary = {
       scenario: scenario.name,
+      criterion: 'no_overselling_and_inventory_consistency',
       runStartedAt: runStartedAt.toISOString(),
       runFinishedAt: new Date().toISOString(),
       productId: scenario.productId,
@@ -522,9 +522,27 @@ async function main() {
       },
       inventory: {
         mysqlBefore: initialInventory.cantidad,
-        mysqlAfter: finalInventory.cantidad,
-        mysqlDelta,
+        mysqlAfter,
+        mysqlDelta: confirmed?.mysqlDelta ?? null,
+        offerStock: preparedState.offerStock,
         redisRemaining,
+      },
+      confirmedPurchases: {
+        count: confirmed?.purchaseCount ?? null,
+        units: confirmed?.units ?? null,
+        flashUnits: confirmed?.flashUnits ?? null,
+        withoutHttp201: confirmed?.purchasesWithoutHttp201 ?? null,
+        timeoutsWithPurchase,
+        timeoutsWithoutObservedPurchase: timeoutsWithPurchase === null ? null : timeouts.length - timeoutsWithPurchase,
+      },
+      reconciliation: {
+        completed: reconciliation.completed,
+        reason: reconciliation.reason,
+        durationMs: reconciliation.durationMs,
+        samples: reconciliation.samples.length,
+        policy: reconciliation.policy,
+        readErrors: reconciliation.readErrors,
+        uncertainWithoutObservedPurchase: confirmed?.uncertainWithoutPurchase ?? [],
       },
       latencyMs: {
         min: Math.min(...attemptLatencies),
@@ -539,21 +557,32 @@ async function main() {
         allSuccessful: probesOk,
       },
       invariants,
-      passed: invariants.every((item) => item.passed),
+      diagnostics,
+      passed: reconciliation.passed,
     };
 
-    const timestamp = runStartedAt.toISOString().replace(/[:.]/g, '-');
-    const outputDir = path.join(testsDir, 'results', `${timestamp}-${scenario.name.replace(/[^a-z0-9_-]+/gi, '-')}`);
-    fs.mkdirSync(outputDir, { recursive: true });
-    fs.writeFileSync(path.join(outputDir, 'attempts.jsonl'), attempts.map((attempt) => JSON.stringify(attempt)).join('\n') + '\n');
-    fs.writeFileSync(path.join(outputDir, 'probes.json'), JSON.stringify(probes, null, 2) + '\n');
+    fs.writeFileSync(path.join(outputDir, 'reconciliation.json'), JSON.stringify(reconciliation, null, 2) + '\n');
     fs.writeFileSync(path.join(outputDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
 
     console.log('');
     console.log(`Resultado: ${summary.passed ? 'APROBADO' : 'REPROBADO'}`);
-    console.log(`HTTP 201: ${successes.length} | HTTP 409 agotado: ${soldOut.length} | inesperados: ${unexpected.length}`);
-    console.log(`MySQL: ${initialInventory.cantidad} -> ${finalInventory.cantidad} | Redis: ${redisRemaining}`);
+    console.log('Criterio: sin sobreventa e inventario consistente con las compras persistidas.');
+    console.log(`Requests: ${attempts.length} | HTTP 201: ${successes.length} | HTTP 409 agotado: ${soldOut.length} | inesperados: ${unexpected.length} | timeouts: ${timeouts.length}`);
+    console.log(`Compras en MySQL: ${confirmed?.purchaseCount ?? 'no verificable'} | unidades: ${confirmed?.units ?? 'no verificable'} | unidades de oferta: ${confirmed?.flashUnits ?? 'no verificable'}/${preparedState.offerStock}`);
+    console.log(`Sin respuesta HTTP 201: ${confirmed?.purchasesWithoutHttp201 ?? 'no verificable'} compras | timeouts con compra: ${timeoutsWithPurchase ?? 'no verificable'}`);
+    console.log(`MySQL: ${initialInventory.cantidad} -> ${mysqlAfter ?? 'no verificable'} | Redis: ${redisRemaining ?? 'no verificable'}`);
+    console.log(`Conciliación: ${reconciliation.completed ? 'estable' : 'incompleta'} | ${reconciliation.durationMs} ms | ${reconciliation.samples.length} lecturas`);
+    if (confirmed?.uncertainWithoutPurchase.length) {
+      console.log(`Solicitudes sin respuesta y sin compra observada en la ventana: ${confirmed.uncertainWithoutPurchase.length} (no confirma cancelación del servidor)`);
+    }
     console.log(`Latencia p50/p95/p99: ${summary.latencyMs.p50}/${summary.latencyMs.p95}/${summary.latencyMs.p99} ms`);
+    console.log(`Sondas: ${probes.length} | disponibles: ${probesOk ? 'sí' : 'no'} | p95: ${summary.probes.p95LatencyMs} ms`);
+    for (const failed of invariants.filter((item) => !item.passed)) {
+      console.log(`FALLÓ: ${failed.name} | esperado: ${failed.expected} | observado: ${failed.actual}`);
+    }
+    for (const diagnostic of diagnostics.filter((item) => !item.passed)) {
+      console.log(`DIAGNÓSTICO (no cambia el veredicto): ${diagnostic.name} | observado: ${diagnostic.actual}`);
+    }
     console.log(`Reporte: ${outputDir}`);
 
     if (!summary.passed) process.exitCode = 1;

@@ -143,8 +143,9 @@ async function detener() {
   if (ejecucion) await ejecucion.catch(() => {});
 }
 
-// Captura excepcional del historial previo a instalar el outbox. La paginación
-// por ID solo se usa aquí: las ventas nuevas SIEMPRE se capturan en el checkout.
+// Captura del historial previo a instalar el outbox o generado durante una pausa
+// de VENTAS_OUTBOX_ENABLED. La paginación por ID solo se usa aquí; con la captura
+// activa, las ventas nuevas se registran dentro del checkout.
 // `some` equivale a EXISTS pago aprobado, así que varios pagos no duplican líneas.
 async function backfillHistorico() {
   let ultimoId = 0;

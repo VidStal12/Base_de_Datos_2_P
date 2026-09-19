@@ -124,15 +124,16 @@ export default function App() {
                   </RequireRole>
                 }
               />
+              {/* 
               <Route
                 path="admin/ventas"
                 element={
-                  // El panel de ventas comparte la protección del resto de administración.
                   <RequireRole roles={ROLES_ADMIN}>
                     <AdminVentasPage />
                   </RequireRole>
                 }
               />
+              */}
               <Route
                 path="admin/fraude"
                 element={

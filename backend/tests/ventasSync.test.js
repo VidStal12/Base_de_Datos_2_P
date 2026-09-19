@@ -213,6 +213,51 @@ test('Cassandra rechaza identificadores antes de construir sentencias CQL', asyn
 // Probar la ubicación del outbox en ambos caminos del checkout es importante:
 // una captura fuera de la transacción perdería ventas si Node termina al pagar.
 for (const variante of ['checkout', 'checkoutOferta']) {
+  test(`${variante}: con captura pausada confirma la compra sin consultar el outbox`, async () => {
+    let confirmado = false;
+    let cacheEscrita = false;
+    const compra = {
+      id: 7, fecha: new Date('2026-09-05T03:00:00Z'),
+      compra_detalles: [{ id: 11, id_producto: 3, cantidad: 2, precio_final: '20.00', descuento: '4.50' }],
+    };
+    // No hay modelos producto/venta_outbox: cualquier consulta de captura falla.
+    const tx = {
+      direcciones: { findUnique: async () => ({ id_usuario: 7 }) },
+      metodo_pago: { findUnique: async () => ({ id_usuario: 7 }) },
+      inventario: { findUnique: async () => ({ cantidad: 10, precio: '12.25' }), update: async () => {} },
+      compra: { create: async () => compra },
+      pago: { create: async () => ({ id: 1, estado: 'aprobado' }) },
+    };
+    const capturaPausada = cargar('../src/services/ventasOutboxService.js', {}, { VENTAS_OUTBOX_ENABLED: 'false' });
+    const servicio = cargar('../src/services/checkoutService.js', {
+      '../config/prisma': {
+        ...tx,
+        usuarios: { findUnique: async () => ({ nombres: 'Prueba', apellidos: 'Flash', rol: { tipo_rol: 'comprador' } }) },
+        $transaction: async (operar) => {
+          const resultado = await operar(tx);
+          confirmado = true;
+          return resultado;
+        },
+      },
+      '../config/mongo': { conectar: async () => {} },
+      '../models/mongo/Producto': {
+        updateOne: async () => { cacheEscrita = true; },
+        findOne: () => ({ select: () => ({ lean: async () => null }) }),
+      },
+      './cartService': { vaciar: async () => {} },
+      './fraudeSyncService': { registrarCompra: async () => {} },
+      './ventasOutboxService': capturaPausada,
+    });
+    const resultado = await servicio[variante]({
+      usuarioId: 7, direccionId: 1, metodoPagoId: 1, items: [{ productoId: 3, cantidad: 2 }],
+      productoId: 3, cantidad: 2, precioUnitario: 10,
+    });
+    assert.equal(confirmado, true);
+    assert.equal(resultado.compra, compra);
+    assert.equal(resultado.pago.estado, 'aprobado');
+    assert.equal(cacheEscrita, true);
+  });
+
   test(`${variante}: un fallo de outbox revierte la transacción y no ejecuta las cachés`, async () => {
     let pagoCreado = false;
     let confirmado = false;

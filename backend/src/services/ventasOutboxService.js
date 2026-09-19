@@ -26,7 +26,11 @@ function crearPayload(compra, detalle, vendedorId) {
 
 // Recibe EL MISMO tx del checkout: si falla este INSERT también se revierten
 // pago, compra e inventario. Cassandra nunca participa en la ruta del cobro.
+// Durante la pausa de analítica se omiten también estas consultas SQL. Las
+// compras siguen en MySQL y ventas:historico puede incorporarlas al reactivar.
 async function encolarCompra(tx, compra) {
+  if (['false', '0'].includes((process.env.VENTAS_OUTBOX_ENABLED || 'true').toLowerCase())) return;
+
   const productos = await tx.producto.findMany({
     where: { id: { in: [...new Set(compra.compra_detalles.map((detalle) => detalle.id_producto))] } },
     select: { id: true, id_vendedor: true },
