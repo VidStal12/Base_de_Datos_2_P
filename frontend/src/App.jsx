@@ -5,6 +5,7 @@ import { Layout } from './components/layout/Layout';
 import { RequireAuth } from './components/common/RequireAuth';
 import { RequireRole } from './components/common/RequireRole';
 import { HomePage } from './pages/HomePage';
+import { OfertasPage } from './pages/OfertasPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { CartPage } from './pages/CartPage';
 import { LoginPage } from './pages/LoginPage';
@@ -33,6 +34,7 @@ export default function App() {
           <Routes>
             <Route element={<Layout />}>
               <Route index element={<HomePage />} />
+              <Route path="ofertas" element={<OfertasPage />} />
               <Route path="productos/:id" element={<ProductDetailPage />} />
               <Route
                 path="carrito"

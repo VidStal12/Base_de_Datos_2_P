@@ -74,11 +74,21 @@ function condicionesAtributos(atributos) {
 // inactivos vive en productoRoutes.js, no acá: este parámetro llega ya
 // decidido contra el token de quien pregunta, nunca se confía en un valor
 // que mande el cliente directo.
-async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor, mostrarInactivos } = {}) {
+async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor, mostrarInactivos, soloOfertas } = {}) {
   await conectar();
   const filtro = {};
   if (!mostrarInactivos) {
     filtro.estado = 'activo';
+  }
+  // Página /ofertas (listado, no la compra en sí — ver ofertaRoutes.js para
+  // el remanente en vivo de Redis, que esto no reemplaza): activa Y dentro de
+  // su ventana de fechas ahora mismo. soloOfertas llega como string desde
+  // el query param (?soloOfertas=true), nunca un boolean real.
+  if (soloOfertas === 'true' || soloOfertas === true) {
+    const ahora = new Date();
+    filtro['oferta_flash.activo'] = true;
+    filtro['oferta_flash.vigente_desde'] = { $lte: ahora };
+    filtro['oferta_flash.vigente_hasta'] = { $gte: ahora };
   }
 
   if (subcategoriaId) {

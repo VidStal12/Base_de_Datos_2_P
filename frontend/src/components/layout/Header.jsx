@@ -120,6 +120,9 @@ export function Header() {
           <Link to="/" className="shrink-0 font-medium hover:text-accent-300">
             Todos los productos
           </Link>
+          <Link to="/ofertas" className="shrink-0 font-bold text-accent-400 hover:text-accent-300">
+            Ofertas flash
+          </Link>
           {categorias.map((cat) => (
             <Link key={cat.id} to={`/?categoriaId=${cat.id}`} className="shrink-0 hover:text-accent-300">
               {cat.categoria}

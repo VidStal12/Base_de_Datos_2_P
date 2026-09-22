@@ -87,4 +87,9 @@ productoSchema.index({ subcategoria_id: 1, total_vendido: -1 });
 // dentro de inventario, no un campo de primer nivel.
 productoSchema.index({ subcategoria_id: 1, 'inventario.precio': 1 });
 
+// Patrón de consulta de la página /ofertas (productoService.listar,
+// soloOfertas): igualdad sobre activo + rango sobre vigente_hasta, mismo
+// criterio que el índice de precio de arriba.
+productoSchema.index({ 'oferta_flash.activo': 1, 'oferta_flash.vigente_hasta': 1 });
+
 module.exports = model('Producto', productoSchema, 'productos');
