@@ -213,31 +213,65 @@ function construirMotivoResenas({ usuario1, usuario2, productosCompartidos, prod
   return frases.join(' ');
 }
 
+// ¿Esta misma pareja de cuentas coordina TAMBIÉN reseñas (Señal A)? Dos
+// señales independientes — cada una con su propio criterio, su propia
+// consulta, su propia posibilidad de ser casualidad por separado —
+// apuntando al mismo par es mucho más difícil de explicar como casualidad
+// que cualquiera de las dos sola. No importa el orden de u1/u2 en la fila de
+// reseñas coordinadas, se chequean los dos sentidos.
+function apareceEnSenalA(resenas, idA, idB) {
+  return resenas.some(
+    (r) => (r.usuario1.id === idA && r.usuario2.id === idB) || (r.usuario1.id === idB && r.usuario2.id === idA)
+  );
+}
+
 // Dirección compartida sola tiene explicaciones inocentes reales — familia,
-// compañeros de casa, una oficina — así que el texto no trata todas las
-// filas igual. Si además comparte método de pago con alguna cuenta
-// (mismoMetodoPago, ver la consulta), el motivo lo dice explícito y sube el
-// tono; si no, lo dice IGUAL de explícito pero nombrando la explicación
-// inocente y bajando el tono — marcar una cuenta genuina como sospechosa
-// tiene un costo real, no es gratis quedarse callado sobre la incertidumbre.
+// compañeros de casa, una oficina, incluso varias cuentas de una misma
+// familia cargando la tarjeta de uno de los padres — así que el texto no
+// trata todas las filas igual. Pero la corrección va en un solo sentido:
+// un corroborador independiente (mismo método de pago, o esta misma pareja
+// también coordinando en la Señal A) SUBE el nivel a "alta" — la postura
+// por defecto ante evidencia real es tratarla como sospechosa hasta que una
+// persona revisando confirme lo contrario, no que el sistema se
+// autoconvenza de que es inocente. El contexto de actividad propia de cada
+// cuenta (más abajo) es al revés a propósito: se muestra siempre, pero
+// nunca baja el nivel — es información para que decida una persona, no una
+// segunda oportunidad para que el algoritmo se baje solo.
 function construirMotivoDesviacion({ usuario, producto, subcategoriaNombre, monto, fecha, otrasCuentas }, ficha) {
   const nombresOtros = otrasCuentas.map((o) => o.nombre).join(', ');
   const plural = otrasCuentas.length !== 1;
   const fechaTexto = fecha ? new Date(fecha).toLocaleDateString('es-GT', { dateStyle: 'medium' }) : 'fecha desconocida';
-  const conMetodoCompartido = otrasCuentas.filter((o) => o.mismoMetodoPago);
+  const corroboradas = otrasCuentas.filter((o) => o.mismoMetodoPago || o.tambienEnSenalA);
 
   const frases = [
     `${usuario.nombre} compró "${producto.descripcion}" el ${fechaTexto} por Q${monto.toFixed(2)} — su primera compra registrada en "${subcategoriaNombre}" — y la envió a una dirección que también usa${plural ? 'n' : ''} ${plural ? `${otrasCuentas.length} cuentas distintas` : 'otra cuenta'}: ${nombresOtros}.`,
   ];
 
-  if (conMetodoCompartido.length > 0) {
-    const nombresMetodo = conMetodoCompartido.map((o) => o.nombre).join(', ');
+  if (corroboradas.length > 0) {
+    for (const o of corroboradas) {
+      const razones = [];
+      if (o.mismoMetodoPago) razones.push('también pagó alguna vez con el mismo método de pago que esta compra');
+      if (o.tambienEnSenalA) razones.push('esta misma pareja de cuentas también aparece coordinando reseñas en la Señal A');
+      frases.push(`Además, ${o.nombre} ${razones.join(', y ')}.`);
+    }
     frases.push(
-      `Además, ${conMetodoCompartido.length > 1 ? `${nombresMetodo} también pagaron` : `${nombresMetodo} también pagó`} alguna vez con el mismo método de pago que esta compra — compartir dirección Y método de pago a la vez es mucho más difícil de explicar de forma inocente que compartir solo el domicilio (dos personas realmente distintas casi nunca tienen acceso a la misma tarjeta, aunque sí vivan juntas).`
+      'Un corroborador independiente además de la dirección — mismo método de pago o coordinación en otra señal — es mucho más difícil de explicar como familia o compañeros de casa que compartir solo el domicilio. Se marca como confianza alta: la postura por defecto ante esta evidencia es tratarla como sospechosa hasta que una revisión humana confirme lo contrario, no al revés.'
     );
   } else {
     frases.push(
-      'Comprar por primera vez en una categoría nueva no es sospechoso por sí solo; compartir la dirección de envío de esa compra puntual con otra cuenta sí lo es — pero también tiene explicaciones inocentes reales (familiares, compañeros de casa, una oficina). Ninguna de las cuentas comparte además el método de pago, así que esta señal por sí sola es más débil — conviene revisar el historial completo antes de actuar, no tratarla como confirmada.'
+      'Comprar por primera vez en una categoría nueva no es sospechoso por sí solo; compartir la dirección de envío de esa compra puntual con otra cuenta sí lo es — pero también tiene explicaciones inocentes reales (familiares, compañeros de casa, una oficina). Ninguna de las cuentas comparte además el método de pago ni aparece coordinando reseñas, así que esta señal por sí sola es más débil — conviene revisar el historial completo antes de actuar, no tratarla como confirmada.'
+    );
+  }
+
+  // Contexto neutral, no usado para subir NI bajar el nivel (ese ya quedó
+  // decidido arriba, antes de esto) — actividad propia sustancial y
+  // repartida en el tiempo es más compatible con una cuenta real (persona o
+  // familia) que con una armada solo para esto, pero decidir eso es trabajo
+  // de quien revisa, no de este texto.
+  for (const o of otrasCuentas) {
+    if (!o.ficha) continue;
+    frases.push(
+      `Contexto sobre ${o.nombre}: ${o.ficha.totalCompras} compra(s) y ${o.ficha.totalResenas} reseña(s) propias, cuenta activa desde hace ${diasATexto(o.ficha.diasDesdeCreacion)}.`
     );
   }
 
@@ -279,7 +313,17 @@ async function resenasCoordinadas({ ventanaSegundos = 3600, minimoProductosCompa
 }
 
 async function desviacionPatron() {
-  const registros = await neo4j.leer(CONSULTA_DESVIACION_PATRON, {});
+  // resenas: para el cruce con la Señal A (ver apareceEnSenalA). Best-effort
+  // y con su propio catch — que esto falle no debe tirar abajo la Señal B
+  // entera, solo perder la posibilidad de escalar por ese corroborador
+  // (mismo criterio de "una señal no tira abajo a la otra" que ya rige
+  // consultarFraude()). Se pide con sus propios parámetros por defecto,
+  // igual que haría un llamado aparte a resenasCoordinadas() — duplica una
+  // consulta barata en vez de acoplar las dos funciones entre sí.
+  const [registros, resenas] = await Promise.all([
+    neo4j.leer(CONSULTA_DESVIACION_PATRON, {}),
+    resenasCoordinadas().catch(() => []),
+  ]);
   const filas = colapsarRepetidos(
     registros.map((r) => ({
       usuario: { id: aNumero(r.get('usuarioId')), nombre: r.get('usuarioNombre') },
@@ -298,11 +342,18 @@ async function desviacionPatron() {
   return filas.map((f) => {
     const ficha = fichas.get(f.usuario.id) ?? null;
     const subcategoriaNombre = subcategorias.get(f.subcategoriaId) ?? 'categoría desconocida';
-    // 'alta': dirección Y método de pago coinciden con al menos una cuenta —
-    // casi no tiene explicación inocente. 'posible': solo la dirección —
-    // real, pero también compatible con familiares/compañeros de casa; el
-    // panel no debería tratar las dos igual (ver construirMotivoDesviacion).
-    const nivelConfianza = f.otrasCuentas.some((o) => o.mismoMetodoPago) ? 'alta' : 'posible';
+    const otrasCuentasEnriquecidas = f.otrasCuentas.map((o) => ({
+      ...o,
+      ficha: fichas.get(o.id) ?? null,
+      tambienEnSenalA: apareceEnSenalA(resenas, f.usuario.id, o.id),
+    }));
+    // 'alta' si CUALQUIER corroborador independiente aparece — mismo método
+    // de pago O esta misma pareja coordinando reseñas en la Señal A. Nunca
+    // al revés: nada de lo demás que se calcula acá puede bajar el nivel,
+    // solo subirlo — "alta" es la postura por defecto ante evidencia real,
+    // que sea inocente lo decide una persona revisando, no el algoritmo
+    // bajándose solo (ver construirMotivoDesviacion).
+    const nivelConfianza = otrasCuentasEnriquecidas.some((o) => o.mismoMetodoPago || o.tambienEnSenalA) ? 'alta' : 'posible';
     return {
       usuario: { ...f.usuario, ficha },
       producto: f.producto,
@@ -310,8 +361,8 @@ async function desviacionPatron() {
       fecha: f.fecha,
       monto: f.monto,
       nivelConfianza,
-      otrasCuentas: f.otrasCuentas.map((o) => ({ ...o, ficha: fichas.get(o.id) ?? null })),
-      motivo: construirMotivoDesviacion({ ...f, subcategoriaNombre }, ficha),
+      otrasCuentas: otrasCuentasEnriquecidas,
+      motivo: construirMotivoDesviacion({ ...f, subcategoriaNombre, otrasCuentas: otrasCuentasEnriquecidas }, ficha),
     };
   });
 }

@@ -16,7 +16,7 @@ function diasATexto(dias) {
 // (poco probable, pero Neo4j no borra en cascada — ver PLAN-NEO4J-
 // DETECCION-FRAUDE.md §6); en ese caso solo se muestra lo que ya traía el
 // hallazgo (nombre/id cacheados en el grafo).
-function FichaUsuario({ id, nombre, ficha, notaExtra }) {
+function FichaUsuario({ id, nombre, ficha, notasExtra = [] }) {
   if (!ficha) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-500">
@@ -38,9 +38,11 @@ function FichaUsuario({ id, nombre, ficha, notaExtra }) {
               Cuenta reciente
             </span>
           )}
-          {notaExtra && (
-            <span className="rounded-full bg-danger-500/10 px-2 py-0.5 text-xs font-medium text-danger-600">{notaExtra}</span>
-          )}
+          {notasExtra.map((nota) => (
+            <span key={nota} className="rounded-full bg-danger-500/10 px-2 py-0.5 text-xs font-medium text-danger-600">
+              {nota}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -214,7 +216,10 @@ export function AdminFraudePage() {
                             id={o.id}
                             nombre={o.nombre}
                             ficha={o.ficha}
-                            notaExtra={o.mismoMetodoPago ? 'Mismo método de pago' : undefined}
+                            notasExtra={[
+                              o.mismoMetodoPago && 'Mismo método de pago',
+                              o.tambienEnSenalA && 'También en Señal A',
+                            ].filter(Boolean)}
                           />
                         ))}
                       </div>
