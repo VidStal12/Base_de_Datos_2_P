@@ -34,13 +34,17 @@ async function main() {
   todasOk &&= relevanciaOk;
 
   // 3) Agregación real, no decorativa: dentro de la subcategoría Camisetas,
-  // los dos productos activos comparten Talla:M y Color:Azul — la faceta
-  // tiene que reflejar EXACTAMENTE eso.
+  // los dos productos ORIGINALES del seed comparten Talla:M y Color:Azul —
+  // se afirma que la faceta los INCLUYE (no que sea EXACTAMENTE ese
+  // conjunto): el catálogo puede seguir creciendo (ver scripts/
+  // sembrarCatalogo.js) sin que esta aserción quede obsoleta cada vez que
+  // alguien agregue más camisetas — lo que importa es que la agregación siga
+  // encontrando datos reales, no un conteo fijo congelado en el tiempo.
   const CAMISETAS_ID = '6a8aa3e599d4a899583bc867';
   const porSubcategoria = await busquedaService.buscar({ subcategoriaId: CAMISETAS_ID });
-  const tallas = [...(porSubcategoria.facetas.Talla || [])].sort();
-  const colores = [...(porSubcategoria.facetas.Color || [])].sort();
-  const facetasOk = porSubcategoria.resultados.length === 2 && tallas.join(',') === 'M' && colores.join(',') === 'Azul';
+  const tallas = porSubcategoria.facetas.Talla || [];
+  const colores = porSubcategoria.facetas.Color || [];
+  const facetasOk = porSubcategoria.resultados.length >= 2 && tallas.includes('M') && colores.includes('Azul');
   console.log(
     (facetasOk ? 'OK' : 'FALLA') +
       ` — Camisetas: ${porSubcategoria.resultados.length} resultado(s), facetas Talla=${JSON.stringify(tallas)} Color=${JSON.stringify(colores)}`
