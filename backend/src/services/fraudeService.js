@@ -306,6 +306,8 @@ async function resenasCoordinadas({ ventanaSegundos = 3600, minimoProductosCompa
       usuario2: { ...f.usuario2, ficha: ficha2 },
       productosCompartidos: f.productosCompartidos,
       productos: f.productos,
+      promedio1: f.promedio1,
+      promedio2: f.promedio2,
       ultimaActividad: f.ultimaActividad,
       motivo: construirMotivoResenas(f, { ventanaSegundos, calificacionMinima }, ficha1, ficha2),
     };
