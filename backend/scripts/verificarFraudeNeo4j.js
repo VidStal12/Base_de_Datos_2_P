@@ -121,9 +121,16 @@ async function main() {
   console.log(`  OK: ${parEsperado.usuario1.nombre} / ${parEsperado.usuario2.nombre}, ${parEsperado.productosCompartidos} productos compartidos.`);
 
   console.log(`Desviaciones de patrón encontradas: ${resultado.desviacionPatron.length}`);
-  const desviacionEsperada = resultado.desviacionPatron.find((d) => d.usuario.id === test3.id_usuario && d.otraCuenta.id === test1.id_usuario);
+  // otrasCuentas es un array desde que se agregó el cruce con corroboradores
+  // (mismo método de pago / Señal A, ver PLAN-NEO4J-DETECCION-FRAUDE.md §15)
+  // — antes era un solo `otraCuenta`, un producto puede compartir dirección
+  // con más de una cuenta a la vez.
+  const desviacionEsperada = resultado.desviacionPatron.find(
+    (d) => d.usuario.id === test3.id_usuario && d.otrasCuentas.some((o) => o.id === test1.id_usuario)
+  );
   if (!desviacionEsperada) throw new Error('FALLO: no se encontró la desviación de patrón sembrada (test3 <-> test1, dirección compartida).');
-  console.log(`  OK: ${desviacionEsperada.usuario.nombre} comparte dirección con ${desviacionEsperada.otraCuenta.nombre} en "${desviacionEsperada.producto.descripcion}".`);
+  const otraCuentaEsperada = desviacionEsperada.otrasCuentas.find((o) => o.id === test1.id_usuario);
+  console.log(`  OK: ${desviacionEsperada.usuario.nombre} comparte dirección con ${otraCuentaEsperada.nombre} en "${desviacionEsperada.producto.descripcion}".`);
 
   console.log('Todas las verificaciones de detección de fraude pasaron.');
 }
