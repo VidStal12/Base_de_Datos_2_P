@@ -126,7 +126,6 @@ export default function App() {
                   </RequireRole>
                 }
               />
-              {/* 
               <Route
                 path="admin/ventas"
                 element={
@@ -135,7 +134,6 @@ export default function App() {
                   </RequireRole>
                 }
               />
-              */}
               <Route
                 path="admin/fraude"
                 element={
