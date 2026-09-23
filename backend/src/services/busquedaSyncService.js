@@ -21,6 +21,11 @@ function aDocumento(producto) {
     cantidad: producto.inventario?.cantidad ?? 0,
     estado: producto.estado,
     total_vendido: producto.total_vendido ?? 0,
+    // input: la descripción tal cual — es lo que el usuario reconoce y lo
+    // que termina en la caja de búsqueda al elegir una sugerencia (ver
+    // busquedaService.sugerir()). contexts.estado: para que sugerir() pueda
+    // excluir inactivos en la propia consulta (ver config/elasticsearch.js).
+    sugerencia: { input: [producto.descripcion], contexts: { estado: [producto.estado] } },
   };
 }
 

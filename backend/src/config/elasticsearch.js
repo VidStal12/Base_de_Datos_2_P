@@ -41,6 +41,20 @@ const MAPPING = {
     cantidad: { type: 'integer' },
     estado: { type: 'keyword' },
     total_vendido: { type: 'integer' },
+    // Autocompletado (ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §4, "se puede
+    // agregar después sin tocar lo de acá") — tipo `completion`, no
+    // `edge_ngram`: es el campo pensado específicamente para typeahead (FST
+    // interno optimizado para prefijos) y soporta `fuzzy` de forma nativa,
+    // mismo criterio de tolerancia a errores que ya usa la búsqueda de texto.
+    // `contexts: estado` — sin esto, un producto inactivo seguiría
+    // sugiriéndose (se indexa igual, ver busquedaSyncService.js) aunque
+    // buscar() ya lo filtre de los resultados reales: la sugerencia llevaría
+    // a una búsqueda con cero resultados. El contexto deja filtrar por
+    // estado:activo en la propia consulta de sugerencias, no después.
+    sugerencia: {
+      type: 'completion',
+      contexts: [{ name: 'estado', type: 'category' }],
+    },
   },
 };
 
@@ -48,12 +62,18 @@ const MAPPING = {
 // redis.js. Crea el índice con el mapping explícito si todavía no existe —
 // mismo criterio que config/cassandra.js (aplicar el esquema en la primera
 // conexión, no un paso manual aparte que alguien se pueda olvidar de correr).
+// putMapping corre SIEMPRE, exista o no el índice: agregar un campo nuevo a
+// un mapping ya aplicado es válido en Elasticsearch (a diferencia de
+// cambiar el tipo de uno existente) y así este archivo se puede seguir
+// ampliando sin necesitar borrar y recrear el índice a mano cada vez.
 async function conectar() {
   if (!cliente) {
     cliente = new Client({ node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200' });
     const existe = await cliente.indices.exists({ index: INDICE });
     if (!existe) {
       await cliente.indices.create({ index: INDICE, mappings: MAPPING });
+    } else {
+      await cliente.indices.putMapping({ index: INDICE, ...MAPPING });
     }
   }
   return cliente;

@@ -116,4 +116,31 @@ async function buscar({ q, categoriaId, subcategoriaId, atributos, precioMin, pr
   };
 }
 
-module.exports = { buscar };
+// Autocompletado (ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §4) — usa el
+// suggester `completion` del mapping, no reusa buscar(): es una consulta
+// distinta (prefijo + fuzzy sobre un campo dedicado, sin relevancia de texto
+// libre ni agregaciones) pensada para responder mientras el usuario todavía
+// está escribiendo, no una vez que ya confirmó la búsqueda.
+async function sugerir(q) {
+  if (!q || !q.trim()) return [];
+  const cliente = await conectar();
+  const respuesta = await cliente.search({
+    index: indice(),
+    suggest: {
+      sugerencias: {
+        prefix: q,
+        completion: {
+          field: 'sugerencia',
+          size: 8,
+          skip_duplicates: true,
+          fuzzy: { fuzziness: 'AUTO' },
+          contexts: { estado: ['activo'] },
+        },
+      },
+    },
+  });
+  const opciones = respuesta.suggest?.sugerencias?.[0]?.options ?? [];
+  return opciones.map((o) => o.text);
+}
+
+module.exports = { buscar, sugerir };

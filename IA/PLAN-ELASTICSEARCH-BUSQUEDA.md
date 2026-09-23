@@ -111,3 +111,23 @@ Más `npm run busqueda:backfill` (reindexar el catálogo existente) y una prueba
 7. Frontend: `api/busqueda.js` + integración en `HomePage.jsx`.
 8. Prueba real en navegador.
 9. Actualizar `ESTADO-PROYECTO.md`.
+
+## 12. Autocompletado (agregado después, 2026-09-22)
+
+§4 dejó el autocompletado fuera de alcance deliberadamente ("se puede agregar después sin tocar lo de acá"). Se agregó una vez que la tolerancia ortográfica ya estaba funcionando y verificada, sin tocar ninguno de los campos existentes del mapping.
+
+**Por qué `completion` y no `edge_ngram`:** `completion` es el tipo de campo de Elasticsearch pensado específicamente para typeahead — un FST interno optimizado para prefijos — y soporta `fuzzy` de forma nativa (mismo criterio de tolerancia a errores que ya usa `buscar()`). Un analizador `edge_ngram` habría requerido definir un analizador de índice separado del de búsqueda para no explotar el índice con ngramas de cada substring; `completion` no necesita nada de eso.
+
+**Campo agregado al mapping** (`config/elasticsearch.js`), sin tocar los campos existentes:
+```
+sugerencia: completion, contexts: [{ name: 'estado', type: 'category' }]
+```
+`contexts.estado` existe porque un producto inactivo se sigue indexando igual que uno activo (`busquedaSyncService.js` no filtra por estado al indexar) — sin el contexto, un producto pausado/inactivo seguiría apareciendo como sugerencia aunque `buscar()` ya lo excluye de los resultados reales, llevando a una sugerencia que resuelve en cero resultados. El contexto deja filtrar `estado:activo` en la propia consulta de sugerencias.
+
+**`conectar()` cambiado para ser autosanable:** antes solo aplicaba el mapping al crear el índice (`indices.create()`); ahora llama `indices.putMapping()` también cuando el índice ya existe. Agregar un campo nuevo a un mapping ya aplicado es una operación válida en Elasticsearch (a diferencia de cambiar el tipo de un campo existente), así que esto permite seguir ampliando `MAPPING` sin necesitar borrar y recrear el índice a mano cada vez — confirmado corriendo `npm run busqueda:backfill` sobre el índice ya existente de 106 productos, sin recrearlo.
+
+**`busquedaService.sugerir(q)`** — consulta `suggest`/`completion` separada de `buscar()` (prefijo + fuzzy sobre `sugerencia`, sin relevancia de texto libre ni agregaciones — pensada para responder mientras el usuario todavía escribe): `size: 8`, `skip_duplicates: true`, `fuzzy: { fuzziness: 'AUTO' }`, `contexts: { estado: ['activo'] }`. Expuesta en `GET /api/busqueda/sugerencias?q=` (público).
+
+**Frontend (`Header.jsx`)** — debounce de 250ms sobre el input de búsqueda ya existente, dropdown con navegación por teclado (flechas + Enter + Escape) y clic-afuera-cierra (mismo patrón `mousedown`+`contains` que ya usa `CategoryMenu.jsx`, no `onBlur`, porque `onBlur` del input dispara antes que el `onClick` de una sugerencia y la cerraría antes de poder seleccionarla). Un `ultimaBusquedaRef` evita que el dropdown se reabra solo justo después de ejecutar una búsqueda: sin él, seleccionar una sugerencia deja ese mismo texto en el input, lo que vuelve a disparar el efecto de autocompletado y reabre el dropdown con sugerencias que calzan contra el propio texto ya buscado, encima de la página de resultados — encontrado y corregido probando en navegador real, no era el comportamiento esperado.
+
+**Verificación:** `verificarBusqueda.js` (prueba 4) confirma `sugerir("bicicletta")` (typo deliberado) devuelve las 8 bicicletas del catálogo. Probado también en navegador real: prefijo con typo, selección por teclado (flechas + Enter) y por mouse, clic afuera para cerrar sin navegar, y confirmación de que escribir un texto nuevo después de seleccionar una sugerencia vuelve a disparar sugerencias frescas correctamente.

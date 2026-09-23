@@ -60,6 +60,7 @@ app.get('/', (req, res) => {
       'GET /api/recomendaciones (requiere token — analiza el historial de compras del usuario y encuentra productos similares de otros vendedores, ver IA/ENTREGA-2-PLAN.md §4.5)',
       'POST /api/recomendaciones/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId}, compra al precio recomendado, cupo personal limitado)',
       'GET /api/busqueda (Elasticsearch — ?q=, ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos; tolerancia ortográfica + facetas agregadas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md)',
+      'GET /api/busqueda/sugerencias?q= (autocompletado — completion suggester con tolerancia a errores, solo productos activos)',
     ],
   });
 });

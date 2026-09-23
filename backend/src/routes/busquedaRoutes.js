@@ -14,4 +14,16 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Autocompletado — antes de "/", no colisiona (Express matchea el path
+// completo, "/sugerencias" nunca cae en "/"), pero se deja acá al lado por
+// legibilidad. Pública, mismo criterio que la búsqueda misma.
+router.get('/sugerencias', async (req, res) => {
+  try {
+    const sugerencias = await busquedaService.sugerir(req.query.q);
+    res.json({ sugerencias });
+  } catch (err) {
+    res.status(503).json({ error: 'No se pudo consultar el autocompletado: ' + err.message });
+  }
+});
+
 module.exports = router;

@@ -9,4 +9,6 @@ export const busquedaApi = {
     const query = params.toString() ? `?${params.toString()}` : '';
     return api.get(`/busqueda${query}`);
   },
+  // Autocompletado (completion suggester) — respuesta { sugerencias: string[] }.
+  sugerir: (q) => api.get(`/busqueda/sugerencias?q=${encodeURIComponent(q)}`),
 };

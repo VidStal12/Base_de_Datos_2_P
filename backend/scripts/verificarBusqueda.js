@@ -51,6 +51,17 @@ async function main() {
   );
   todasOk &&= facetasOk;
 
+  // 4) Autocompletado (completion suggester, ver config/elasticsearch.js):
+  // un prefijo con una letra de más ("bicicletta") igual sugiere los
+  // productos de "Bicicletas" — prueba la tolerancia difusa del suggester,
+  // no solo la del multi_match de buscar().
+  const sugerencias = await busquedaService.sugerir('bicicletta');
+  const sugerenciasOk = sugerencias.length > 0 && sugerencias.every((s) => s.toLowerCase().includes('bicicleta'));
+  console.log(
+    (sugerenciasOk ? 'OK' : 'FALLA') + ` — sugerir("bicicletta") devolvió ${sugerencias.length}: ${JSON.stringify(sugerencias)}`
+  );
+  todasOk &&= sugerenciasOk;
+
   console.log(todasOk ? 'Todas las verificaciones de búsqueda pasaron.' : 'Hay verificaciones que fallaron.');
   process.exitCode = todasOk ? 0 : 1;
 }

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
 import { categoriasApi } from '../../api/productos';
+import { busquedaApi } from '../../api/busqueda';
 import { CategoryMenu } from './CategoryMenu';
 
 function CartIcon(props) {
@@ -31,16 +32,93 @@ export function Header() {
   const [searchParams] = useSearchParams();
   const [busqueda, setBusqueda] = useState(searchParams.get('q') || '');
   const [categorias, setCategorias] = useState([]);
+  const [sugerencias, setSugerencias] = useState([]);
+  const [mostrarSugerencias, setMostrarSugerencias] = useState(false);
+  const [indiceActivo, setIndiceActivo] = useState(-1);
+  const buscadorRef = useRef(null);
+  const consultaRef = useRef(0);
+  const ultimaBusquedaRef = useRef(searchParams.get('q') || '');
 
   useEffect(() => {
     categoriasApi.listar().then(setCategorias).catch(() => setCategorias([]));
   }, []);
 
+  // Mismo patrón de "clic afuera cierra" que CategoryMenu.jsx (mousedown +
+  // contains), no onBlur — onBlur del input dispararía antes que el onClick
+  // de una sugerencia y la cerraría antes de poder seleccionarla.
+  useEffect(() => {
+    function alClickearFuera(e) {
+      if (buscadorRef.current && !buscadorRef.current.contains(e.target)) {
+        setMostrarSugerencias(false);
+      }
+    }
+    document.addEventListener('mousedown', alClickearFuera);
+    return () => document.removeEventListener('mousedown', alClickearFuera);
+  }, []);
+
+  // Autocompletado (ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §12) — debounce de
+  // 250ms para no pegarle a /busqueda/sugerencias en cada tecla. consultaRef
+  // descarta respuestas que ya quedaron viejas si una tecla más nueva
+  // disparó otra consulta que resuelve primero (fetch no garantiza orden).
+  // ultimaBusquedaRef evita reabrir el dropdown justo después de ejecutar una
+  // búsqueda (seleccionar una sugerencia deja ese mismo texto en el input,
+  // que sin este chequeo dispararía este mismo efecto y volvería a mostrar
+  // sugerencias sobre la página de resultados que el usuario ya pidió ver).
+  useEffect(() => {
+    const texto = busqueda.trim();
+    if (texto.length < 2 || texto === ultimaBusquedaRef.current) {
+      setSugerencias([]);
+      return;
+    }
+    const idConsulta = ++consultaRef.current;
+    const temporizador = setTimeout(() => {
+      busquedaApi
+        .sugerir(texto)
+        .then((data) => {
+          if (idConsulta !== consultaRef.current) return;
+          setSugerencias(data.sugerencias || []);
+          setMostrarSugerencias(true);
+          setIndiceActivo(-1);
+        })
+        .catch(() => {
+          if (idConsulta === consultaRef.current) setSugerencias([]);
+        });
+    }, 250);
+    return () => clearTimeout(temporizador);
+  }, [busqueda]);
+
+  function ejecutarBusqueda(texto) {
+    ultimaBusquedaRef.current = texto.trim();
+    setMostrarSugerencias(false);
+    const params = new URLSearchParams();
+    if (texto.trim()) params.set('q', texto.trim());
+    navigate(`/?${params.toString()}`);
+  }
+
   function handleSearch(e) {
     e.preventDefault();
-    const params = new URLSearchParams();
-    if (busqueda.trim()) params.set('q', busqueda.trim());
-    navigate(`/?${params.toString()}`);
+    ejecutarBusqueda(busqueda);
+  }
+
+  function seleccionarSugerencia(texto) {
+    setBusqueda(texto);
+    ejecutarBusqueda(texto);
+  }
+
+  function handleSearchKeyDown(e) {
+    if (!mostrarSugerencias || sugerencias.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setIndiceActivo((i) => (i + 1) % sugerencias.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setIndiceActivo((i) => (i <= 0 ? sugerencias.length - 1 : i - 1));
+    } else if (e.key === 'Enter' && indiceActivo >= 0) {
+      e.preventDefault();
+      seleccionarSugerencia(sugerencias[indiceActivo]);
+    } else if (e.key === 'Escape') {
+      setMostrarSugerencias(false);
+    }
   }
 
   return (
@@ -53,12 +131,18 @@ export function Header() {
 
           <div className="order-3 flex w-full min-w-0 flex-1 sm:order-none">
             <CategoryMenu categorias={categorias} />
-            <form onSubmit={handleSearch} className="flex min-w-0 flex-1">
+            <form ref={buscadorRef} onSubmit={handleSearch} className="relative flex min-w-0 flex-1">
               <input
                 type="search"
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                onFocus={() => sugerencias.length > 0 && setMostrarSugerencias(true)}
                 placeholder="Buscar productos..."
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={mostrarSugerencias && sugerencias.length > 0}
+                aria-autocomplete="list"
                 className="w-full min-w-0 border-0 border-l border-brand-600 px-4 py-2.5 text-neutral-900 placeholder-neutral-400 focus:outline-2 focus:outline-accent-500"
               />
               <button
@@ -71,6 +155,26 @@ export function Header() {
                   <path strokeLinecap="round" d="m21 21-4.3-4.3" />
                 </svg>
               </button>
+
+              {mostrarSugerencias && sugerencias.length > 0 && (
+                <div
+                  role="listbox"
+                  className="absolute left-0 right-0 top-full z-40 mt-1 overflow-hidden rounded-lg bg-white py-1 text-neutral-800 shadow-xl ring-1 ring-black/10"
+                >
+                  {sugerencias.map((s, i) => (
+                    <button
+                      key={s}
+                      type="button"
+                      role="option"
+                      aria-selected={i === indiceActivo}
+                      onClick={() => seleccionarSugerencia(s)}
+                      className={`block w-full px-4 py-2.5 text-left text-sm ${i === indiceActivo ? 'bg-brand-50' : 'hover:bg-brand-50'}`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </form>
           </div>
 
