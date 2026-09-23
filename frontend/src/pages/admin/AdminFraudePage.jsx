@@ -16,7 +16,7 @@ function diasATexto(dias) {
 // (poco probable, pero Neo4j no borra en cascada — ver PLAN-NEO4J-
 // DETECCION-FRAUDE.md §6); en ese caso solo se muestra lo que ya traía el
 // hallazgo (nombre/id cacheados en el grafo).
-function FichaUsuario({ id, nombre, ficha }) {
+function FichaUsuario({ id, nombre, ficha, notaExtra }) {
   if (!ficha) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-500">
@@ -32,11 +32,16 @@ function FichaUsuario({ id, nombre, ficha }) {
         <p className="font-semibold text-neutral-900">
           {ficha.nombre} <span className="font-normal text-neutral-400">#{ficha.id}</span>
         </p>
-        {ficha.cuentaReciente && (
-          <span className="rounded-full bg-warning-500/10 px-2 py-0.5 text-xs font-medium text-warning-700">
-            Cuenta reciente
-          </span>
-        )}
+        <div className="flex flex-wrap gap-1">
+          {ficha.cuentaReciente && (
+            <span className="rounded-full bg-warning-500/10 px-2 py-0.5 text-xs font-medium text-warning-700">
+              Cuenta reciente
+            </span>
+          )}
+          {notaExtra && (
+            <span className="rounded-full bg-danger-500/10 px-2 py-0.5 text-xs font-medium text-danger-600">{notaExtra}</span>
+          )}
+        </div>
       </div>
 
       <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-neutral-600">
@@ -182,21 +187,44 @@ export function AdminFraudePage() {
               <p className="mt-3 text-sm text-neutral-500">Sin patrones señalados por ahora.</p>
             ) : (
               <div className="mt-3 flex flex-col gap-4">
-                {datos.desviacionPatron.map((d, i) => (
-                  <div key={i} className="rounded-lg border border-warning-500/30 bg-warning-500/5 p-3">
-                    <p className="text-sm text-neutral-800">{d.motivo}</p>
-                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <FichaUsuario id={d.usuario.id} nombre={d.usuario.nombre} ficha={d.usuario.ficha} />
-                      {d.otrasCuentas.map((o) => (
-                        <FichaUsuario key={o.id} id={o.id} nombre={o.nombre} ficha={o.ficha} />
-                      ))}
+                {datos.desviacionPatron.map((d, i) => {
+                  const confianzaAlta = d.nivelConfianza === 'alta';
+                  return (
+                    <div
+                      key={i}
+                      className={`rounded-lg border p-3 ${
+                        confianzaAlta ? 'border-danger-500/30 bg-danger-500/5' : 'border-neutral-200 bg-neutral-50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-bold uppercase tracking-wide ${
+                            confianzaAlta ? 'bg-danger-600 text-white' : 'bg-neutral-200 text-neutral-600'
+                          }`}
+                        >
+                          {confianzaAlta ? 'Confianza alta' : 'Posible coincidencia'}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm text-neutral-800">{d.motivo}</p>
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <FichaUsuario id={d.usuario.id} nombre={d.usuario.nombre} ficha={d.usuario.ficha} />
+                        {d.otrasCuentas.map((o) => (
+                          <FichaUsuario
+                            key={o.id}
+                            id={o.id}
+                            nombre={o.nombre}
+                            ficha={o.ficha}
+                            notaExtra={o.mismoMetodoPago ? 'Mismo método de pago' : undefined}
+                          />
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs text-neutral-400">
+                        Producto: {d.producto.descripcion} · Categoría: {d.subcategoria} · Monto: Q{d.monto.toFixed(2)} ·{' '}
+                        {d.fecha ? new Date(d.fecha).toLocaleString('es-GT') : 'fecha desconocida'}
+                      </p>
                     </div>
-                    <p className="mt-2 text-xs text-neutral-400">
-                      Producto: {d.producto.descripcion} · Categoría: {d.subcategoria} · Monto: Q{d.monto.toFixed(2)} ·{' '}
-                      {d.fecha ? new Date(d.fecha).toLocaleString('es-GT') : 'fecha desconocida'}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>

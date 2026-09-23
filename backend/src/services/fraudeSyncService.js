@@ -20,8 +20,50 @@ const neo4j = require('../config/neo4j');
 // el CONTENIDO: misma dirección física (normalizada) o mismo token de la
 // pasarela de pago — dos cuentas "independientes" que en realidad cargaron
 // el mismo domicilio o la misma tarjeta sí son la señal que se busca.
+//
+// A propósito sigue siendo comparación EXACTA después de normalizar, nunca
+// aproximada (tipo Elasticsearch/fuzzy) — para una señal de fraude, una
+// coincidencia aproximada cambia qué tan seguro hay que estar de que es la
+// MISMA dirección física, y una dirección con estructura (calle/número/
+// apartamento) puede diferir en un solo carácter y ser un lugar
+// completamente distinto. Tolerancia a variaciones de ESCRITURA pertenece al
+// buscador de productos (Entrega 3), no a esto — acá solo se colapsan
+// variaciones de FORMATO que sabemos que son la misma dirección (espacios,
+// tildes, un puñado de abreviaturas comunes en Guatemala), nunca variaciones
+// de contenido. Encontrado en datos reales de esta sesión: una dirección
+// sembrada quedó como "...El Salvador , " (coma y espacio colgando) — antes
+// de esto, esa fila nunca iba a calzar con la misma dirección escrita sin
+// esa coma.
+const ABREVIATURAS_DIRECCION = [
+  [/\bav\.?\b/g, 'avenida'],
+  [/\bcalz\.?\b/g, 'calzada'],
+  [/\bcol\.?\b/g, 'colonia'],
+  [/\bzn\.?\b/g, 'zona'],
+];
+
+const MAPA_ACENTOS = { á: 'a', é: 'e', í: 'i', ó: 'o', ú: 'u', ü: 'u' };
+
+// Solo vocales acentuadas — "ñ" se deja intacta a propósito, no es una
+// variante de escritura de "n" (son letras distintas en español), a
+// diferencia de "á"/"a" donde la tilde sí se omite todo el tiempo al
+// escribir rápido o desde un teclado sin acentos.
+function quitarAcentos(texto) {
+  return texto.replace(/[áéíóúü]/g, (c) => MAPA_ACENTOS[c]);
+}
+
+function limpiarCampo(valor) {
+  let texto = quitarAcentos(String(valor || '').toLowerCase());
+  for (const [patron, reemplazo] of ABREVIATURAS_DIRECCION) {
+    texto = texto.replace(patron, reemplazo);
+  }
+  return texto
+    .replace(/[.,;:]+/g, ' ') // puntuación de formato → espacio, no se borra sin dejar rastro
+    .replace(/\s+/g, ' ') // espacios repetidos (incluido el caso de arriba) → uno solo
+    .trim();
+}
+
 function normalizarDireccion({ pais, direccion, codigo_postal }) {
-  return `${pais}|${direccion}|${codigo_postal}`.trim().toLowerCase();
+  return [pais, direccion, codigo_postal].map(limpiarCampo).join('|');
 }
 
 const MERGE_COMPRA = `

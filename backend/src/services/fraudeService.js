@@ -37,6 +37,18 @@ ORDER BY productosCompartidos DESC
 // Agrupa TODAS las cuentas que comparten esa dirección en una sola fila —
 // si tres cuentas apuntan al mismo domicilio, eso es una fila más rica, no
 // tres filas repetidas de la misma compra.
+//
+// Dirección compartida SOLA tiene explicaciones inocentes reales —
+// familiares, compañeros de casa, una oficina — y marcar una cuenta genuina
+// como sospechosa tiene un costo real (ver conversación de diseño). Por eso
+// esto también chequea, por cada cuenta que comparte la dirección, si ADEMÁS
+// pagó alguna vez con el mismo método (mismo token de pasarela) que esta
+// compra puntual: dos personas de verdad distintas casi nunca comparten una
+// tarjeta, aunque sí compartan techo — coincidir en las dos cosas a la vez
+// es mucho más difícil de explicar sin fraude que compartir solo el
+// domicilio. mismoMetodoPago viaja por cuenta compartida, no es un
+// sí/no global de la fila — dos cuentas pueden compartir la dirección y solo
+// una de ellas compartir también la tarjeta.
 const CONSULTA_DESVIACION_PATRON = `
 MATCH (u:Usuario)-[c:COMPRÓ]->(p:Producto)
 WHERE NOT EXISTS {
@@ -45,7 +57,10 @@ WHERE NOT EXISTS {
 }
 MATCH (u)-[:ENVIÓ_A]->(d:Direccion {direccion_texto: c.direccion_texto})<-[:ENVIÓ_A]-(otraCuenta:Usuario)
 WHERE otraCuenta.id_usuario <> u.id_usuario
-WITH u, p, c, collect(DISTINCT {id: otraCuenta.id_usuario, nombre: otraCuenta.nombre}) AS otrasCuentas
+WITH u, p, c, otraCuenta,
+     EXISTS { (otraCuenta)-[:PAGÓ_CON]->(:MetodoPago {token_pasarela: c.metodo_pago_token}) } AS mismoMetodoPago
+WITH u, p, c,
+     collect(DISTINCT {id: otraCuenta.id_usuario, nombre: otraCuenta.nombre, mismoMetodoPago: mismoMetodoPago}) AS otrasCuentas
 RETURN u.id_usuario AS usuarioId, u.nombre AS usuarioNombre,
        p.producto_id AS productoId, p.descripcion AS productoDescripcion, p.subcategoria AS subcategoriaId,
        c.fecha AS fecha, c.monto AS monto,
@@ -198,14 +213,34 @@ function construirMotivoResenas({ usuario1, usuario2, productosCompartidos, prod
   return frases.join(' ');
 }
 
+// Dirección compartida sola tiene explicaciones inocentes reales — familia,
+// compañeros de casa, una oficina — así que el texto no trata todas las
+// filas igual. Si además comparte método de pago con alguna cuenta
+// (mismoMetodoPago, ver la consulta), el motivo lo dice explícito y sube el
+// tono; si no, lo dice IGUAL de explícito pero nombrando la explicación
+// inocente y bajando el tono — marcar una cuenta genuina como sospechosa
+// tiene un costo real, no es gratis quedarse callado sobre la incertidumbre.
 function construirMotivoDesviacion({ usuario, producto, subcategoriaNombre, monto, fecha, otrasCuentas }, ficha) {
   const nombresOtros = otrasCuentas.map((o) => o.nombre).join(', ');
   const plural = otrasCuentas.length !== 1;
   const fechaTexto = fecha ? new Date(fecha).toLocaleDateString('es-GT', { dateStyle: 'medium' }) : 'fecha desconocida';
+  const conMetodoCompartido = otrasCuentas.filter((o) => o.mismoMetodoPago);
+
   const frases = [
     `${usuario.nombre} compró "${producto.descripcion}" el ${fechaTexto} por Q${monto.toFixed(2)} — su primera compra registrada en "${subcategoriaNombre}" — y la envió a una dirección que también usa${plural ? 'n' : ''} ${plural ? `${otrasCuentas.length} cuentas distintas` : 'otra cuenta'}: ${nombresOtros}.`,
-    'Comprar por primera vez en una categoría nueva no es sospechoso por sí solo; compartir la dirección de envío de esa compra puntual con otra cuenta sí lo es — puede ser la misma persona con dos perfiles, o una cuenta tomada y usada con los datos de otra.',
   ];
+
+  if (conMetodoCompartido.length > 0) {
+    const nombresMetodo = conMetodoCompartido.map((o) => o.nombre).join(', ');
+    frases.push(
+      `Además, ${conMetodoCompartido.length > 1 ? `${nombresMetodo} también pagaron` : `${nombresMetodo} también pagó`} alguna vez con el mismo método de pago que esta compra — compartir dirección Y método de pago a la vez es mucho más difícil de explicar de forma inocente que compartir solo el domicilio (dos personas realmente distintas casi nunca tienen acceso a la misma tarjeta, aunque sí vivan juntas).`
+    );
+  } else {
+    frases.push(
+      'Comprar por primera vez en una categoría nueva no es sospechoso por sí solo; compartir la dirección de envío de esa compra puntual con otra cuenta sí lo es — pero también tiene explicaciones inocentes reales (familiares, compañeros de casa, una oficina). Ninguna de las cuentas comparte además el método de pago, así que esta señal por sí sola es más débil — conviene revisar el historial completo antes de actuar, no tratarla como confirmada.'
+    );
+  }
+
   if (ficha?.cuentaReciente) {
     frases.push(`La cuenta de ${usuario.nombre} se creó hace ${diasATexto(ficha.diasDesdeCreacion)}, lo que refuerza la señal.`);
   }
@@ -252,7 +287,7 @@ async function desviacionPatron() {
       subcategoriaId: r.get('subcategoriaId'),
       fecha: r.get('fecha')?.toString?.() ?? null,
       monto: aNumero(r.get('monto')),
-      otrasCuentas: r.get('otrasCuentas').map((o) => ({ id: aNumero(o.id), nombre: o.nombre })),
+      otrasCuentas: r.get('otrasCuentas').map((o) => ({ id: aNumero(o.id), nombre: o.nombre, mismoMetodoPago: o.mismoMetodoPago })),
     }))
   );
 
@@ -263,12 +298,18 @@ async function desviacionPatron() {
   return filas.map((f) => {
     const ficha = fichas.get(f.usuario.id) ?? null;
     const subcategoriaNombre = subcategorias.get(f.subcategoriaId) ?? 'categoría desconocida';
+    // 'alta': dirección Y método de pago coinciden con al menos una cuenta —
+    // casi no tiene explicación inocente. 'posible': solo la dirección —
+    // real, pero también compatible con familiares/compañeros de casa; el
+    // panel no debería tratar las dos igual (ver construirMotivoDesviacion).
+    const nivelConfianza = f.otrasCuentas.some((o) => o.mismoMetodoPago) ? 'alta' : 'posible';
     return {
       usuario: { ...f.usuario, ficha },
       producto: f.producto,
       subcategoria: subcategoriaNombre,
       fecha: f.fecha,
       monto: f.monto,
+      nivelConfianza,
       otrasCuentas: f.otrasCuentas.map((o) => ({ ...o, ficha: fichas.get(o.id) ?? null })),
       motivo: construirMotivoDesviacion({ ...f, subcategoriaNombre }, ficha),
     };
