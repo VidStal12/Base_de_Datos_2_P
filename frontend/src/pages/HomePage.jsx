@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { productosApi, categoriasApi } from '../api/productos';
+import { busquedaApi } from '../api/busqueda';
 import { recomendacionesApi } from '../api/recomendaciones';
 import { useAuth } from '../context/AuthContext';
 import { ProductCard } from '../components/product/ProductCard';
@@ -149,8 +150,12 @@ export function HomePage() {
   // Opciones de filtro: de la subcategoría completa, sin el filtro de
   // atributos todavía aplicado (ver calcularFacetas). Se resetea la selección
   // al cambiar de subcategoría porque los atributos de una no aplican a otra.
+  // Con texto de búsqueda activo (q), las facetas salen de la respuesta de
+  // busquedaApi.buscar() en el otro efecto — este no las toca, para que no
+  // compitan por el mismo estado.
   useEffect(() => {
     setAtributosSeleccionados({});
+    if (q) return;
     if (!subcategoriaId) {
       setFacetas({});
       return;
@@ -159,23 +164,39 @@ export function HomePage() {
       .listar({ subcategoriaId })
       .then((base) => setFacetas(calcularFacetas(base)))
       .catch(() => setFacetas({}));
-  }, [subcategoriaId]);
+  }, [subcategoriaId, q]);
 
+  // Con texto de búsqueda (q): Elasticsearch — tolerancia ortográfica,
+  // relevancia y facetas calculadas con una agregación real (ver
+  // IA/PLAN-ELASTICSEARCH-BUSQUEDA.md). Sin texto: el catálogo normal contra
+  // Mongo, exactamente como antes — ese camino no se toca.
   useEffect(() => {
     setCargando(true);
     setError('');
-    const filtros = { q, categoriaId, subcategoriaId };
+    const filtros = { categoriaId, subcategoriaId };
     if (Object.keys(atributosSeleccionados).length > 0) {
       filtros.atributos = JSON.stringify(atributosSeleccionados);
     }
     if (precioMin !== '') filtros.precioMin = precioMin;
     if (precioMax !== '') filtros.precioMax = precioMax;
     if (ordenarPor) filtros.ordenarPor = ordenarPor;
-    productosApi
-      .listar(filtros)
-      .then(setProductos)
-      .catch(() => setError('No se pudo cargar el catálogo. ¿Está corriendo el backend?'))
-      .finally(() => setCargando(false));
+
+    if (q) {
+      busquedaApi
+        .buscar({ ...filtros, q })
+        .then((resultado) => {
+          setProductos(resultado.resultados);
+          setFacetas(resultado.facetas);
+        })
+        .catch(() => setError('No se pudo buscar. ¿Está corriendo el backend?'))
+        .finally(() => setCargando(false));
+    } else {
+      productosApi
+        .listar(filtros)
+        .then(setProductos)
+        .catch(() => setError('No se pudo cargar el catálogo. ¿Está corriendo el backend?'))
+        .finally(() => setCargando(false));
+    }
   }, [q, categoriaId, subcategoriaId, atributosSeleccionados, precioMin, precioMax, ordenarPor]);
 
   useEffect(() => {
@@ -216,7 +237,7 @@ export function HomePage() {
 
   const categoriaActiva = categorias.find((c) => String(c.id) === categoriaId);
   const hayFiltro = Boolean(q || categoriaId || subcategoriaId || precioMin !== '' || precioMax !== '' || ordenarPor);
-  const mostrarFacetas = Boolean(subcategoriaId) && Object.keys(facetas).length > 0;
+  const mostrarFacetas = (Boolean(subcategoriaId) || Boolean(q)) && Object.keys(facetas).length > 0;
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row lg:items-start">

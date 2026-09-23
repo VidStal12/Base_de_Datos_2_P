@@ -133,8 +133,38 @@ services:
       retries: 20
       start_period: 30s
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: tiendaya-elasticsearch
+    restart: unless-stopped
+    # Búsqueda de productos (Entrega 3, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md)
+    # — copia derivada del catálogo de Mongo, reconstruible con
+    # scripts/backfillBusqueda.js, igual criterio que Cassandra/Neo4j: no es
+    # la autoridad de nada. Un nodo de desarrollo, no alta disponibilidad.
+    environment:
+      discovery.type: single-node
+      # Sin autenticación en desarrollo, deliberado — control de acceso en un
+      # componente NoSQL es un requerimiento de Entrega Final, no de esta.
+      xpack.security.enabled: "false"
+      # Catálogo de prueba (~10 productos): un heap chico alcanza de sobra, y
+      # ya conviven Cassandra + Neo4j + Mongo + MySQL + Redis en la misma
+      # máquina de desarrollo.
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
 volumes:
   mysql_data:
   mongo_data:
   cassandra_data:
   neo4j_data:
+  elasticsearch_data:

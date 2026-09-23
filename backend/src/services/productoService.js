@@ -4,6 +4,7 @@ const Producto = require('../models/mongo/Producto');
 const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { esEnteroPositivo } = require('../utils/validation');
+const busquedaSyncService = require('./busquedaSyncService');
 
 // Todo el contenido de catálogo, incluido precio/cantidad, vive en el
 // documento de Mongo — ver Producto.js. MySQL (`inventario`) sigue siendo la
@@ -32,7 +33,12 @@ function formatear(doc) {
     version: doc.version,
     inventario: doc.inventario || null,
     oferta_flash: doc.oferta_flash || null,
-        resenas_resumen: doc.resenas_resumen || { promedio: 0, cantidad: 0 },
+    resenas_resumen: doc.resenas_resumen || { promedio: 0, cantidad: 0 },
+    // Ya se usaba para ordenar (.sort({total_vendido:-1}), ver listar() más
+    // abajo) pero nunca viajaba en el objeto devuelto — nadie lo notó porque
+    // nada lo leía todavía. busquedaSyncService.js sí lo necesita para poder
+    // ordenar "más vendidos" en los resultados de búsqueda.
+    total_vendido: doc.total_vendido ?? 0,
   };
 }
 
@@ -191,7 +197,11 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       },
     });
 
-    return obtener(productoRelacional.id);
+    const productoCompleto = await obtener(productoRelacional.id);
+    // Mejor esfuerzo, no bloquea la creación (ver busquedaSyncService.js /
+    // IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §7).
+    await busquedaSyncService.indexarProducto(productoCompleto);
+    return productoCompleto;
   } catch (err) {
     await prisma.inventario.deleteMany({ where: { id_producto: productoRelacional.id } });
     await prisma.producto.delete({ where: { id: productoRelacional.id } });
@@ -322,7 +332,9 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
     // compra_detalle/carrito (ver ESTADO-PROYECTO.md).
   }
 
-  return obtener(productoId);
+  const productoCompleto = await obtener(productoId);
+  await busquedaSyncService.indexarProducto(productoCompleto);
+  return productoCompleto;
 }
 
 async function historialEnFecha(productoId, fecha) {

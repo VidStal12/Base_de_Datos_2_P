@@ -11,6 +11,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const ofertaRoutes = require('./routes/ofertaRoutes');
 const recomendacionRoutes = require('./routes/recomendacionRoutes');
+const busquedaRoutes = require('./routes/busquedaRoutes');
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.get('/', (req, res) => {
       'POST /api/ofertas/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId}, compra directa al precio de oferta)',
       'GET /api/recomendaciones (requiere token — analiza el historial de compras del usuario y encuentra productos similares de otros vendedores, ver IA/ENTREGA-2-PLAN.md §4.5)',
       'POST /api/recomendaciones/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId}, compra al precio recomendado, cupo personal limitado)',
+      'GET /api/busqueda (Elasticsearch — ?q=, ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos; tolerancia ortográfica + facetas agregadas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md)',
     ],
   });
 });
@@ -73,5 +75,6 @@ app.use('/api/compras', compraRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/ofertas', ofertaRoutes);
 app.use('/api/recomendaciones', recomendacionRoutes);
+app.use('/api/busqueda', busquedaRoutes);
 
 module.exports = app;

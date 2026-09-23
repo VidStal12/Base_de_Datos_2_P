@@ -15,9 +15,11 @@
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",
     "verificar:recomendaciones": "node scripts/verificarRecomendaciones.js",
     "verificar:fraude": "node scripts/verificarFraudeNeo4j.js",
+    "verificar:busqueda": "node scripts/verificarBusqueda.js",
     "ventas:sincronizar": "node scripts/sincronizarVentas.js",
     "ventas:historico": "node scripts/sincronizarVentas.js --historico",
     "fraude:backfill": "node scripts/backfillNeo4j.js",
+    "busqueda:backfill": "node scripts/backfillBusqueda.js",
     "test:ventas": "node --test tests/ventas*.test.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -26,6 +28,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@elastic/elasticsearch": "^8.19.2",
     "@prisma/adapter-mariadb": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "bcryptjs": "^3.0.3",
