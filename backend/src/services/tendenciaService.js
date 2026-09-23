@@ -3,6 +3,7 @@ const { conectar: conectarMongo } = require('../config/mongo');
 const { conectar: conectarRedis } = require('../config/redis');
 const Producto = require('../models/mongo/Producto');
 const checkoutService = require('./checkoutService');
+const productoService = require('./productoService');
 
 // Ofertas por tendencia (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) — a
 // diferencia de la oferta flash de ofertaFlashService.js (que un vendedor
@@ -33,6 +34,14 @@ function claveCache(usuarioId) {
 }
 function claveCupo(productoId, usuarioId) {
   return `oferta-recomendada:${productoId}:${usuarioId}:stock`;
+}
+
+// Misma fórmula usada en calcularRecomendaciones() (para mostrar) y en
+// comprar() (para cobrar, sobre un precio recién leído) — separada en una
+// función para que las dos SIEMPRE apliquen el mismo redondeo, en vez de
+// arriesgar que diverjan si alguien cambia una copia y no la otra.
+function calcularPrecioRecomendado(precioNormal) {
+  return Math.round(precioNormal * (1 - DESCUENTO_PORCENTAJE) * 100) / 100;
 }
 
 // Historial de compras (MySQL, fuente de verdad) resuelto contra el catálogo
@@ -124,7 +133,7 @@ async function calcularRecomendaciones(usuarioId) {
   const puntuados = await buscarCoincidencias(tendencia.subcategoriaId, tendencia.atributosPreferidos);
   const productos = puntuados.slice(0, CANTIDAD_RECOMENDACIONES).map(({ doc, score }) => {
     const precioNormal = doc.inventario.precio;
-    const precioRecomendado = Math.round(precioNormal * (1 - DESCUENTO_PORCENTAJE) * 100) / 100;
+    const precioRecomendado = calcularPrecioRecomendado(precioNormal);
     const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
     return {
       id: doc.producto_id,
@@ -174,6 +183,20 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
     throw err;
   }
 
+  // match.precio_recomendado puede venir del caché de Redis (hasta
+  // CACHE_TTL_SEGUNDOS de antigüedad, ver recomendar()) — sirve para decidir
+  // SI este producto sigue siendo una recomendación vigente (match de arriba),
+  // pero no para cobrar: el precio base pudo cambiar desde que se calculó. Se
+  // vuelve a leer el precio ACTUAL del catálogo (Mongo, vía productoService,
+  // mismo camino que ofertaFlashService.intentarComprar() relee el producto
+  // fresco en cada intento) y se recalcula el descuento sobre ESE valor —
+  // checkoutOferta() confía en el precioUnitario que se le pasa sin volver a
+  // validarlo contra inventario.precio, así que esta relectura es la única
+  // guarda real del precio.
+  const productoActual = await productoService.obtener(productoId);
+  const precioActual = Number(productoActual.inventario?.precio ?? 0);
+  const precioRecomendadoActual = calcularPrecioRecomendado(precioActual);
+
   const redis = conectarRedis();
   const clave = claveCupo(productoId, usuarioId);
   const restante = await redis.decrementarOferta(clave, CUPO_PERSONAL, CACHE_TTL_SEGUNDOS, cantidad);
@@ -188,7 +211,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
       usuarioId,
       productoId,
       cantidad,
-      precioUnitario: match.precio_recomendado,
+      precioUnitario: precioRecomendadoActual,
       direccionId,
       metodoPagoId,
     });

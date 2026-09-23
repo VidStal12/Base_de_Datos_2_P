@@ -176,6 +176,42 @@ async function main() {
     }
   }
 
+  // 5) El precio cobrado usa el precio ACTUAL del catálogo, no el que haya
+  // quedado congelado en el caché de Redis de recomendaciones (hasta 1 hora
+  // de antigüedad, ver recomendar()) — checkoutOferta() no vuelve a validar
+  // el precio contra MySQL, solo el stock, así que la relectura de
+  // tendenciaService.comprar() es la única guarda real. Simula el caso real:
+  // el vendedor sube el precio DESPUÉS de que la recomendación ya quedó
+  // cacheada, sin tocar esa clave de Redis a propósito.
+  const precioNuevo = Math.round((Number(inventarioDespues.precio) + 50) * 100) / 100;
+  await prisma.inventario.update({ where: { id_producto: productoId }, data: { precio: precioNuevo } });
+  await Producto.updateOne({ producto_id: productoId }, { 'inventario.precio': precioNuevo });
+
+  const cacheadoCrudo = JSON.parse(await redis.get(`recomendaciones:${usuario.id_usuario}`));
+  const cacheadoMatch = cacheadoCrudo.productos.find((p) => p.id === productoId);
+  const precioEsperado = Math.round(precioNuevo * 0.85 * 100) / 100;
+  console.log(
+    `Precio todavía cacheado en Redis (viejo): Q${cacheadoMatch.precio_recomendado} — precio real recién subido: Q${precioNuevo} — ` +
+      `precio con descuento que debería cobrarse: Q${precioEsperado}`
+  );
+  if (cacheadoMatch.precio_recomendado === precioEsperado) {
+    throw new Error('FALLO en el setup de la prueba: el caché ya reflejaba el precio nuevo, no sirve para probar la relectura');
+  }
+
+  await redis.del(claveCupo); // cupo personal ya se agotó en la prueba 3 — se resetea para esta prueba puntual
+  const { compra: compraConPrecioNuevo } = await tendenciaService.comprar(usuario.id_usuario, productoId, {
+    cantidad: 1,
+    direccionId: usuario.direcciones[0].id,
+    metodoPagoId: usuario.metodos_pago[0].id,
+  });
+  const precioCobrado = Number(compraConPrecioNuevo.compra_detalles[0].precio_final);
+  console.log(`Compra ejecutada — precio cobrado: Q${precioCobrado} (esperado: Q${precioEsperado})`);
+  if (precioCobrado !== precioEsperado) {
+    throw new Error(
+      `FALLO: se cobró Q${precioCobrado} en vez de Q${precioEsperado} — la compra está usando el precio viejo cacheado en Redis, no el actual`
+    );
+  }
+
   console.log('Todas las verificaciones de recomendaciones por tendencia pasaron.');
 }
 
