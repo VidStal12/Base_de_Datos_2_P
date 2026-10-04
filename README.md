@@ -6,7 +6,7 @@ Proyecto de curso — Bases de Datos 2. Portal de comercio electrónico construi
 
 Backend en Node.js (JavaScript) + Express. MySQL (Prisma) para datos transaccionales — usuarios, direcciones, pedidos, pagos, inventario. MongoDB (Mongoose) para el catálogo descriptivo — categorías, atributos variables por producto, historial de cambios (ver [IA/ADR-002](IA/ADR-002-migracion-catalogo-documental.md)). Frontend en React (Vite) + Tailwind CSS. Los 6 requerimientos técnicos de Entrega 1 (PRD §5) están implementados y verificados — ver [IA/ENTREGA-1-TRAZABILIDAD.md](IA/ENTREGA-1-TRAZABILIDAD.md) para el detalle punto por punto con referencias al código, o [IA/ESTADO-PROYECTO.md](IA/ESTADO-PROYECTO.md) para el resumen general de qué está hecho y qué falta.
 
-Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra** para el panel de ventas por intervalos y productos en ascenso, y **Neo4j** para detección de fraude (reseñas coordinadas y desviación de patrón de compra). El PRD exige implementar al menos una familia entre grafos y columnar; el equipo terminó incorporando las dos, cada una con su propio propósito — Cassandra no reemplaza a Neo4j ni viceversa. Diseño, límites y evidencia de validación en [IA/ADR-004](IA/ADR-004-analitica-ventas-cassandra.md) (Cassandra) y [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md) (Neo4j).
+Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra** para el panel de ventas por intervalos y productos en ascenso, y **Neo4j** para detección de fraude (seis señales: reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona — mismo nombre o mismo buzón de correo —, ráfaga de gasto y autocompra). El PRD exige implementar al menos una familia entre grafos y columnar; el equipo terminó incorporando las dos, cada una con su propio propósito — Cassandra no reemplaza a Neo4j ni viceversa. Diseño, límites y evidencia de validación en [IA/ADR-004](IA/ADR-004-analitica-ventas-cassandra.md) (Cassandra) y [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md) (Neo4j).
 
 ## Requisitos
 
@@ -116,7 +116,9 @@ Las compras sintéticas conservadas por `flash-sale-tests/` forman parte de la b
 
 ## Detección de fraude con Neo4j (Entrega 2)
 
-La pantalla `/admin/fraude` y `GET /api/admin/fraude` requieren rol **administrador**. Dos señales, ninguna una acusación por sí sola: **reseñas coordinadas** (cuentas distintas reseñando los mismos productos, calificación alta, ventana de tiempo corta) y **desviación de patrón de compra** (una compra en una categoría nueva para esa cuenta, enviada a una dirección — o pagada con un instrumento — que otra cuenta distinta también usó). Diseño completo, incluida una corrección real al modelo encontrada al implementar, en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
+La pantalla `/admin/fraude` y `GET /api/admin/fraude` requieren rol **administrador**. Seis señales, ninguna una acusación por sí sola: **reseñas coordinadas** (cuentas distintas reseñando los mismos productos, calificación alta, ventana de tiempo corta); **gasto anómalo** (un pedido muy por encima de lo que esa misma cuenta gastó antes, como un banco vigila a sus clientes); **categoría inusual** (la primera compra en una categoría ajena, tras un historial largo); **cuentas de una misma persona** (varias cuentas que se llaman igual o usan el mismo buzón de correo — sin contar alias `+` ni los puntos de Gmail —, todas comprando; compartir buzón pesa más que compartir nombre, y el grafo guarda solo un hash del buzón, nunca el correo); **ráfaga de gasto** (muchos pedidos o mucho gasto en un solo día, aunque cada pedido parezca normal) y **autocompra** (una cuenta que le compra a sí misma o a otra de su misma persona). Una señal corroborada por otra sube a confianza alta; nunca baja. Diseño completo, incluidas las correcciones reales al modelo encontradas al implementar, en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
+
+**Nadie compra lo que vende:** el sistema rechaza con `403` que un vendedor compre sus propios productos, en todos los caminos (checkout, carrito, oferta flash y recomendaciones), y el frontend oculta los botones de compra de un producto propio. La autocompra entre dos cuentas distintas de una misma persona sigue siendo justo lo que detectan las señales de arriba.
 
 Compras y reseñas se reenvían a Neo4j de mejor esfuerzo (no outbox durable como Cassandra — una señal de fraude tarde de más no tiene el mismo costo que una venta perdida) al confirmarse en `checkout()`/`checkoutOferta()`/`resenaService.crear()`. Para incorporar datos anteriores a que ese reenvío existiera:
 
@@ -130,7 +132,13 @@ Recorre `compra_detalle` (con pago aprobado) y la colección `resenas`, reenvian
 npm run verificar:fraude
 ```
 
-Siembra un patrón sintético de cada señal (documentado como tal, no se presenta como hallazgo orgánico) corriendo checkout y creación de reseñas **reales**, no escrituras directas a Neo4j, y confirma que las dos consultas las encuentran.
+Siembra un patrón sintético de cada señal (documentado como tal, no se presenta como hallazgo orgánico) corriendo checkout y creación de reseñas **reales**, no escrituras directas a Neo4j, y confirma que las seis consultas las encuentran (y que los controles negativos no). Es idempotente: re-correrlo no acumula compras ni cuentas. Los vendedores y productos de prueba que crea son sintéticos y quedan inactivos. La única excepción a "compras reales" es la autocompra de una misma cuenta: como `checkout()` ya la rechaza, el script comprueba el rechazo y siembra un pedido histórico directo en MySQL.
+
+```bash
+npm run verificar:compraPropia
+```
+
+Prueba que cada camino de compra (checkout simple y mixto, carrito, oferta flash y recomendación) rechaza con `403` el producto propio de un vendedor y que el rechazo no deja rastro — ni pedido, ni stock descontado, ni cupo gastado en Redis. Solo hay rechazos, así que se puede correr las veces que se quiera.
 
 ## Verificar el checkout transaccional
 
@@ -354,7 +362,7 @@ backend/
     verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
     verificarRecomendaciones.js  Evidencia de las recomendaciones por tendencia (Entrega 2)
     backfillNeo4j.js          Reenvía compras/reseñas históricas a Neo4j (Entrega 2)
-    verificarFraudeNeo4j.js   Evidencia de las dos señales de fraude, con datos sembrados (Entrega 2)
+    verificarFraudeNeo4j.js   Evidencia de las seis señales de fraude, con datos sembrados (Entrega 2)
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
     config/mongo.js        Conexión de Mongoose (MongoDB)

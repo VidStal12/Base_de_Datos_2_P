@@ -1,6 +1,6 @@
-# ERD — Arquitectura políglota (actualizado, 2026-10-03)
+# ERD — Arquitectura políglota (actualizado, 2026-10-04)
 
-> Este documento reúne el modelo de MySQL, MongoDB, Redis, Cassandra (copia analítica de ventas) y Neo4j (detección de fraude). Describe responsabilidades y relaciones; no acredita por sí solo que los contenedores estén corriendo. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra) (Cassandra) y §3.11 (Neo4j). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
+> Este documento reúne el modelo de MySQL, MongoDB, Redis, Cassandra (copia analítica de ventas), Neo4j (detección de fraude) y Elasticsearch (búsqueda del catálogo, Entrega 3). Describe responsabilidades y relaciones; no acredita por sí solo que los contenedores estén corriendo. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra) (Cassandra), §3.11 (Neo4j) y §3.12 (Elasticsearch). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
 >
 > El PRD exige implementar **al menos una** familia entre grafos y columnar. El equipo terminó incorporando las dos — Cassandra para ventas ([ADR-004](ADR-004-analitica-ventas-cassandra.md)), Neo4j para fraude ([PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md)) — no una en lugar de la otra. La versión anterior de este documento (2026-09-04) todavía decía que Cassandra reemplazaba a Neo4j; eso quedó desactualizado el mismo día que se implementó Neo4j (2026-09-08).
 
@@ -14,7 +14,8 @@
 | **MongoDB** | Fuente del catálogo descriptivo + historial | Categorías, subcategorías, contenido de producto (descripción/atributos/imágenes/estado), historial de cambios por evento |
 | **Redis** | Caché y admisión atómica | Caché del carrito con TTL de 7.5 min, resúmenes producto/oferta con TTL fijo de 60s, cupos de ofertas y recomendaciones cacheadas; MySQL conserva cantidades del carrito e inventario real |
 | **Cassandra** | Copia analítica de ventas | Proyecciones por día y por producto/mes, reconstruibles desde las ventas pagadas en MySQL; importes y unidades del panel |
-| **Neo4j** | Copia analítica de fraude | Grafo de usuarios/productos/direcciones/métodos de pago derivado de compras y reseñas ya confirmadas; reconstruible con `fraude:backfill` |
+| **Neo4j** | Copia analítica de fraude | Grafo de usuarios/productos/nombres derivado de compras y reseñas ya confirmadas (con monto, categoría y quién vende cada producto); reconstruible con `fraude:backfill` |
+| **Elasticsearch** | Índice de búsqueda del catálogo | Copia desnormalizada de los productos de Mongo (descripción, vendedor, categoría/subcategoría, atributos `nested`, precio, stock, `estado`, campo `completion` de autocompletado); reconstruible con `busqueda:backfill` |
 
 Las copias no cambian la autoridad de cada dato. El catálogo conserva reenvíos de mejor esfuerzo ya documentados; las ventas hacia Cassandra incorporan **outbox durable con reintentos idempotentes**; el fraude hacia Neo4j es mejor esfuerzo, como el catálogo (ver §7, por qué no necesita la garantía dura de Cassandra). Las referencias entre bases son IDs sin claves foráneas distribuidas. El detalle está en §5, el modelo de Cassandra en §6 y el de Neo4j en §7.
 
@@ -52,8 +53,12 @@ flowchart LR
     subgraph Neo4j["Neo4j (grafo)"]
         N_usuario[Usuario]
         N_producto[Producto]
-        N_direccion[Direccion]
-        N_pago[MetodoPago]
+        N_nombre[Nombre]
+        N_correo["Correo (SHA-256 del buzón)"]
+    end
+
+    subgraph Elasticsearch["Elasticsearch (motor de búsqueda)"]
+        ES_productos["índice tiendaya_productos"]
     end
 
     W[Worker de ventas: 30 s y reintentos]
@@ -61,6 +66,8 @@ flowchart LR
     UI[React: /admin/ventas]
     API2[Express: GET /api/admin/fraude]
     UI2[React: /admin/fraude]
+    API3["Express: GET /api/busqueda y /api/busqueda/sugerencias"]
+    UI3[React: buscador del encabezado y catálogo]
 
     M_inventario -- "precio/cantidad, en cada alta/edición" --> MG_producto
     M_compra -- "cantidad descontada + total_vendido, tras checkout" --> MG_producto
@@ -88,13 +95,21 @@ flowchart LR
     API -- "métricas y comparación; solo administrador" --> UI
 
     M_compra -- "MERGE, mejor esfuerzo, tras checkout" --> N_usuario
-    M_compra -- "MERGE, mejor esfuerzo, tras checkout" --> N_producto
-    M_compra -- "MERGE COMPRÓ (detalle_id) + ENVIÓ_A/PAGÓ_CON" --> N_direccion
-    M_compra -- " " --> N_pago
+    M_compra -- "MERGE COMPRÓ (detalle_id, compra_id, monto, categoría), mejor esfuerzo" --> N_producto
+    M_usuarios -- "SE_LLAMA: nombre completo normalizado" --> N_nombre
+    M_usuarios -- "USA_CORREO: solo el hash del buzón normalizado" --> N_correo
+    MG_producto -- "VENDE: vendedor_id/vendedor_nombre del producto" --> N_producto
     MG_producto -. "reseñó, mejor esfuerzo, tras crear la reseña" .-> N_usuario
-    N_usuario -- "reseñas coordinadas + desviación de patrón" --> API2
-    N_direccion -- "dirección/pago compartido entre cuentas" --> API2
+    N_usuario -- "reseñas coordinadas, gasto anómalo, categoría inusual, ráfaga de gasto" --> API2
+    N_nombre -- "cuentas de una misma persona (mismo nombre)" --> API2
+    N_correo -- "cuentas de una misma persona (mismo buzón)" --> API2
+    N_producto -- "autocompra: comprador y vendedor, misma cuenta o misma persona" --> API2
+    M_usuarios -. "ficha del administrador: correo legible, resuelto en vivo" .-> API2
     API2 -- "candidatos para revisión; solo administrador" --> UI2
+
+    MG_producto -- "indexa al crear/editar, mejor esfuerzo; backfillBusqueda.js recupera" --> ES_productos
+    ES_productos -- "texto libre con tolerancia a errores, facetas por agregación y autocompletado" --> API3
+    API3 --> UI3
 ```
 
 **Cómo leer las flechas:** línea sólida = escritura, entrega o lectura identificada por su etiqueta. Los reenvíos del catálogo son de mejor esfuerzo; la entrega a Cassandra queda respaldada por outbox en MySQL. Línea punteada = referencia simple sin integridad referencial entre bases (ver [ADR-002](ADR-002-migracion-catalogo-documental.md), sección 6.3).
@@ -319,6 +334,8 @@ La tabla `carrito` es durable. Abrirlo con caché vigente lee su propia copia so
 | MySQL `inventario` → Mongo `Producto.inventario` | precio, cantidad | Reenvío | Alta o edición de producto | `productoService.crear()` / `actualizar()` |
 | MySQL `compra`/`compra_detalle` → Mongo `Producto.total_vendido` + `Producto.inventario.cantidad` | unidades vendidas, descuento de stock | Reenvío | Checkout exitoso (después de confirmada la transacción) | `checkoutService.checkout()` / `checkoutOferta()` |
 | MySQL `usuarios` → Mongo `Producto.vendedor_nombre` | nombre completo del vendedor | Reenvío (una sola vez) | Alta de producto | `productoService.crear()` |
+| MySQL `producto.id_vendedor` → rechazo de la compra | Quién vende cada producto del pedido | Lectura en la propia operación (sin copia: MySQL es la autoridad) | Checkout, carrito, oferta flash y recomendación | `productoService.verificarNoEsPropio()` — 403 si el comprador es el vendedor |
+| MySQL `usuarios.correo` → Neo4j `Correo` | SHA-256 del buzón normalizado (nunca el correo), del comprador y del vendedor | Reenvío de mejor esfuerzo, resuelto por el servicio de sincronización | Checkout y reseña | `fraudeSyncService.hashCorreoDe()` |
 | MySQL `usuarios` → Redis `carrito:{id}` | — | Referencia (la clave misma) | — | `cartService.js` |
 | MySQL `compra` → MySQL `carrito` → Redis `carrito:{id}` | Borra filas SQL e invalida la clave Redis | Borrado SQL en transacción; invalidación Redis de mejor esfuerzo | Checkout normal exitoso | `checkoutService.checkout()`; el cliente solo limpia su estado |
 | Mongo `Producto.producto_id` → MySQL `producto.id` | — | Referencia, sin FK real | — | Todo el catálogo |
@@ -364,27 +381,42 @@ El ranking compara unidades: aumento `reciente − anterior`; porcentaje `((reci
 
 ## 7. Neo4j (grafo): detección de fraude
 
-La familia de grafos del PRD, incorporada además de Cassandra, no en su lugar — el equipo decidió sumar las dos (ver la nota al inicio del documento). Diseño completo, incluida una corrección real al modelo encontrada al implementar, en [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md).
+La familia de grafos del PRD, incorporada además de Cassandra, no en su lugar — el equipo decidió sumar las dos (ver la nota al inicio del documento). Diseño completo en [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md); el modelo de abajo es el vigente desde los rediseños del 2026-10-04 (§16, §17 y §18 de ese documento), que quitaron los nodos de dirección y método de pago, y dejaron dos vínculos entre cuentas: el nombre y el buzón de correo.
 
 | Nodo/relación | Clave | Nota |
 |---|---|---|
-| `Usuario` | `id_usuario` | Un solo label, `rol` como propiedad — no `Comprador`/`Vendedor` separados |
-| `Producto` | `producto_id` | Incluye `subcategoria` (el id de Mongo, no el nombre) |
-| `Direccion` | **texto normalizado** (`pais\|dirección\|código_postal`), no `id_direccion` | Ver por qué abajo |
-| `MetodoPago` | **`token_pasarela`**, no `id_metodo_pago` | Ver por qué abajo |
-| `COMPRÓ` | `detalle_id` (= `compra_detalle.id`) como parte de la clave del `MERGE` | Sin esto, compras repetidas del mismo producto por el mismo usuario colapsarían en una sola arista |
+| `Usuario` | `id_usuario` | Un solo label, `rol` como propiedad — no `Comprador`/`Vendedor` separados. Un vendedor que nunca compró también existe (por `VENDE`), con `rol` sin setear |
+| `Producto` | `producto_id` | Incluye `subcategoria` y `categoria` (ids de Mongo, no los nombres) |
+| `Nombre` | **`clave`** (nombre completo normalizado) | Ver por qué abajo |
+| `Correo` | **`hash`** (SHA-256 del buzón normalizado) | Nunca el correo en claro: seudonimización, no cifrado. Ver por qué abajo |
+| `COMPRÓ` | `detalle_id` (= `compra_detalle.id`) como parte de la clave del `MERGE` | Sin esto, compras repetidas del mismo producto colapsarían en una sola arista. Lleva `compra_id` (el gasto se mide por pedido), `monto`, `fecha` y la `categoria` de esa compra |
 | `RESEÑÓ` | Extremos del `MERGE` alcanzan | El índice único de `Resena.js` ya garantiza una sola reseña por (producto, usuario) |
-| `ENVIÓ_A` / `PAGÓ_CON` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta usó esta dirección/instrumento alguna vez |
+| `SE_LLAMA` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta lleva este nombre |
+| `USA_CORREO` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta usa este buzón. Se registra para el comprador y para el vendedor del producto |
+| `VENDE` | Extremos del `MERGE` alcanzan | Quién vende el producto, tomado de `vendedor_id` en Mongo |
 
-**Por qué `Direccion`/`MetodoPago` no se clavan por el id de MySQL:** cada fila de `direcciones`/`metodo_pago` pertenece a un solo usuario (`id_usuario`), así que dos cuentas nunca podrían compartir ese id por construcción — la señal de "dos cuentas apuntan al mismo domicilio/tarjeta" jamás habría encontrado nada, sin importar qué datos existieran. Encontrado como error propio al verificar, corregido antes de terminar la implementación.
+**Por qué la identidad entre cuentas son el nombre y el buzón normalizados:** una clave que por construcción nunca puede repetirse entre cuentas jamás encontraría nada — le pasó a `id_direccion` (cada fila pertenece a un solo usuario por FK) y le pasaría al texto exacto de `usuarios.correo` (único). Por eso se comparan dos cosas que sí pueden repetirse: el **nombre completo** (se normaliza solo el formato — mayúsculas, tildes de vocales, espacios; la "ñ" y los segundos nombres distinguen — y se compara exacto, nunca aproximado) y el **buzón** (se descartan el alias `+etiqueta` y, solo en Gmail, los puntos: `ana+2@x.com` y `ana@x.com` llegan a la misma bandeja). Como dos personas distintas pueden llamarse igual, el nombre solo es una coincidencia débil — sube a confianza alta con una corroboración (misma fecha de nacimiento, autocompra, etc.); compartir buzón, en cambio, es deliberado y ya es evidencia fuerte por sí solo.
 
-**Dos señales**, ninguna una acusación por sí sola:
+**Seis señales**, ninguna una acusación por sí sola:
 - **Reseñas coordinadas:** cuentas distintas, mismos productos (≥3 por defecto), calificación alta, ventana de tiempo corta (1h por defecto). Ya no busca "reseñó sin comprar" — imposible desde que `resenaService.crear()` exige una compra real (ver ESTADO-PROYECTO.md, corrección del 2026-09-08).
-- **Desviación de patrón de compra:** una compra en una subcategoría nueva para esa cuenta, Y esa misma compra usó una dirección que otra cuenta distinta también usó — atado a la compra puntual que se señala, no a "esta cuenta comparte algo en algún momento" (dos condiciones ciertas por separado, de compras distintas, no dicen nada).
+- **Gasto anómalo:** un pedido ≥3× el promedio previo de esa misma cuenta y mayor que su máximo, con ≥5 pedidos previos y ≥Q500.
+- **Categoría inusual:** la primera compra de una cuenta en una categoría, tras ≥5 pedidos y ≥30 días de historial.
+- **Cuentas de una misma persona:** ≥2 cuentas que se llaman igual **o** usan el mismo buzón, comprando por separado; los vínculos se unen de forma transitiva (A y B se llaman igual, B y C comparten buzón → una persona con tres cuentas). Buzón compartido: confianza alta; solo el nombre: posible hasta que algo lo corrobore.
+- **Ráfaga de gasto:** ≥5 pedidos (y ≥2× su día más activo previo) o mucho más gasto que su día habitual (con ≥2 pedidos), en un solo día de Guatemala.
+- **Autocompra:** `(comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor)` donde comprador y vendedor son la misma cuenta o dos cuentas de una misma persona (mismo nombre o mismo buzón). Desde §18 el sistema **impide** la de la misma cuenta (`verificarNoEsPropio`, ver §5): la señal queda para lo anterior a la regla y para las cuentas distintas.
 
 **Sincronización:** mejor esfuerzo (no outbox durable como Cassandra) — enganchada en `checkout()`, `checkoutOferta()` y `resenaService.crear()`, con su propio `try/catch` independiente de los reenvíos a Mongo/Redis/outbox de ventas que ya corren en el mismo lugar. Una señal de fraude tarde de más no tiene el mismo costo que una venta perdida (ver [ENTREGA-3-CONSISTENCIA.md §3](ENTREGA-3-CONSISTENCIA.md)) — si el reenvío falla, el próximo `fraude:backfill` lo recupera, reutilizando las mismas funciones que el camino en vivo.
 
 **Desarrollo:** un nodo en Docker con volumen persistente (a diferencia de Redis, sí interesa que el grafo sobreviva un reinicio mientras se prueban las consultas). Conexión vía `NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`. Panel en `/admin/fraude`, `GET /api/admin/fraude`, solo administrador.
+
+## 7.1 Elasticsearch (motor de búsqueda): catálogo
+
+Requerimiento de Entrega 3 (PRD §5). Diseño completo en [PLAN-ELASTICSEARCH-BUSQUEDA.md](PLAN-ELASTICSEARCH-BUSQUEDA.md); es una **copia derivada** del catálogo de Mongo, nunca la autoridad de nada.
+
+- **Índice `tiendaya_productos` con mapping explícito** (no el dinámico por defecto): `descripcion`/`vendedor_nombre` como `text` con analizador `spanish` + subcampo `.keyword`; `vendedor_id` como `integer` (para que la tarjeta del buscador sepa si un resultado es del propio usuario, que no puede comprarlo); `atributos` como `nested` `{nombre, valor}` (mismo motivo que `$elemMatch` en Mongo: un filtro por nombre+valor no debe cruzar el nombre de un atributo con el valor de otro); `categoria`/`subcategoria` denormalizados como `keyword` (Elasticsearch no hace joins); `sugerencia` como `completion` con contexto por `estado`.
+- **Búsqueda** (`GET /api/busqueda`): `multi_match` con `fuzziness: 'AUTO'` (tolerancia a errores de tipeo), filtros exactos y **agregaciones reales** para las facetas (`terms` por categoría/subcategoría y `nested` por atributo). Siempre filtrada a `estado: activo`.
+- **Autocompletado** (`GET /api/busqueda/sugerencias`): suggester `completion` con `fuzzy`, también limitado a productos activos.
+- **Sincronización:** de mejor esfuerzo, sin outbox — enganchada en `productoService.crear()`/`actualizar()`, nunca en el checkout. Un resultado de búsqueda desactualizado por segundos no cuesta lo mismo que una venta perdida (ver [ENTREGA-3-CONSISTENCIA.md §3](ENTREGA-3-CONSISTENCIA.md)); precio y stock reales siempre se releen de Mongo en el detalle y el carrito. Si el reenvío falla, `busqueda:backfill` reindexa el catálogo completo.
 
 ## 8. Pendientes y límites
 

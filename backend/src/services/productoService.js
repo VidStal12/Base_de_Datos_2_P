@@ -229,6 +229,26 @@ async function verificarPermiso(vendedor, productoId) {
   return producto;
 }
 
+// Regla de negocio: nadie compra lo que él mismo vende. Un vendedor que se
+// compra a sí mismo infla sus propias ventas y su apariencia de popularidad sin
+// que haya un cliente real, y puede mover dinero por el comercio (ver la señal
+// de autocompra, PLAN-NEO4J-DETECCION-FRAUDE.md §17). Se verifica contra MySQL
+// (id_vendedor) por el mismo motivo que verificarPermiso: la autoridad no debe
+// depender de la copia en Mongo. Vale para cualquier cuenta dueña del producto,
+// no solo para el rol "vendedor" — un administrador que cargó un producto
+// tampoco puede comprárselo. `db` permite pasar la transacción de Prisma.
+async function verificarNoEsPropio(usuarioId, productoIds, db = prisma) {
+  const propios = await db.producto.findMany({
+    where: { id: { in: productoIds }, id_vendedor: usuarioId },
+    select: { id: true },
+  });
+  if (propios.length > 0) {
+    const err = new Error(`No podés comprar tus propios productos (producto ${propios.map((p) => p.id).join(', ')}).`);
+    err.status = 403;
+    throw err;
+  }
+}
+
 // Edición: cualquier campo que cambie (descriptivo O precio/cantidad) genera
 // un evento — el historial reconstruye el producto completo, y precio/stock
 // son parte de "el producto" tanto como la descripción (ver conversación de
@@ -395,4 +415,5 @@ module.exports = {
   historialCompleto,
   estadisticasEdiciones,
   verificarPermiso,
+  verificarNoEsPropio,
 };

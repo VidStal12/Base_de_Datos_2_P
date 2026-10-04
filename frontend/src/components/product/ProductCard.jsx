@@ -1,11 +1,16 @@
 import { Link } from 'react-router-dom';
 import { formatCurrency } from '../../utils/format';
 import { useCart } from '../../context/CartContext';
+import { useAuth } from '../../context/AuthContext';
 
 export function ProductCard({ producto }) {
   const { agregar } = useCart();
+  const { usuario } = useAuth();
   const stock = producto.inventario?.cantidad ?? 0;
   const sinStock = stock <= 0;
+  // Nadie compra lo que él mismo vende (el servidor lo rechaza con 403, ver
+  // productoService.verificarNoEsPropio): no se ofrece el botón.
+  const esPropio = usuario?.id_usuario != null && usuario.id_usuario === producto.vendedor_id;
 
   return (
     <div className="group flex flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white transition-shadow hover:shadow-lg">
@@ -33,13 +38,17 @@ export function ProductCard({ producto }) {
           )}
         </div>
 
-        <button
-          onClick={() => agregar(producto, 1)}
-          disabled={sinStock}
-          className="mt-1 w-full rounded-lg bg-accent-500 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:bg-neutral-300"
-        >
-          {sinStock ? 'Sin stock' : 'Agregar al carrito'}
-        </button>
+        {esPropio ? (
+          <p className="mt-1 w-full rounded-lg bg-neutral-100 py-2 text-center text-sm font-medium text-neutral-500">Es tu producto</p>
+        ) : (
+          <button
+            onClick={() => agregar(producto, 1)}
+            disabled={sinStock}
+            className="mt-1 w-full rounded-lg bg-accent-500 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:bg-neutral-300"
+          >
+            {sinStock ? 'Sin stock' : 'Agregar al carrito'}
+          </button>
+        )}
       </div>
     </div>
   );

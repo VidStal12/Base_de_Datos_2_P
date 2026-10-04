@@ -131,3 +131,13 @@ sugerencia: completion, contexts: [{ name: 'estado', type: 'category' }]
 **Frontend (`Header.jsx`)** — debounce de 250ms sobre el input de búsqueda ya existente, dropdown con navegación por teclado (flechas + Enter + Escape) y clic-afuera-cierra (mismo patrón `mousedown`+`contains` que ya usa `CategoryMenu.jsx`, no `onBlur`, porque `onBlur` del input dispara antes que el `onClick` de una sugerencia y la cerraría antes de poder seleccionarla). Un `ultimaBusquedaRef` evita que el dropdown se reabra solo justo después de ejecutar una búsqueda: sin él, seleccionar una sugerencia deja ese mismo texto en el input, lo que vuelve a disparar el efecto de autocompletado y reabre el dropdown con sugerencias que calzan contra el propio texto ya buscado, encima de la página de resultados — encontrado y corregido probando en navegador real, no era el comportamiento esperado.
 
 **Verificación:** `verificarBusqueda.js` (prueba 4) confirma `sugerir("bicicletta")` (typo deliberado) devuelve las 8 bicicletas del catálogo. Probado también en navegador real: prefijo con typo, selección por teclado (flechas + Enter) y por mouse, clic afuera para cerrar sin navegar, y confirmación de que escribir un texto nuevo después de seleccionar una sugerencia vuelve a disparar sugerencias frescas correctamente.
+
+## 13. `vendedor_id` en el índice (agregado después, 2026-10-04)
+
+Desde que un vendedor no puede comprar sus propios productos ([PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md) §18), la tarjeta de un resultado de búsqueda necesita saber si el producto es del usuario que mira, para no ofrecerle un botón que el servidor va a rechazar con 403. Se agregó un campo, sin tocar ninguno de los existentes:
+
+```
+vendedor_id: integer      — id de la cuenta vendedora (referencia a MySQL usuarios.id_usuario)
+```
+
+Se llena al indexar (`busquedaSyncService.aDocumento`, desde el `vendedor_id` que ya trae el documento de Mongo) y se devuelve en cada resultado (`busquedaService.aProducto`). Es solo un dato de **presentación**: la barrera real es `productoService.verificarNoEsPropio` en el servidor, que consulta MySQL, no este índice. Mismo mecanismo de §12: `conectar()` aplica `putMapping()` sobre el índice ya existente, así que no hizo falta recrearlo — solo `npm run busqueda:backfill` para que los documentos ya indexados lleven el campo (reindexados: 108 productos).

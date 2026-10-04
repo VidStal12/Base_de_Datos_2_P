@@ -1,8 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cargar, redisFalso } = require('./redisHelpers');
+const { cargar, redisFalso, productoFalso, compromisoFalso, ACEPTADO_EN } = require('./redisHelpers');
 
-function escenario() {
+// `propios`: ids de producto que pertenecen a quien compra (usuario 7) — la
+// regla "nadie compra lo que él mismo vende", que cartService exige con
+// productoService.verificarNoEsPropio.
+function escenario({ propios = [] } = {}) {
   const redis = redisFalso();
   const filas = new Map();
   const inv = { precio: 10, cantidad: 10 };
@@ -36,8 +39,22 @@ function escenario() {
   const servicio = cargar('../src/services/cartService.js', {
     '../config/prisma': db, '../config/redis': { conectar: () => redis },
     '../config/mongo': { conectar: async () => {} }, '../models/mongo/Producto': modelo,
+    './productoService': productoFalso({ propios }),
   });
   return { servicio, filas, inv, redis, productos, consultas: () => consultas, consultasMongo: () => consultasMongo };
+}
+
+// Doble de lo que checkoutService necesita para llegar hasta la transacción.
+function dependenciasCheckout(extra = {}) {
+  return {
+    '../config/mongo': { conectar: async () => {} },
+    './productoService': productoFalso(),
+    './compromisoService': compromisoFalso(),
+    './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
+    './ventasOutboxService': { encolarCompra: async () => {} },
+    './fraudeSyncService': {},
+    ...extra,
+  };
 }
 
 test('Redis guarda su propia copia sin inventario; al vencerlo recupera cantidades desde SQL', async () => {
@@ -112,17 +129,15 @@ test('una caché vieja no resucita filas borradas; Redis caído no impide persis
 test('checkout rechaza un precio cambiado antes de descontar o vaciar el carrito', async () => {
   let descontado = false;
   let vaciado = false;
-  const servicio = cargar('../src/services/checkoutService.js', {
+  const servicio = cargar('../src/services/checkoutService.js', dependenciasCheckout({
     '../config/prisma': { $transaction: async (fn) => fn({
       direcciones: { findUnique: async () => ({ id_usuario: 7 }) },
       metodo_pago: { findUnique: async () => ({ id_usuario: 7 }) },
       inventario: { findUnique: async () => ({ precio: 12, cantidad: 5 }), updateMany: async () => { descontado = true; } },
       carrito: { deleteMany: async () => { vaciado = true; } },
     }) },
-    './cartService': { bloquearUsuario: async () => {} },
-    '../config/mongo': { conectar: async () => {} }, '../models/mongo/Producto': { find: () => ({ select: () => ({ lean: async () => [{ producto_id: 1, estado: 'activo' }] }) }) },
-    './ventasOutboxService': {}, './fraudeSyncService': {},
-  });
+    '../models/mongo/Producto': { find: () => ({ select: () => ({ lean: async () => [{ producto_id: 1, estado: 'activo' }] }) }) },
+  }));
   await assert.rejects(servicio.checkout({ usuarioId: 7, direccionId: 1, metodoPagoId: 1, items: [{ productoId: 1, cantidad: 2, precioEsperado: 10 }] }), (err) => err.status === 409);
   assert.equal(descontado, false);
   assert.equal(vaciado, false);
@@ -154,12 +169,10 @@ test('el formato previo con referencias se reconstruye sin perder las cantidades
 });
 
 test('si se desactiva un producto después de revisar, confirmar rechaza antes de tocar SQL', async () => {
-  const servicio = cargar('../src/services/checkoutService.js', {
+  const servicio = cargar('../src/services/checkoutService.js', dependenciasCheckout({
     '../config/prisma': { $transaction: () => assert.fail('no debe comenzar la compra de un producto inactivo') },
-    '../config/mongo': { conectar: async () => {} },
     '../models/mongo/Producto': { find: () => ({ select: () => ({ lean: async () => [{ producto_id: 1, estado: 'inactivo' }] }) }) },
-    './cartService': {}, './ventasOutboxService': {}, './fraudeSyncService': {},
-  });
+  }));
   await assert.rejects(servicio.checkout({ usuarioId: 7, direccionId: 1, metodoPagoId: 1, items: [{ productoId: 1, cantidad: 2, precioEsperado: 10 }] }), (err) => err.status === 409);
 });
 
@@ -188,4 +201,63 @@ test('un producto ausente sigue en el carrito, sin poder confirmarse', async () 
   assert.equal(c.items[0].producto.id, 1);
   assert.equal(c.items[0].disponible, false);
   assert.equal(e.filas.get(1), 2);
+});
+
+test('un producto propio no entra al carrito: se rechaza sin tocar SQL ni Redis', async () => {
+  const e = escenario({ propios: [1] });
+  await assert.rejects(e.servicio.agregar(7, 1, 1), (err) => err.status === 403);
+  await assert.rejects(e.servicio.actualizarCantidad(7, 1, 3), (err) => err.status === 403);
+  assert.equal(e.filas.size, 0);
+  assert.equal(e.redis.hashes.size, 0);
+  assert.equal(e.consultas(), 0);
+  await e.servicio.agregar(7, 2, 1); // un producto ajeno del mismo comprador sí entra
+  assert.equal(e.filas.get(2), 1);
+});
+
+// Compra completa con dobles — lo justo para llegar al `compra.create` y ver qué
+// se guarda en el pedido.
+function escenarioCompra({ vendedores = [] } = {}) {
+  const guardado = {};
+  const compromiso = compromisoFalso({ vendedores });
+  const tx = {
+    direcciones: { findUnique: async () => ({ id_usuario: 7 }) },
+    metodo_pago: { findUnique: async () => ({ id_usuario: 7 }) },
+    inventario: { findUnique: async () => ({ precio: 12, cantidad: 5 }), updateMany: async () => ({ count: 1 }) },
+    compra: { create: async ({ data }) => { guardado.compra = data; return { id: 99, fecha: new Date(), ...data, compra_detalles: [{ id: 1, id_producto: 1, precio_final: 24 }] }; } },
+    pago: { create: async ({ data }) => data },
+    carrito: { deleteMany: async () => {} },
+  };
+  let transacciones = 0;
+  const servicio = cargar('../src/services/checkoutService.js', dependenciasCheckout({
+    '../config/prisma': {
+      $transaction: async (fn) => { transacciones += 1; return fn(tx); },
+      usuarios: { findUnique: async () => ({ nombres: 'A', apellidos: 'B', rol: { tipo_rol: 'vendedor' } }) },
+    },
+    './compromisoService': compromiso,
+    '../models/mongo/Producto': {
+      find: () => ({ select: () => ({ lean: async () => [{ producto_id: 1, estado: 'activo' }] }) }),
+      findOne: () => ({ select: () => ({ lean: async () => null }) }),
+      updateOne: async () => {},
+    },
+  }));
+  return { servicio, guardado, compromiso, transacciones: () => transacciones };
+}
+
+const pedido = { usuarioId: 7, direccionId: 1, metodoPagoId: 1, items: [{ productoId: 1, cantidad: 2 }] };
+
+test('un vendedor que no aceptó el compromiso de no reventa no llega a la transacción', async () => {
+  const e = escenarioCompra({ vendedores: [7] });
+  await assert.rejects(e.servicio.checkout(pedido), (err) => err.status === 400 && err.codigo === 'COMPROMISO_NO_REVENTA');
+  await assert.rejects(e.servicio.checkout({ ...pedido, aceptaNoReventa: 'true' }), (err) => err.codigo === 'COMPROMISO_NO_REVENTA');
+  assert.equal(e.transacciones(), 0);
+});
+
+test('el pedido de un vendedor guarda la constancia de su compromiso; el de un comprador no', async () => {
+  const vendedor = escenarioCompra({ vendedores: [7] });
+  await vendedor.servicio.checkout({ ...pedido, aceptaNoReventa: true });
+  assert.equal(vendedor.guardado.compra.no_reventa_aceptada_en, ACEPTADO_EN);
+
+  const comprador = escenarioCompra({ vendedores: [] });
+  await comprador.servicio.checkout(pedido);
+  assert.equal(comprador.guardado.compra.no_reventa_aceptada_en, null);
 });

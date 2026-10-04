@@ -41,6 +41,10 @@ const MAPPING = {
     cantidad: { type: 'integer' },
     estado: { type: 'keyword' },
     total_vendido: { type: 'integer' },
+    // Solo para que los resultados de búsqueda sepan de quién es cada producto
+    // (la tarjeta oculta "Agregar al carrito" en los propios, ver
+    // productoService.verificarNoEsPropio) — nunca se busca ni se agrega por él.
+    vendedor_id: { type: 'integer' },
     // Autocompletado (ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §4, "se puede
     // agregar después sin tocar lo de acá") — tipo `completion`, no
     // `edge_ngram`: es el campo pensado específicamente para typeahead (FST

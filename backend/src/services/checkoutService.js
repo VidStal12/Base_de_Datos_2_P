@@ -3,6 +3,8 @@ const { esEnteroPositivo } = require('../utils/validation');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const cartService = require('./cartService');
+const productoService = require('./productoService');
+const compromisoService = require('./compromisoService');
 const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
 
@@ -10,7 +12,11 @@ const fraudeSyncService = require('./fraudeSyncService');
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
 // paso falla (p. ej. falta de stock), TODO se revierte, incluyendo los descuentos
 // de inventario ya aplicados en iteraciones previas del loop.
-async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
+//
+// aceptaNoReventa: lo manda el aviso del frontend a las cuentas que pueden
+// vender (ver compromisoService.js); se exige acá y queda registrado en el
+// pedido.
+async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoReventa }) {
   if (!items || items.length === 0) {
     throw new Error('El carrito no puede estar vacío');
   }
@@ -25,6 +31,13 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
       throw new Error('Cada item necesita productoId y cantidad como enteros positivos');
     }
   }
+
+  // Antes que cualquier otra validación de disponibilidad: si el motivo del
+  // rechazo es "es tuyo", el mensaje tiene que decir eso y no "no disponible".
+  await productoService.verificarNoEsPropio(usuarioId, items.map((item) => item.productoId));
+  // Una cuenta que puede vender tiene que haber aceptado el compromiso de no
+  // reventa en el aviso de ESTA compra — se rechaza antes de tocar nada.
+  const compromiso = await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
 
   await conectar();
   const docs = await Producto.find({ producto_id: { $in: items.map((item) => item.productoId) } }).select('producto_id estado').lean();
@@ -99,6 +112,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
         id_usuario: usuarioId,
         id_direccion: direccionId,
         total,
+        no_reventa_aceptada_en: compromiso.aceptadoEn,
         compra_detalles: { create: detalles },
       },
       include: { compra_detalles: true },
@@ -152,24 +166,23 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     // del outbox de ventas) — si falla, el próximo backfillNeo4j.js lo
     // recupera; ver ENTREGA-3-CONSISTENCIA.md §3 para el porqué.
     try {
-      const [usuarioDb, direccionDb, metodoPagoDb] = await Promise.all([
-        prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } }),
-        prisma.direcciones.findUnique({ where: { id: direccionId } }),
-        prisma.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
-      ]);
+      const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
       for (const detalle of resultado.compra.compra_detalles) {
-        const producto = await Producto.findOne({ producto_id: detalle.id_producto }).select('descripcion subcategoria_id').lean();
+        const producto = await Producto.findOne({ producto_id: detalle.id_producto })
+          .select('descripcion subcategoria_id vendedor_id vendedor_nombre')
+          .lean();
         if (!producto) continue;
         await fraudeSyncService.registrarCompra({
           detalleId: detalle.id,
+          compraId: resultado.compra.id,
           usuarioId,
           usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
           usuarioRol: usuarioDb.rol.tipo_rol,
+          vendedorId: producto.vendedor_id,
+          vendedorNombre: producto.vendedor_nombre,
           productoId: detalle.id_producto,
           productoDescripcion: producto.descripcion,
           subcategoriaId: producto.subcategoria_id,
-          direccion: direccionDb,
-          metodoPago: metodoPagoDb,
           fecha: resultado.compra.fecha,
           monto: detalle.precio_final,
         });
@@ -197,7 +210,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
 // dicho que sí — ver §4.2, "dos guardas, no una"), y reenvía a Mongo después
 // de confirmar. `descuento` en compra_detalle, que en el checkout normal
 // siempre queda en 0, acá sí lleva el ahorro real.
-async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId }) {
+async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId, aceptaNoReventa }) {
   if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
     throw new Error('productoId y cantidad deben ser enteros positivos');
   }
@@ -207,6 +220,13 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
   if (typeof precioUnitario !== 'number' || precioUnitario <= 0) {
     throw new Error('precioUnitario debe ser un número positivo');
   }
+  // Autoridad final de la regla "nadie compra lo suyo" para oferta flash y
+  // recomendaciones (las dos pasan por acá) — ofertaFlashService/
+  // tendenciaService la chequean antes también, para no gastar cupo en Redis.
+  await productoService.verificarNoEsPropio(usuarioId, [productoId]);
+  // Mismo compromiso de no reventa que checkout(), también acá como autoridad
+  // final: ofertaFlashService/tendenciaService lo exigen antes de Redis.
+  const compromiso = await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
 
   return prisma.$transaction(async (tx) => {
     const [direccion, metodoPago] = await Promise.all([
@@ -246,6 +266,7 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
         id_usuario: usuarioId,
         id_direccion: direccionId,
         total: precioFinal,
+        no_reventa_aceptada_en: compromiso.aceptadoEn,
         compra_detalles: {
           create: [
             {
@@ -293,24 +314,23 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
     // Detección de fraude — mismo criterio que checkout(), ver el comentario
     // de arriba. Cubre oferta flash Y recomendaciones, ambas pasan por acá.
     try {
-      const [usuarioDb, direccionDb, metodoPagoDb] = await Promise.all([
-        prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } }),
-        prisma.direcciones.findUnique({ where: { id: direccionId } }),
-        prisma.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
-      ]);
-      const producto = await Producto.findOne({ producto_id: productoId }).select('descripcion subcategoria_id').lean();
+      const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
+      const producto = await Producto.findOne({ producto_id: productoId })
+        .select('descripcion subcategoria_id vendedor_id vendedor_nombre')
+        .lean();
       const detalle = resultado.compra.compra_detalles[0];
       if (producto && detalle) {
         await fraudeSyncService.registrarCompra({
           detalleId: detalle.id,
+          compraId: resultado.compra.id,
           usuarioId,
           usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
           usuarioRol: usuarioDb.rol.tipo_rol,
+          vendedorId: producto.vendedor_id,
+          vendedorNombre: producto.vendedor_nombre,
           productoId,
           productoDescripcion: producto.descripcion,
           subcategoriaId: producto.subcategoria_id,
-          direccion: direccionDb,
-          metodoPago: metodoPagoDb,
           fecha: resultado.compra.fecha,
           monto: detalle.precio_final,
         });

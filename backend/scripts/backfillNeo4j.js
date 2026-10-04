@@ -16,6 +16,18 @@ const fraudeSyncService = require('../src/services/fraudeSyncService');
 // completa) es seguro.
 const LOTE = 100;
 
+// Rediseños de 2026-10-04 (ver PLAN-NEO4J-DETECCION-FRAUDE.md §16-§18): el
+// grafo ya no guarda dirección de envío ni método de pago. Neo4j es una copia
+// derivada (nunca la autoridad de nada), así que purgar lo viejo es seguro y se
+// puede reconstruir con este mismo script. Idempotente: sobre un grafo ya
+// limpio no borra nada. (`Correo` volvió en §18 — ya no es parte de lo que se
+// purga.)
+async function limpiarModeloAnterior() {
+  await neo4j.escribir('MATCH (n:Direccion) DETACH DELETE n');
+  await neo4j.escribir('MATCH (n:MetodoPago) DETACH DELETE n');
+  await neo4j.escribir('MATCH ()-[c:COMPRÓ]->() REMOVE c.direccion_texto, c.metodo_pago_token');
+}
+
 async function backfillCompras() {
   const cacheUsuarios = new Map();
   const cacheProductos = new Map();
@@ -29,7 +41,7 @@ async function backfillCompras() {
   }
   async function productoDe(id) {
     if (!cacheProductos.has(id)) {
-      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id').lean();
+      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
       cacheProductos.set(id, p);
     }
     return cacheProductos.get(id);
@@ -43,37 +55,28 @@ async function backfillCompras() {
       where: { id: { gt: ultimoId }, compra: { pagos: { some: { estado: 'aprobado' } } } },
       orderBy: { id: 'asc' },
       take: LOTE,
-      include: {
-        compra: {
-          select: {
-            fecha: true,
-            id_usuario: true,
-            direccion: true,
-            pagos: { where: { estado: 'aprobado' }, select: { metodo_pago: true }, take: 1 },
-          },
-        },
-      },
+      include: { compra: { select: { fecha: true, id_usuario: true } } },
     });
     if (!detalles.length) break;
 
     for (const detalle of detalles) {
       const usuarioDb = await usuarioDe(detalle.compra.id_usuario);
       const producto = await productoDe(detalle.id_producto);
-      const metodoPagoDb = detalle.compra.pagos[0]?.metodo_pago;
-      if (!usuarioDb || !producto || !metodoPagoDb) {
+      if (!usuarioDb || !producto) {
         omitidos += 1;
         continue;
       }
       await fraudeSyncService.registrarCompra({
         detalleId: detalle.id,
+        compraId: detalle.id_compra,
         usuarioId: detalle.compra.id_usuario,
         usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
         usuarioRol: usuarioDb.rol.tipo_rol,
+        vendedorId: producto.vendedor_id,
+        vendedorNombre: producto.vendedor_nombre,
         productoId: detalle.id_producto,
         productoDescripcion: producto.descripcion,
         subcategoriaId: producto.subcategoria_id,
-        direccion: detalle.compra.direccion,
-        metodoPago: metodoPagoDb,
         fecha: detalle.compra.fecha,
         monto: detalle.precio_final,
       });
@@ -88,16 +91,16 @@ async function backfillResenas() {
   const cacheUsuarios = new Map();
   const cacheProductos = new Map();
 
-  async function rolDe(id) {
+  async function usuarioDe(id) {
     if (!cacheUsuarios.has(id)) {
       const u = await prisma.usuarios.findUnique({ where: { id_usuario: id }, include: { rol: true } });
-      cacheUsuarios.set(id, u?.rol?.tipo_rol);
+      cacheUsuarios.set(id, u);
     }
     return cacheUsuarios.get(id);
   }
   async function productoDe(id) {
     if (!cacheProductos.has(id)) {
-      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id').lean();
+      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
       cacheProductos.set(id, p);
     }
     return cacheProductos.get(id);
@@ -107,16 +110,18 @@ async function backfillResenas() {
   let procesados = 0;
   let omitidos = 0;
   for (const resena of resenas) {
-    const rol = await rolDe(resena.usuario_id);
+    const usuarioDb = await usuarioDe(resena.usuario_id);
     const producto = await productoDe(resena.producto_id);
-    if (!rol || !producto) {
+    if (!usuarioDb || !producto) {
       omitidos += 1;
       continue;
     }
     await fraudeSyncService.registrarResena({
       usuarioId: resena.usuario_id,
       usuarioNombre: resena.usuario_nombre,
-      usuarioRol: rol,
+      usuarioRol: usuarioDb.rol.tipo_rol,
+      vendedorId: producto.vendedor_id,
+      vendedorNombre: producto.vendedor_nombre,
       productoId: resena.producto_id,
       productoDescripcion: producto.descripcion,
       subcategoriaId: producto.subcategoria_id,
@@ -130,8 +135,9 @@ async function backfillResenas() {
 
 async function main() {
   await conectarMongo();
+  await limpiarModeloAnterior();
   const compras = await backfillCompras();
-  console.log(`Compras: ${compras.procesados} reenviadas, ${compras.omitidos} omitidas (sin usuario/producto/método de pago resoluble).`);
+  console.log(`Compras: ${compras.procesados} reenviadas, ${compras.omitidos} omitidas (sin usuario/producto resoluble).`);
   const resenas = await backfillResenas();
   console.log(`Reseñas: ${resenas.procesados} reenviadas, ${resenas.omitidos} omitidas.`);
 }

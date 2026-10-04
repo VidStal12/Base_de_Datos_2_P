@@ -32,7 +32,7 @@ La complejidad del proyecto reside en las **decisiones de arquitectura de datos*
 | Historial de cambios del producto | Reconstrucción del estado de un producto en un punto del tiempo | Base documental | Entrega 1 |
 | Carrito de compra | Persistencia por sesión con expiración por inactividad | Almacén clave-valor | Entrega 2 |
 | Oferta con inventario limitado | Venta bajo alta concurrencia sin sobreventa | Almacén clave-valor | Entrega 2 |
-| Detección de fraude en reseñas | Identificación de relaciones anómalas entre cuentas, reseñas y productos | Base de grafos *(según decisión del equipo)* | Entrega 2 |
+| Detección de fraude en reseñas | Identificación de relaciones anómalas entre cuentas, reseñas y productos. *Alcance implementado por el equipo (ver [PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md) §18):* seis señales sobre cuentas, reseñas, compras y vendedores — reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona (mismo nombre o mismo buzón de correo), ráfaga de gasto y autocompra; además, el sistema impide que un vendedor compre sus propios productos | Base de grafos *(según decisión del equipo)* | Entrega 2 |
 | Panel de tendencias de venta | Ventas por intervalos de tiempo y productos en ascenso de demanda | Base columnar *(según decisión del equipo)* | Entrega 2 |
 | Búsqueda de productos | Texto libre con tolerancia a variaciones y relevancia | Motor de búsqueda | Entrega 3 |
 | Proceso de compra distribuido | Checkout con múltiples componentes y estrategia de consistencia definida | Relacional + NoSQL | Entrega 3 |
@@ -274,9 +274,9 @@ Semana 15           →  Entrega Final: Vectorial + seguridad + presentación
 
 - [ ] **Nombres de los integrantes del equipo**
 - [x] **Stack tecnológico elegido** (backend, frontend, ORM/ODM): Node.js (JavaScript) + React · MySQL en contenedor Docker · ORM — ver [ADR-001](ADR-001-stack-y-migraciones.md)
-- [ ] **Decisiones preliminares de arquitectura** (e.g., grafos vs. columnar para Entrega 2)
+- [x] **Decisiones preliminares de arquitectura** (e.g., grafos vs. columnar para Entrega 2): resueltas — el equipo incorporó las dos familias, Cassandra para el panel de ventas ([ADR-004](ADR-004-analitica-ventas-cassandra.md)) y Neo4j para detección de fraude ([PLAN-NEO4J-DETECCION-FRAUDE.md](PLAN-NEO4J-DETECCION-FRAUDE.md)); Elasticsearch para la búsqueda de Entrega 3 ([PLAN-ELASTICSEARCH-BUSQUEDA.md](PLAN-ELASTICSEARCH-BUSQUEDA.md))
 - [ ] **Enlace al repositorio del proyecto**
-- [ ] **Estrategia de consistencia preliminar** para el checkout distribuido
+- [x] **Estrategia de consistencia preliminar** para el checkout distribuido: documentada y probada con dos fallas reales simuladas — [ENTREGA-3-CONSISTENCIA.md](ENTREGA-3-CONSISTENCIA.md)
 - [x] **Modelo de datos relacional inicial** (ERD): confirmado — Página 1 de [ERD.md](ERD.md), con entidad `pago` incorporada
 - [ ] **Cronograma interno del equipo** con milestones por entrega
 

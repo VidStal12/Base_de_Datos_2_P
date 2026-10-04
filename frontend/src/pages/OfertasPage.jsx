@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { productosApi } from '../api/productos';
 import { ofertasApi } from '../api/ofertas';
+import { useAuth } from '../context/AuthContext';
 import { Spinner } from '../components/common/Spinner';
 import { formatCurrency } from '../utils/format';
 
@@ -14,6 +15,7 @@ import { formatCurrency } from '../utils/format';
 // una vez por producto, después de tener la lista base. Catálogo de este
 // tamaño: N+1 llamadas en paralelo no es un problema real.
 export function OfertasPage() {
+  const { usuario } = useAuth();
   const [ofertas, setOfertas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -61,10 +63,15 @@ export function OfertasPage() {
 
       {!cargando && !error && ofertas.length > 0 && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {ofertas.map(({ producto, stock }) => (
+          {ofertas.map(({ producto, stock }) => {
+            // Nadie compra lo que él mismo vende: la oferta propia lleva al
+            // detalle del producto, no a la pantalla de compra (que el servidor
+            // rechazaría con 403).
+            const esPropia = usuario?.id_usuario != null && usuario.id_usuario === producto.vendedor_id;
+            return (
             <Link
               key={producto.id}
-              to={`/ofertas/${producto.id}/comprar`}
+              to={esPropia ? `/productos/${producto.id}` : `/ofertas/${producto.id}/comprar`}
               className="group flex flex-col overflow-hidden rounded-xl border border-accent-300 bg-white transition-shadow hover:shadow-lg"
             >
               <div className="relative aspect-square overflow-hidden bg-neutral-100">
@@ -85,10 +92,14 @@ export function OfertasPage() {
                   <span className="font-bold text-neutral-900">{formatCurrency(stock.precio_oferta)}</span>
                   <span className="text-xs text-neutral-500 line-through">{formatCurrency(producto.inventario?.precio)}</span>
                 </div>
-                <p className="text-xs font-semibold text-accent-700">Quedan {stock.restante}</p>
+                <p className="text-xs font-semibold text-accent-700">
+                  Quedan {stock.restante}
+                  {esPropia && <span className="ml-1 font-medium text-neutral-500">· Tu oferta</span>}
+                </p>
               </div>
             </Link>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

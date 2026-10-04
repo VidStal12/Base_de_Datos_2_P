@@ -125,6 +125,13 @@ model compra {
   id_direccion Int
   total        Decimal  @db.Decimal(10, 2)
   fecha        DateTime @default(now())
+  // Constancia de que una cuenta que puede vender (vendedor/administrador)
+  // aceptó el compromiso de no reventa en el aviso de ESTA compra — es lo que
+  // vuelve exigible la cláusula de los Términos de Servicio si después aparece
+  // una publicación equivalente (ver compromisoService.js y
+  // PLAN-NEO4J-DETECCION-FRAUDE.md §19). NULL = comprador, o un pedido anterior
+  // a la regla: no hay forma de reconstruir un compromiso que nunca se pidió.
+  no_reventa_aceptada_en DateTime?
 
   usuario         usuarios         @relation(fields: [id_usuario], references: [id_usuario])
   direccion       direcciones      @relation(fields: [id_direccion], references: [id])

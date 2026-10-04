@@ -10,6 +10,7 @@ function aDocumento(producto) {
   return {
     producto_id: producto.id,
     descripcion: producto.descripcion,
+    vendedor_id: producto.vendedor_id,
     vendedor_nombre: producto.vendedor_nombre,
     imagen_url: producto.imagen_url || '',
     categoria: producto.subcategoria?.categoria ?? null,

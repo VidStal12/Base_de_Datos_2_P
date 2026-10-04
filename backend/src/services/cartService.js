@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const { conectar } = require('../config/redis');
 const { conectar: conectarMongo } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
+const productoService = require('./productoService');
 
 const TTL_SEGUNDOS = 450;
 const clave = (usuarioId) => `carrito:${usuarioId}`;
@@ -96,6 +97,10 @@ function validar(productoId, cantidad, permiteCero = false) {
 }
 
 async function guardar(usuarioId, productoId, cantidad, sumar) {
+  // Aviso temprano: que el carrito nunca contenga algo que el checkout va a
+  // rechazar. El checkout lo vuelve a verificar (carritos anteriores a la regla,
+  // llamadas directas a la API).
+  await productoService.verificarNoEsPropio(usuarioId, [productoId]);
   await conectarMongo();
   const producto = await Producto.findOne({ producto_id: productoId }).select('estado').lean();
   if (producto?.estado !== 'activo') throw new Error('El producto no está disponible');

@@ -60,4 +60,46 @@ function redisFalso() {
   return redis;
 }
 
-module.exports = { cargar, redisFalso };
+// Doble de productoService para los servicios de compra: `propios` son los ids
+// de producto que pertenecen a quien compra (la regla "nadie compra lo que él
+// mismo vende"). Rechaza igual que el real: 403, antes de cualquier otra cosa.
+function productoFalso({ propios = [], ...resto } = {}) {
+  const ids = new Set(propios);
+  return {
+    ...resto,
+    verificarNoEsPropio: async (usuarioId, productoIds) => {
+      if (productoIds.some((id) => ids.has(id))) {
+        const err = new Error('No podés comprar tus propios productos');
+        err.status = 403;
+        throw err;
+      }
+    },
+  };
+}
+
+// Doble de compromisoService: `vendedores` son las cuentas que pueden vender y
+// por lo tanto tienen que aceptar el compromiso de no reventa. Mismo contrato
+// que el real: 400 con `codigo` si falta la aceptación, y el instante que hay
+// que guardar en el pedido si la hay.
+const ACEPTADO_EN = new Date('2026-10-04T12:00:00Z');
+
+function compromisoFalso({ vendedores = [] } = {}) {
+  const cuentas = new Set(vendedores);
+  const llamadas = [];
+  return {
+    llamadas,
+    exigirCompromiso: async (usuarioId, aceptaNoReventa) => {
+      llamadas.push({ usuarioId, aceptaNoReventa });
+      if (!cuentas.has(usuarioId)) return { requerido: false, aceptadoEn: null };
+      if (aceptaNoReventa !== true) {
+        const err = new Error('Como vendedor tenés que aceptar el compromiso de no reventa');
+        err.status = 400;
+        err.codigo = 'COMPROMISO_NO_REVENTA';
+        throw err;
+      }
+      return { requerido: true, aceptadoEn: ACEPTADO_EN };
+    },
+  };
+}
+
+module.exports = { cargar, redisFalso, productoFalso, compromisoFalso, ACEPTADO_EN };

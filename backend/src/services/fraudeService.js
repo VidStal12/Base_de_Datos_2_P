@@ -1,20 +1,79 @@
+const neo4jDriver = require('neo4j-driver');
 const neo4j = require('../config/neo4j');
 const prisma = require('../config/prisma');
 const { conectar: conectarMongo } = require('../config/mongo');
 const Resena = require('../models/mongo/Resena');
 const Subcategoria = require('../models/mongo/Subcategoria');
+const Categoria = require('../models/mongo/Categoria');
+const { fechaGuatemala } = require('../utils/ventas');
 
-// Señal A (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §3): cuentas distintas que
-// reseñan el mismo conjunto de productos, en una ventana de tiempo corta,
-// con calificaciones altas — coordinación entre reseñas de compras YA
-// verificadas (reseñar sin comprar ya no es posible, ver resenaService.js).
-// Devuelve también calificación promedio y la reseña más reciente del grupo
-// — la ficha del usuario (ver enriquecerUsuarios) y el motivo en prosa
-// necesitan esos datos, no solo el conteo.
+// Seis señales independientes (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §3, §16,
+// §17 y §18), cada una con su propia consulta Cypher:
+//   A. Reseñas coordinadas — cuentas distintas reseñando lo mismo, en bloque.
+//   B. Gasto anómalo — un pedido muy por encima de lo que esa misma cuenta
+//      gastó en el pasado (la lógica con que un banco vigila a sus clientes).
+//   C. Categoría inusual — la primera compra en una categoría ajena a una
+//      cuenta con historial largo.
+//   D. Cuentas de una misma persona — varias cuentas que se llaman igual o usan
+//      el mismo buzón de correo, todas comprando (una persona con varias cuentas).
+//   E. Ráfaga de gasto — mucho gasto o muchos pedidos en un solo día, aunque
+//      cada pedido por separado se vea normal.
+//   F. Autocompra — una cuenta que compra sus propios productos, o los de otra
+//      cuenta de la misma persona (mismo nombre o buzón): mover dinero por el
+//      comercio. (Desde §18 el sistema además IMPIDE esa compra; esta señal
+//      detecta lo que ya existía antes de la regla, o cuentas distintas.)
+// Ninguna es una acusación: son candidatos para revisión humana.
+//
+// Por defecto, la postura ante evidencia real es sospechar hasta que una
+// persona confirme lo contrario: una señal corroborada por otra, independiente,
+// SUBE el nivel a "alta"; nada de lo que se calcula acá puede bajarlo.
+
+const PARAMETROS_POR_DEFECTO = {
+  resenas: { ventanaSegundos: 3600, minimoProductosCompartidos: 3, calificacionMinima: 4 },
+  // 5 compras previas: con menos no hay un patrón propio contra el cual
+  // comparar. montoMinimo evita señalar saltos relativos pero triviales (de
+  // Q40 a Q150 en un catálogo donde un celular cuesta Q2,600).
+  gasto: { minimoOrdenesPrevias: 5, factorPromedio: 3, montoMinimo: 500 },
+  // "Muchas compras y tiempo": 5 compras repartidas en al menos 30 días.
+  categoria: { minimoOrdenesPrevias: 5, minimoDiasHistorial: 30 },
+  relacionadas: { minimoCuentas: 2, minimoCuentasConCompras: 2 },
+  // El "día" es el día calendario de Guatemala (UTC-6), el mismo que usa el
+  // panel de ventas. minimoPedidos no exige un baseline: una cuenta nueva con
+  // 5 pedidos el primer día es justo el patrón de prueba de tarjetas.
+  rafaga: { minimoPedidos: 5, factorPedidos: 2, factorGasto: 3, montoMinimo: 500, minimoDiasPrevios: 3 },
+};
+
+function conDefectos(grupo, parametros) {
+  const validos = Object.fromEntries(Object.entries(parametros || {}).filter(([, valor]) => valor !== undefined));
+  return { ...(PARAMETROS_POR_DEFECTO[grupo] ?? {}), ...validos };
+}
+
+// El driver devuelve los enteros de Cypher (count, size, duraciones) como
+// objetos `Integer` propios y las fechas como `DateTime` — nada de eso es
+// serializable ni renderizable tal cual. Acá los ids y conteos nunca se acercan
+// al límite de precisión de Number, así que convertir es seguro.
+function aPlano(valor) {
+  if (valor === null || valor === undefined) return valor;
+  if (neo4jDriver.isInt(valor)) return valor.toNumber();
+  if (neo4jDriver.isDateTime(valor)) return valor.toString();
+  if (Array.isArray(valor)) return valor.map(aPlano);
+  if (typeof valor === 'object') return Object.fromEntries(Object.entries(valor).map(([k, v]) => [k, aPlano(v)]));
+  return valor;
+}
+
+// ---------- Señal A: reseñas coordinadas ----------
+
+// Cuentas distintas que reseñan el mismo conjunto de productos, en una ventana
+// de tiempo corta, con calificaciones altas — coordinación entre reseñas de
+// compras YA verificadas (reseñar sin comprar ya no es posible, ver
+// resenaService.js). duration.inSeconds y no duration.between(...).seconds:
+// este último solo devuelve el resto de segundos DESPUÉS de los días completos
+// (dos reseñas con 2 días y 5 minutos de diferencia daban 300), así que la
+// "ventana corta" aceptaba reseñas separadas por días.
 const CONSULTA_RESENAS_COORDINADAS = `
 MATCH (u1:Usuario)-[r1:RESEÑÓ]->(p:Producto)<-[r2:RESEÑÓ]-(u2:Usuario)
 WHERE u1.id_usuario < u2.id_usuario
-  AND abs(duration.between(r1.fecha, r2.fecha).seconds) < $ventanaSegundos
+  AND abs(duration.inSeconds(r1.fecha, r2.fecha).seconds) < $ventanaSegundos
   AND r1.calificacion >= $calificacionMinima AND r2.calificacion >= $calificacionMinima
 WITH u1, u2, collect(DISTINCT p.descripcion) AS productos,
      avg(r1.calificacion) AS promedio1, avg(r2.calificacion) AS promedio2,
@@ -28,55 +87,348 @@ RETURN u1.id_usuario AS usuario1Id, u1.nombre AS usuario1Nombre,
 ORDER BY productosCompartidos DESC
 `;
 
-// Señal B (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §4): una compra en una
-// subcategoría que esa cuenta nunca tocó antes, Y ESA MISMA compra usó una
-// dirección que otra cuenta distinta también usó (no "la cuenta tiene AL­
-// GUNA dirección compartida en algún momento" — la dirección compartida
-// tiene que ser la de la compra que se está señalando, si no, dos
-// condiciones ciertas por separado pero de compras distintas no dicen nada).
-// Agrupa TODAS las cuentas que comparten esa dirección en una sola fila —
-// si tres cuentas apuntan al mismo domicilio, eso es una fila más rica, no
-// tres filas repetidas de la misma compra.
-//
-// Dirección compartida SOLA tiene explicaciones inocentes reales —
-// familiares, compañeros de casa, una oficina — y marcar una cuenta genuina
-// como sospechosa tiene un costo real (ver conversación de diseño). Por eso
-// esto también chequea, por cada cuenta que comparte la dirección, si ADEMÁS
-// pagó alguna vez con el mismo método (mismo token de pasarela) que esta
-// compra puntual: dos personas de verdad distintas casi nunca comparten una
-// tarjeta, aunque sí compartan techo — coincidir en las dos cosas a la vez
-// es mucho más difícil de explicar sin fraude que compartir solo el
-// domicilio. mismoMetodoPago viaja por cuenta compartida, no es un
-// sí/no global de la fila — dos cuentas pueden compartir la dirección y solo
-// una de ellas compartir también la tarjeta.
-const CONSULTA_DESVIACION_PATRON = `
-MATCH (u:Usuario)-[c:COMPRÓ]->(p:Producto)
-WHERE NOT EXISTS {
-  MATCH (u)-[c2:COMPRÓ]->(otro:Producto)
-  WHERE otro.subcategoria = p.subcategoria AND otro <> p AND c.fecha > c2.fecha
+async function buscarResenasCoordinadas(parametros) {
+  const registros = await neo4j.leer(CONSULTA_RESENAS_COORDINADAS, conDefectos('resenas', parametros));
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      usuario1: { id: f.usuario1Id, nombre: f.usuario1Nombre },
+      usuario2: { id: f.usuario2Id, nombre: f.usuario2Nombre },
+      productosCompartidos: f.productosCompartidos,
+      productos: f.productos,
+      promedio1: f.promedio1,
+      promedio2: f.promedio2,
+      ultimaActividad: f.ultimaActividad ?? null,
+    };
+  });
 }
-MATCH (u)-[:ENVIÓ_A]->(d:Direccion {direccion_texto: c.direccion_texto})<-[:ENVIÓ_A]-(otraCuenta:Usuario)
-WHERE otraCuenta.id_usuario <> u.id_usuario
-WITH u, p, c, otraCuenta,
-     EXISTS { (otraCuenta)-[:PAGÓ_CON]->(:MetodoPago {token_pasarela: c.metodo_pago_token}) } AS mismoMetodoPago
-WITH u, p, c,
-     collect(DISTINCT {id: otraCuenta.id_usuario, nombre: otraCuenta.nombre, mismoMetodoPago: mismoMetodoPago}) AS otrasCuentas
+
+// ---------- Señal B: gasto anómalo ----------
+
+// El gasto se mide por PEDIDO (suma de sus líneas), no por línea: lo que un
+// banco compara es el movimiento completo contra los movimientos anteriores de
+// ese mismo cliente. Cada pedido se evalúa solo contra los que lo precedieron
+// en el tiempo (`ordenes[0..i]` excluye al propio i), y exige un baseline mínimo
+// — sin historial no hay "lo normal para esta cuenta" contra qué comparar.
+// Se señala si el pedido supera el factor × el promedio previo Y además es el
+// más alto que esa cuenta había hecho (un pedido grande que repite uno anterior
+// no es una ruptura de patrón).
+const CONSULTA_GASTO_ANOMALO = `
+MATCH (u:Usuario)-[c:COMPRÓ]->(p:Producto)
+WITH u, c.compra_id AS compraId, min(c.fecha) AS fecha, sum(c.monto) AS total,
+     collect({productoId: p.producto_id, descripcion: p.descripcion, categoria: c.categoria, monto: c.monto}) AS lineas
+ORDER BY fecha
+WITH u, collect({compraId: compraId, fecha: fecha, total: total, lineas: lineas}) AS ordenes
+UNWIND range(0, size(ordenes) - 1) AS i
+WITH u, ordenes[i] AS orden, [o IN ordenes[0..i] | o.total] AS previos
+WHERE size(previos) >= $minimoOrdenesPrevias
+WITH u, orden, size(previos) AS ordenesPrevias,
+     reduce(s = 0.0, x IN previos | s + x) / size(previos) AS promedio,
+     reduce(m = 0.0, x IN previos | CASE WHEN x > m THEN x ELSE m END) AS maximo
+WHERE orden.total >= $montoMinimo AND orden.total >= $factorPromedio * promedio AND orden.total > maximo
 RETURN u.id_usuario AS usuarioId, u.nombre AS usuarioNombre,
-       p.producto_id AS productoId, p.descripcion AS productoDescripcion, p.subcategoria AS subcategoriaId,
-       c.fecha AS fecha, c.monto AS monto,
-       otrasCuentas
-ORDER BY c.fecha DESC
+       orden.compraId AS compraId, orden.fecha AS fecha, orden.total AS total, orden.lineas AS lineas,
+       ordenesPrevias, promedio, maximo
+ORDER BY fecha DESC
 `;
 
-// El driver de Neo4j devuelve los enteros como objetos `Integer` propios (no
-// números de JS planos, para no perder precisión con valores más grandes de
-// lo que Number puede representar exacto) — renderizarlos directo en JSX
-// tira "Objects are not valid as a React child". Acá los id/conteos nunca se
-// acercan a ese límite, así que convertir con toNumber() es seguro sin
-// perder nada.
-function aNumero(valor) {
-  return typeof valor?.toNumber === 'function' ? valor.toNumber() : valor;
+async function buscarGastoAnomalo(parametros) {
+  const registros = await neo4j.leer(CONSULTA_GASTO_ANOMALO, conDefectos('gasto', parametros));
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      usuario: { id: f.usuarioId, nombre: f.usuarioNombre },
+      compraId: f.compraId,
+      fecha: f.fecha,
+      total: f.total,
+      lineas: f.lineas,
+      ordenesPrevias: f.ordenesPrevias,
+      promedio: f.promedio,
+      maximo: f.maximo,
+      vecesPromedio: f.promedio > 0 ? f.total / f.promedio : null,
+    };
+  });
 }
+
+// ---------- Señal C: categoría inusual ----------
+
+// Una fila por (cuenta, categoría) con la PRIMERA compra de esa cuenta en esa
+// categoría. Se señala si, hasta ese momento, la cuenta ya tenía un historial
+// establecido (muchas compras y tiempo) — comprar en una categoría nueva
+// siendo cliente nuevo es lo normal; hacerlo después de meses comprando siempre
+// lo mismo es lo que se sale del patrón. `habituales` es en qué categorías
+// compraba hasta entonces, para poder explicar contra qué se compara.
+const CONSULTA_CATEGORIA_INUSUAL = `
+MATCH (u:Usuario)-[c:COMPRÓ]->(:Producto)
+WITH u, c.categoria AS categoria, min(c.fecha) AS primeraFecha
+CALL {
+  WITH u, primeraFecha
+  MATCH (u)-[h:COMPRÓ]->(:Producto)
+  WHERE h.fecha < primeraFecha
+  RETURN count(DISTINCT h.compra_id) AS ordenesPrevias, min(h.fecha) AS inicioHistorial
+}
+WITH u, categoria, primeraFecha, ordenesPrevias, inicioHistorial
+WHERE ordenesPrevias >= $minimoOrdenesPrevias
+  AND duration.inDays(inicioHistorial, primeraFecha).days >= $minimoDiasHistorial
+CALL {
+  WITH u, primeraFecha
+  MATCH (u)-[h:COMPRÓ]->(:Producto)
+  WHERE h.fecha < primeraFecha
+  WITH h.categoria AS cat, count(DISTINCT h.compra_id) AS ordenes
+  RETURN collect({categoria: cat, ordenes: ordenes}) AS habituales
+}
+MATCH (u)-[c1:COMPRÓ]->(p1:Producto)
+WHERE c1.categoria = categoria AND c1.fecha = primeraFecha
+WITH u, categoria, primeraFecha, ordenesPrevias, inicioHistorial, habituales, c1.compra_id AS compraId,
+     collect({productoId: p1.producto_id, descripcion: p1.descripcion, subcategoria: c1.subcategoria, monto: c1.monto}) AS productos
+RETURN u.id_usuario AS usuarioId, u.nombre AS usuarioNombre, categoria, primeraFecha AS fecha,
+       compraId, productos, ordenesPrevias,
+       duration.inDays(inicioHistorial, primeraFecha).days AS diasHistorial, habituales
+ORDER BY fecha DESC
+`;
+
+async function buscarCategoriaInusual(parametros) {
+  const registros = await neo4j.leer(CONSULTA_CATEGORIA_INUSUAL, conDefectos('categoria', parametros));
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      usuario: { id: f.usuarioId, nombre: f.usuarioNombre },
+      categoriaId: f.categoria,
+      compraId: f.compraId,
+      fecha: f.fecha,
+      productos: f.productos,
+      ordenesPrevias: f.ordenesPrevias,
+      diasHistorial: f.diasHistorial,
+      habituales: f.habituales.sort((a, b) => b.ordenes - a.ordenes),
+    };
+  });
+}
+
+// ---------- Señal D: cuentas de una misma persona (mismo nombre o mismo buzón) ----------
+
+// Dos formas de que varias cuentas sean la misma persona, ambas un nodo
+// COMPARTIDO en el grafo:
+//   - el mismo NOMBRE completo normalizado (fraudeSyncService.normalizarNombre):
+//     lo más simple y frecuente — registrarse otra vez con el mismo nombre. Pero
+//     dos personas distintas pueden llamarse igual, así que solo es una
+//     coincidencia débil.
+//   - el mismo BUZÓN de correo normalizado (normalizarCorreo): como
+//     `usuarios.correo` es único, dos cuentas nunca registran el correo exacto,
+//     así que compartir buzón (alias "+", puntos de Gmail) es una decisión
+//     deliberada — evidencia fuerte, y la única que atrapa a quien cambia el
+//     nombre pero reusa su bandeja.
+// Se consultan por separado (la etiqueta y la relación no se pueden pasar como
+// parámetro de Cypher; son constantes internas, nunca texto de un usuario) y
+// después se UNEN los grupos que comparten alguna cuenta: "A y B se llaman igual,
+// B y C comparten buzón" es una sola persona con tres cuentas. El mínimo de
+// cuentas que hayan comprado por su lado (`minimoCuentasConCompras`) se exige
+// sobre la persona ya unida, no sobre cada grupo suelto — así A (compró) y C
+// (compró) quedan juntas aunque B, el puente entre ambas, solo venda. Una cuenta
+// duplicada que nunca compró no es una señal; varias COMPRANDO sí. Los
+// vendedores que nunca compraron entran al grafo igual (por VENDE), así que
+// pueden figurar como miembros con 0 compras.
+function consultaGrupos(etiqueta, relacion, campoClave) {
+  return `
+MATCH (g:${etiqueta})<-[:${relacion}]-(u:Usuario)
+WITH g, collect(u) AS cuentas
+WHERE size(cuentas) >= $minimoCuentas
+UNWIND cuentas AS u
+CALL {
+  WITH u
+  OPTIONAL MATCH (u)-[c:COMPRÓ]->(p:Producto)
+  RETURN count(DISTINCT c.compra_id) AS ordenes,
+         coalesce(sum(c.monto), 0.0) AS gastado,
+         min(c.fecha) AS primeraCompra,
+         max(c.fecha) AS ultimaCompra,
+         collect(DISTINCT c.categoria) AS categorias,
+         collect(DISTINCT p.descripcion)[0..5] AS productos
+}
+WITH g, collect({id: u.id_usuario, nombre: u.nombre, rol: u.rol, ordenes: ordenes, gastado: gastado,
+                 primeraCompra: primeraCompra, ultimaCompra: ultimaCompra, categorias: categorias, productos: productos}) AS miembros
+RETURN g.${campoClave} AS clave, miembros
+`;
+}
+
+const CONSULTA_GRUPOS_NOMBRE = consultaGrupos('Nombre', 'SE_LLAMA', 'clave');
+const CONSULTA_GRUPOS_CORREO = consultaGrupos('Correo', 'USA_CORREO', 'hash');
+
+async function buscarGrupos(consulta, tipo, parametros) {
+  const registros = await neo4j.leer(consulta, parametros);
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return { tipo, miembros: f.miembros };
+  });
+}
+
+// Une (union-find sobre el id de cuenta) los grupos que comparten alguna
+// cuenta. Cada resultado conserva TODOS los vínculos que lo forman — qué
+// cuentas comparten nombre y cuáles buzón — para poder explicarlos y dibujarlos.
+// De un vínculo por buzón NO se devuelve el hash: al panel le basta con saber
+// qué cuentas lo comparten (los correos legibles salen de la ficha, desde MySQL).
+function unirGrupos(grupos) {
+  const padre = new Map();
+  const raiz = (id) => {
+    let actual = id;
+    while (padre.get(actual) !== actual) {
+      padre.set(actual, padre.get(padre.get(actual)));
+      actual = padre.get(actual);
+    }
+    return actual;
+  };
+  for (const g of grupos) for (const m of g.miembros) if (!padre.has(m.id)) padre.set(m.id, m.id);
+  for (const g of grupos) {
+    const [primero, ...resto] = g.miembros;
+    for (const m of resto) padre.set(raiz(m.id), raiz(primero.id));
+  }
+
+  const componentes = new Map();
+  for (const g of grupos) {
+    const r = raiz(g.miembros[0].id);
+    if (!componentes.has(r)) componentes.set(r, { vinculos: [], miembros: new Map() });
+    const c = componentes.get(r);
+    const vinculo = { tipo: g.tipo, ids: g.miembros.map((m) => m.id).sort((x, y) => x - y) };
+    if (g.tipo === 'nombre') vinculo.nombre = g.miembros[0].nombre;
+    c.vinculos.push(vinculo);
+    for (const m of g.miembros) c.miembros.set(m.id, m);
+  }
+
+  return [...componentes.values()].map((c) => {
+    const miembros = [...c.miembros.values()].sort((a, b) => b.gastado - a.gastado);
+    const porNombre = c.vinculos.find((v) => v.tipo === 'nombre');
+    return {
+      // Clave estable para la UI (un componente = un conjunto fijo de cuentas).
+      clave: miembros.map((m) => m.id).sort((a, b) => a - b).join('-'),
+      nombre: porNombre ? porNombre.nombre : miembros[0].nombre,
+      vinculos: c.vinculos,
+      miembros,
+      totalOrdenes: miembros.reduce((acc, m) => acc + m.ordenes, 0),
+      totalGastado: miembros.reduce((acc, m) => acc + m.gastado, 0),
+    };
+  });
+}
+
+async function buscarCuentasRelacionadas(parametros) {
+  const p = conDefectos('relacionadas', parametros);
+  const [porNombre, porCorreo] = await Promise.all([
+    buscarGrupos(CONSULTA_GRUPOS_NOMBRE, 'nombre', p),
+    buscarGrupos(CONSULTA_GRUPOS_CORREO, 'correo', p),
+  ]);
+  return unirGrupos([...porNombre, ...porCorreo])
+    .filter((a) => a.miembros.filter((m) => m.ordenes >= 1).length >= p.minimoCuentasConCompras)
+    .sort((a, b) => b.totalGastado - a.totalGastado);
+}
+
+// ---------- Señal E: ráfaga de gasto ----------
+
+// Agrupa los pedidos de cada cuenta por día de Guatemala (UTC-6; Guatemala no
+// tiene horario de verano, así que restar 6 horas fijas alcanza) y compara cada
+// día solo contra los días CON COMPRAS que lo precedieron. Dos reglas, cada una
+// relativa al pasado de ESA cuenta para no señalar a quien siempre compra mucho:
+//   - muchosPedidos: llega a `minimoPedidos` Y al menos `factorPedidos` × el día
+//     con más pedidos que la cuenta había tenido (con historial vacío, basta
+//     con llegar). "Cualquier récord" no alcanza: una cuenta que sube de a poco
+//     su propio récord (5, 12, 13, 18) quedaría señalada en cada escalón.
+//   - muchoGasto: el total del día supera el factor × el gasto diario promedio
+//     previo, el máximo diario previo y un monto mínimo, con al menos
+//     `minimoDiasPrevios` días de historial y al menos 2 pedidos ese día — un
+//     solo pedido grande ya es la señal de gasto anómalo (B), no se cuenta dos
+//     veces como si fueran dos evidencias.
+// Captura lo que el gasto anómalo (por pedido) no ve: varios pedidos que, uno
+// por uno, parecen normales y juntos no lo son. Limitación aceptada: una ráfaga
+// que cruza la medianoche se reparte en dos días.
+const CONSULTA_RAFAGA_GASTO = `
+MATCH (u:Usuario)-[c:COMPRÓ]->(:Producto)
+WITH u, c.compra_id AS compraId, min(c.fecha) AS fecha, sum(c.monto) AS total
+WITH u, toString(date(fecha - duration({hours: 6}))) AS dia,
+     collect({compraId: compraId, fecha: fecha, total: total}) AS ordenes
+WITH u, dia, ordenes, size(ordenes) AS pedidos, reduce(s = 0.0, o IN ordenes | s + o.total) AS gastado
+ORDER BY dia
+WITH u, collect({dia: dia, pedidos: pedidos, gastado: gastado, ordenes: ordenes}) AS dias
+UNWIND range(0, size(dias) - 1) AS i
+WITH u, dias[i] AS actual, dias[0..i] AS previos
+WITH u, actual, size(previos) AS diasPrevios,
+     CASE WHEN size(previos) > 0 THEN reduce(s = 0.0, d IN previos | s + d.gastado) / size(previos) ELSE 0.0 END AS promedioGasto,
+     reduce(m = 0.0, d IN previos | CASE WHEN d.gastado > m THEN d.gastado ELSE m END) AS maxGasto,
+     reduce(m = 0, d IN previos | CASE WHEN d.pedidos > m THEN d.pedidos ELSE m END) AS maxPedidos
+WITH u, actual, diasPrevios, promedioGasto, maxGasto, maxPedidos,
+     (actual.pedidos >= $minimoPedidos AND actual.pedidos >= $factorPedidos * maxPedidos) AS muchosPedidos,
+     (diasPrevios >= $minimoDiasPrevios AND actual.pedidos >= 2 AND actual.gastado >= $montoMinimo
+        AND actual.gastado >= $factorGasto * promedioGasto AND actual.gastado > maxGasto) AS muchoGasto
+WHERE muchosPedidos OR muchoGasto
+RETURN u.id_usuario AS usuarioId, u.nombre AS usuarioNombre, actual.dia AS dia,
+       actual.pedidos AS pedidos, actual.gastado AS gastado, actual.ordenes AS ordenes,
+       diasPrevios, promedioGasto, maxGasto, maxPedidos, muchosPedidos, muchoGasto
+ORDER BY dia DESC
+`;
+
+async function buscarRafagaGasto(parametros) {
+  const registros = await neo4j.leer(CONSULTA_RAFAGA_GASTO, conDefectos('rafaga', parametros));
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      usuario: { id: f.usuarioId, nombre: f.usuarioNombre },
+      dia: f.dia,
+      pedidos: f.pedidos,
+      gastado: f.gastado,
+      ordenes: f.ordenes.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)),
+      diasPrevios: f.diasPrevios,
+      promedioGasto: f.promedioGasto,
+      maxGasto: f.maxGasto,
+      maxPedidos: f.maxPedidos,
+      reglas: { muchosPedidos: f.muchosPedidos, muchoGasto: f.muchoGasto },
+    };
+  });
+}
+
+// ---------- Señal F: autocompra ----------
+
+// (comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor) donde comprador y
+// vendedor son la MISMA cuenta, o dos cuentas de una misma persona (mismo
+// nombre completo o mismo buzón de correo) — el patrón de multi-salto más
+// directo de mover dinero por el comercio: el "comprador" paga, el "vendedor"
+// cobra (menos la comisión de la plataforma) y el dinero queda con apariencia de
+// venta legítima. Una fila por par. `mismoNombre`/`mismoBuzon` se calculan solo
+// para cuentas DISTINTAS: sobre la misma cuenta la comparación daría falso (un
+// patrón no reutiliza la misma relación dos veces) y de todos modos no aporta.
+const CONSULTA_AUTOCOMPRA = `
+MATCH (comprador:Usuario)-[c:COMPRÓ]->(p:Producto)<-[:VENDE]-(vendedor:Usuario)
+WITH comprador, vendedor, c, p,
+     comprador.id_usuario = vendedor.id_usuario AS mismaCuenta,
+     comprador.id_usuario <> vendedor.id_usuario
+       AND EXISTS { (comprador)-[:SE_LLAMA]->(:Nombre)<-[:SE_LLAMA]-(vendedor) } AS mismoNombre,
+     comprador.id_usuario <> vendedor.id_usuario
+       AND EXISTS { (comprador)-[:USA_CORREO]->(:Correo)<-[:USA_CORREO]-(vendedor) } AS mismoBuzon
+WHERE mismaCuenta OR mismoNombre OR mismoBuzon
+WITH comprador, vendedor, mismaCuenta, mismoNombre, mismoBuzon,
+     count(DISTINCT c.compra_id) AS pedidos, sum(c.monto) AS total,
+     min(c.fecha) AS primera, max(c.fecha) AS ultima,
+     collect(DISTINCT p.descripcion)[0..5] AS productos
+RETURN comprador.id_usuario AS compradorId, comprador.nombre AS compradorNombre,
+       vendedor.id_usuario AS vendedorId, vendedor.nombre AS vendedorNombre,
+       mismaCuenta, mismoNombre, mismoBuzon, pedidos, total, primera, ultima, productos
+ORDER BY total DESC
+`;
+
+async function buscarAutocompra() {
+  const registros = await neo4j.leer(CONSULTA_AUTOCOMPRA, {});
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      comprador: { id: f.compradorId, nombre: f.compradorNombre },
+      vendedor: { id: f.vendedorId, nombre: f.vendedorNombre },
+      mismaCuenta: f.mismaCuenta,
+      mismoNombre: f.mismoNombre,
+      mismoBuzon: f.mismoBuzon,
+      pedidos: f.pedidos,
+      total: f.total,
+      primera: f.primera,
+      ultima: f.ultima,
+      productos: f.productos,
+    };
+  });
+}
+
+// ---------- Enriquecimiento (MySQL + Mongo, en vivo) ----------
 
 const UN_DIA_MS = 86400000;
 // Bajo este umbral, la antigüedad de la cuenta se menciona en el motivo como
@@ -86,19 +438,19 @@ const DIAS_CUENTA_RECIENTE = 30;
 
 // Ficha por usuario — todo lo que un administrador necesita para decidir si
 // vale la pena investigar, no solo el nombre. Neo4j guarda a propósito solo
-// {id_usuario, nombre, rol} (ver PLAN-NEO4J-DETECCION-FRAUDE.md §5, "no se
-// copian datos personales al grafo") — el resto se resuelve acá, en vivo,
-// contra MySQL (fuente de identidad) y Mongo (reseñas), nunca cacheado en
-// el grafo. Se pide en lote (un solo roundtrip por base para todos los ids
-// de una respuesta), no una consulta por fila.
+// {id_usuario, nombre, rol} (ver fraudeSyncService.js) — el resto se resuelve
+// acá, en vivo, contra MySQL (fuente de identidad) y Mongo (reseñas), nunca
+// cacheado en el grafo. Se pide en lote (un solo roundtrip por base para todos
+// los ids de una respuesta), no una consulta por fila.
+//
+// `nacimientos` (fecha de nacimiento por cuenta) se devuelve APARTE de las
+// fichas a propósito: sirve para corroborar que dos cuentas con el mismo
+// nombre son la misma persona, pero la fecha en sí nunca viaja al navegador.
 async function enriquecerUsuarios(ids) {
-  if (ids.length === 0) return new Map();
+  if (ids.length === 0) return { fichas: new Map(), nacimientos: new Map() };
 
   const [usuarios, comprasPorUsuario] = await Promise.all([
-    prisma.usuarios.findMany({
-      where: { id_usuario: { in: ids } },
-      include: { rol: true, direcciones: true, metodos_pago: true },
-    }),
+    prisma.usuarios.findMany({ where: { id_usuario: { in: ids } }, include: { rol: true } }),
     prisma.compra.groupBy({
       by: ['id_usuario'],
       where: { id_usuario: { in: ids } },
@@ -118,9 +470,13 @@ async function enriquecerUsuarios(ids) {
   const ahora = Date.now();
 
   const fichas = new Map();
+  const nacimientos = new Map();
   for (const u of usuarios) {
     const compras = comprasMap.get(u.id_usuario);
     const diasDesdeCreacion = Math.max(0, Math.floor((ahora - u.creado_en.getTime()) / UN_DIA_MS));
+    const totalCompras = compras?._count.id ?? 0;
+    const totalGastado = Number(compras?._sum.total ?? 0);
+    nacimientos.set(u.id_usuario, u.fecha_nacimiento.toISOString().slice(0, 10));
     fichas.set(u.id_usuario, {
       id: u.id_usuario,
       nombre: `${u.nombres} ${u.apellidos}`,
@@ -128,72 +484,48 @@ async function enriquecerUsuarios(ids) {
       rol: u.rol.tipo_rol,
       // Cuentas de antes de agregar este campo (2026-09-18) muestran la
       // fecha de esa migración, no su alta real — no se guardó antes. Solo
-      // es confiable para cuentas creadas de acá en adelante; el consumidor
-      // (panel/motivo) no distingue un caso del otro porque no hay forma de
-      // saber, desde el dato mismo, a cuál pertenece.
+      // es confiable para cuentas creadas de acá en adelante.
       creadoEn: u.creado_en.toISOString(),
       diasDesdeCreacion,
       cuentaReciente: diasDesdeCreacion <= DIAS_CUENTA_RECIENTE,
-      direcciones: deduplicarPorContenido(u.direcciones.map((d) => ({ pais: d.pais, direccion: d.direccion, codigoPostal: d.codigo_postal }))),
-      // Nunca token_pasarela ni el número completo — mismo criterio que
-      // CheckoutPage.jsx, solo lo que ya es seguro mostrar.
-      metodosPago: deduplicarPorContenido(u.metodos_pago.map((m) => ({ marca: m.marca, ultimos4: m.ultimos_4_digitos }))),
-      totalCompras: compras?._count.id ?? 0,
-      totalGastado: Number(compras?._sum.total ?? 0),
+      totalCompras,
+      totalGastado,
+      promedioCompra: totalCompras > 0 ? totalGastado / totalCompras : 0,
       totalResenas: resenasMap.get(u.id_usuario) ?? 0,
     });
   }
-  return fichas;
+  return { fichas, nacimientos };
 }
 
-async function resolverSubcategorias(ids) {
-  if (ids.length === 0) return new Map();
+async function resolverCatalogo(subcategoriaIds, categoriaIds) {
+  if (subcategoriaIds.length === 0 && categoriaIds.length === 0) return { subcategorias: new Map(), categorias: new Map() };
   await conectarMongo();
-  const subs = await Subcategoria.find({ _id: { $in: ids } }).select('subcategoria').lean();
-  return new Map(subs.map((s) => [String(s._id), s.subcategoria]));
+  const [subs, cats] = await Promise.all([
+    Subcategoria.find({ _id: { $in: subcategoriaIds } }).select('subcategoria').lean(),
+    Categoria.find({ _id: { $in: categoriaIds } }).select('categoria').lean(),
+  ]);
+  return {
+    subcategorias: new Map(subs.map((s) => [String(s._id), s.subcategoria])),
+    categorias: new Map(cats.map((c) => [String(c._id), c.categoria])),
+  };
 }
 
-// Direcciones/métodos de pago con el mismo contenido (p. ej. un checkout
-// viejo que guardó una fila nueva en vez de reusar la existente) se ven
-// como el mismo dato repetido en la ficha — dedupe por contenido, no por id,
-// mismo criterio que ya usa la clave de Direccion/MetodoPago en Neo4j.
-function deduplicarPorContenido(items) {
-  const vistos = new Set();
-  return items.filter((item) => {
-    const clave = JSON.stringify(item);
-    if (vistos.has(clave)) return false;
-    vistos.add(clave);
-    return true;
-  });
-}
+// ---------- Texto del motivo ----------
 
-// El mismo (usuario, producto, cuentas con las que comparte dirección) puede
-// aparecer repetido si esa persona compró el mismo producto más de una vez
-// (por ejemplo, este mismo dataset de prueba, recreado varias veces durante
-// el desarrollo) — no es una segunda señal, es la misma observación otra
-// vez. Se colapsa a la ocurrencia más reciente; SÍ quedan como filas
-// separadas los casos donde el conjunto de cuentas compartidas cambia entre
-// compras, porque eso sí es información nueva. CONSULTA_DESVIACION_PATRON ya
-// ordena por fecha descendente, así que la primera vez que se ve una clave
-// ya es la más reciente — la comparación de fecha es solo un resguardo, no
-// depende de ese orden.
-function colapsarRepetidos(filas) {
-  const porClave = new Map();
-  for (const f of filas) {
-    const clave = `${f.usuario.id}|${f.producto.id}|${f.otrasCuentas.map((o) => o.id).sort((a, b) => a - b).join(',')}`;
-    const actual = porClave.get(clave);
-    if (!actual || (f.fecha && (!actual.fecha || f.fecha > actual.fecha))) {
-      porClave.set(clave, f);
-    }
-  }
-  return [...porClave.values()];
-}
+const formatoQ = (n) => `Q${Number(n).toLocaleString('es-GT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const formatoFecha = (f) => (f ? new Date(f).toLocaleDateString('es-GT', { dateStyle: 'medium' }) : 'fecha desconocida');
+const formatoDia = (dia) => new Date(`${dia}T12:00:00Z`).toLocaleDateString('es-GT', { dateStyle: 'medium', timeZone: 'UTC' });
 
 function diasATexto(dias) {
-  if (dias <= 1) return 'menos de un día';
+  if (dias < 1) return 'menos de un día';
   if (dias === 1) return '1 día';
   return `${dias} días`;
 }
+
+const pluralCompras = (n) => `${n} compra${n === 1 ? '' : 's'}`;
+const pluralPedidos = (n) => `${n} pedido${n === 1 ? '' : 's'}`;
+// vecesPromedio es null si el promedio previo fue 0 (no se puede dividir).
+const textoVeces = (g) => (g.vecesPromedio === null ? 'muchas veces' : `${g.vecesPromedio.toFixed(1)} veces`);
 
 // El motivo se arma acá, junto a la consulta que produce los datos que cita
 // — si la lógica de la consulta cambia, el texto que la explica cambia en el
@@ -213,178 +545,424 @@ function construirMotivoResenas({ usuario1, usuario2, productosCompartidos, prod
   return frases.join(' ');
 }
 
-// ¿Esta misma pareja de cuentas coordina TAMBIÉN reseñas (Señal A)? Dos
-// señales independientes — cada una con su propio criterio, su propia
-// consulta, su propia posibilidad de ser casualidad por separado —
-// apuntando al mismo par es mucho más difícil de explicar como casualidad
-// que cualquiera de las dos sola. No importa el orden de u1/u2 en la fila de
-// reseñas coordinadas, se chequean los dos sentidos.
-function apareceEnSenalA(resenas, idA, idB) {
-  return resenas.some(
-    (r) => (r.usuario1.id === idA && r.usuario2.id === idB) || (r.usuario1.id === idB && r.usuario2.id === idA)
-  );
+// Cierre común de las señales con nivel de confianza: nunca baja el nivel, solo
+// lo explica.
+function cierreConfianza(corroboradores) {
+  if (corroboradores.length > 0) {
+    return `${corroboradores.map((c) => `Además, ${c.detalle}.`).join(' ')} Otra señal independiente corrobora este hallazgo, así que se marca con confianza alta: la postura por defecto ante esta evidencia es tratarla como sospechosa hasta que una revisión humana confirme lo contrario, no al revés.`;
+  }
+  return 'Ninguna otra señal corrobora este hallazgo, así que por sí solo es más débil: conviene revisar el historial completo de la cuenta antes de actuar, no tratarlo como confirmado.';
 }
 
-// Dirección compartida sola tiene explicaciones inocentes reales — familia,
-// compañeros de casa, una oficina, incluso varias cuentas de una misma
-// familia cargando la tarjeta de uno de los padres — así que el texto no
-// trata todas las filas igual. Pero la corrección va en un solo sentido:
-// un corroborador independiente (mismo método de pago, o esta misma pareja
-// también coordinando en la Señal A) SUBE el nivel a "alta" — la postura
-// por defecto ante evidencia real es tratarla como sospechosa hasta que una
-// persona revisando confirme lo contrario, no que el sistema se
-// autoconvenza de que es inocente. El contexto de actividad propia de cada
-// cuenta (más abajo) es al revés a propósito: se muestra siempre, pero
-// nunca baja el nivel — es información para que decida una persona, no una
-// segunda oportunidad para que el algoritmo se baje solo.
-function construirMotivoDesviacion({ usuario, producto, subcategoriaNombre, monto, fecha, otrasCuentas }, ficha) {
-  const nombresOtros = otrasCuentas.map((o) => o.nombre).join(', ');
-  const plural = otrasCuentas.length !== 1;
-  const fechaTexto = fecha ? new Date(fecha).toLocaleDateString('es-GT', { dateStyle: 'medium' }) : 'fecha desconocida';
-  const corroboradas = otrasCuentas.filter((o) => o.mismoMetodoPago || o.tambienEnSenalA);
+function notaCuentaReciente(ficha, nombre) {
+  return ficha?.cuentaReciente ? [`La cuenta de ${nombre} se creó hace ${diasATexto(ficha.diasDesdeCreacion)}, lo que refuerza la señal.`] : [];
+}
 
+function construirMotivoGasto(g, ficha, corroboradores) {
+  const productos = g.lineas.map((l) => `"${l.descripcion}"`).join(', ');
+  return [
+    `${g.usuario.nombre} hizo una compra de ${formatoQ(g.total)} el ${formatoFecha(g.fecha)} (${productos}): ${textoVeces(g)} su compra promedio de ${formatoQ(g.promedio)} y por encima de la más alta que había hecho hasta entonces (${formatoQ(g.maximo)}), medido sobre sus ${g.ordenesPrevias} compras anteriores.`,
+    'Es la lógica con que un banco vigila el gasto de un cliente: cada movimiento se compara contra el patrón histórico de esa misma persona, no contra un promedio general. Un salto así puede ser legítimo (un regalo, una compra planeada), pero también es lo que deja una cuenta tomada por un tercero o usada para mover dinero en montos que no corresponden a su historial.',
+    cierreConfianza(corroboradores),
+    ...notaCuentaReciente(ficha, g.usuario.nombre),
+  ].join(' ');
+}
+
+function construirMotivoCategoria(c, ficha, corroboradores) {
+  const productos = c.productos.map((p) => `"${p.descripcion}"`).join(', ');
+  const habituales = c.habituales.map((h) => `${h.categoria} (${pluralCompras(h.ordenes)}, ${h.porcentaje}%)`).join(', ');
+  return [
+    `${c.usuario.nombre} compró ${productos} el ${formatoFecha(c.fecha)} — su primera compra registrada en la categoría "${c.categoria}". Hasta ese momento acumulaba ${pluralCompras(c.ordenesPrevias)} a lo largo de ${diasATexto(c.diasHistorial)}, siempre en: ${habituales}.`,
+    'Comprar por primera vez fuera del patrón habitual no es sospechoso por sí solo — los intereses cambian —, pero después de un historial largo y consistente es lo que suele dejar una cuenta tomada por un tercero: se compra lo que le interesa a quien la tomó (a menudo algo fácil de revender), no lo que acostumbraba comprar su titular.',
+    cierreConfianza(corroboradores),
+    ...notaCuentaReciente(ficha, c.usuario.nombre),
+  ].join(' ');
+}
+
+function construirMotivoRafaga(r, ficha, corroboradores, p) {
+  const frases = [`${r.usuario.nombre} hizo ${pluralPedidos(r.pedidos)} el ${formatoDia(r.dia)} por un total de ${formatoQ(r.gastado)}.`];
+  if (r.reglas.muchosPedidos) {
+    frases.push(
+      r.maxPedidos === 0
+        ? `Es un volumen de pedidos que una cuenta sin historial previo no suele tener en un solo día (el mínimo para señalarlo es ${p.minimoPedidos}).`
+        : `Es al menos ${p.factorPedidos} veces su día más activo hasta entonces (${pluralPedidos(r.maxPedidos)}) y no menos de ${p.minimoPedidos} pedidos.`
+    );
+  }
+  if (r.reglas.muchoGasto) {
+    const veces = r.promedioGasto > 0 ? `${(r.gastado / r.promedioGasto).toFixed(1)} veces` : 'muchas veces';
+    frases.push(`Gastó ${veces} lo que gasta en un día de compras normal (${formatoQ(r.promedioGasto)}, sobre ${r.diasPrevios} días con compras) y más que en cualquier día anterior (${formatoQ(r.maxGasto)}).`);
+  }
+  frases.push(
+    'Es la misma idea que el gasto anómalo, pero medida sobre el día completo: una cuenta puede repartir un gasto fuera de lo normal en varios pedidos que, mirados uno por uno, parecen normales — la forma típica de probar un medio de pago o de fraccionar un movimiento para que ninguna pieza llame la atención. Puede ser legítimo (un día de ofertas, una compra grande en partes), pero también es lo que deja una cuenta tomada o un movimiento de dinero fragmentado.',
+    cierreConfianza(corroboradores),
+    ...notaCuentaReciente(ficha, r.usuario.nombre)
+  );
+  return frases.join(' ');
+}
+
+// Cómo se relacionan comprador y vendedor, en el mismo orden de fuerza que usa
+// el nivel de confianza: buzón (deliberado) > nombre (puede ser un homónimo).
+function textoVinculoAutocompra(f) {
+  const partes = [];
+  if (f.mismoBuzon) partes.push('usa el mismo buzón de correo');
+  if (f.mismoNombre) partes.push('se llama exactamente igual');
+  return partes.join(' y ');
+}
+
+function construirMotivoAutocompra(f, corroboradores) {
+  const productos = f.productos.map((p) => `"${p}"`).join(', ');
+  const base = f.mismaCuenta
+    ? `${f.comprador.nombre} (cuenta #${f.comprador.id}) compró ${pluralPedidos(f.pedidos)} por ${formatoQ(f.total)} de sus propios productos (${productos}).`
+    : `${f.comprador.nombre} (cuenta #${f.comprador.id}) compró ${pluralPedidos(f.pedidos)} por ${formatoQ(f.total)} de productos que vende ${f.vendedor.nombre} (cuenta #${f.vendedor.id}), otra cuenta que ${textoVinculoAutocompra(f)} (${productos}).`;
+  const explicacion = f.mismaCuenta
+    ? 'Comprarse los propios productos infla las ventas y la apariencia de popularidad del vendedor sin que haya un cliente real, y puede mover dinero por el comercio. También puede ser algo inocente — probar el propio flujo de compra —, por eso solo sube a confianza alta si otra señal lo corrobora.'
+    : `Que una misma persona le compre a su otra cuenta es la forma más directa de mover dinero por el comercio: el "comprador" paga, el "vendedor" cobra (menos la comisión de la plataforma) y el dinero queda con apariencia de una venta legítima — lavado de dinero —, además de inflar las ventas y la reputación del vendedor. ${
+        f.mismoBuzon
+          ? 'Compartir buzón de correo no es algo que ocurra por casualidad: como el correo exacto no puede repetirse entre cuentas, es una decisión deliberada de quien maneja las dos.'
+          : 'Que un comprador le compre a un vendedor que se llama exactamente igual no es algo que ocurra por casualidad.'
+      } Por eso se marca con confianza alta.`;
+  return [base, explicacion, ...(corroboradores.length ? [cierreConfianza(corroboradores)] : [])].join(' ');
+}
+
+// Una frase por vínculo que forma el grupo — "las cuentas #3, #7 se llaman
+// exactamente igual", "las cuentas #7, #9 usan el mismo buzón de correo".
+// Los correos legibles salen de la ficha (MySQL), no del grafo.
+function describirVinculo(v, miembrosPorId) {
+  const cuentas = `las cuentas ${v.ids.map((id) => `#${id}`).join(', ')}`;
+  if (v.tipo === 'nombre') return `${cuentas} se llaman exactamente igual ("${v.nombre}", después de normalizar mayúsculas, tildes y espacios)`;
+  const correos = v.ids.map((id) => miembrosPorId.get(id)?.ficha?.correo).filter(Boolean);
+  return `${cuentas} usan el mismo buzón de correo${correos.length ? ` (${correos.join(', ')})` : ''}`;
+}
+
+function construirMotivoRelacionadas(a, corroboradores) {
+  const miembrosPorId = new Map(a.miembros.map((m) => [m.id, m]));
+  const porBuzon = a.vinculos.some((v) => v.tipo === 'correo');
+  const porNombre = a.vinculos.some((v) => v.tipo === 'nombre');
+  const resumenMiembros = a.miembros
+    .filter((m) => m.ordenes > 0)
+    .map((m) => `cuenta #${m.id} (${pluralCompras(m.ordenes)}, ${formatoQ(m.gastado)}${m.categorias.length ? `, en ${m.categorias.join(' y ')}` : ''})`)
+    .join('; ');
+  const vinculos = a.vinculos.map((v) => describirVinculo(v, miembrosPorId)).join('; ');
   const frases = [
-    `${usuario.nombre} compró "${producto.descripcion}" el ${fechaTexto} por Q${monto.toFixed(2)} — su primera compra registrada en "${subcategoriaNombre}" — y la envió a una dirección que también usa${plural ? 'n' : ''} ${plural ? `${otrasCuentas.length} cuentas distintas` : 'otra cuenta'}: ${nombresOtros}.`,
+    `${a.miembros.length} cuentas parecen ser de una misma persona: ${vinculos}. Cada una compró por su lado: ${resumenMiembros}. Entre todas movieron ${formatoQ(a.totalGastado)} en ${pluralCompras(a.totalOrdenes)}.`,
+    'Una persona con varias cuentas compradoras puede estar fraccionando el dinero entre identidades para que ninguna llame la atención, o pasándolo por compras para darle apariencia de comercio legítimo y cobrar una comisión por el movimiento (lavado de dinero).',
   ];
-
-  if (corroboradas.length > 0) {
-    for (const o of corroboradas) {
-      const razones = [];
-      if (o.mismoMetodoPago) razones.push('también pagó alguna vez con el mismo método de pago que esta compra');
-      if (o.tambienEnSenalA) razones.push('esta misma pareja de cuentas también aparece coordinando reseñas en la Señal A');
-      frases.push(`Además, ${o.nombre} ${razones.join(', y ')}.`);
-    }
+  if (porBuzon) {
     frases.push(
-      'Un corroborador independiente además de la dirección — mismo método de pago o coordinación en otra señal — es mucho más difícil de explicar como familia o compañeros de casa que compartir solo el domicilio. Se marca como confianza alta: la postura por defecto ante esta evidencia es tratarla como sospechosa hasta que una revisión humana confirme lo contrario, no al revés.'
+      `Compartir buzón de correo es evidencia fuerte por sí sola: como el correo exacto no puede repetirse entre cuentas, usar la misma bandeja (con un alias "+", o los puntos de Gmail) es una decisión deliberada, y es lo único que delata a quien cambia el nombre en cada cuenta${porNombre ? ' — acá, además, el nombre coincide' : ''}. Por eso se marca con confianza alta.`
     );
+    if (corroboradores.length > 0) frases.push(`${corroboradores.map((c) => `Además, ${c.detalle}.`).join(' ')}`);
   } else {
-    frases.push(
-      'Comprar por primera vez en una categoría nueva no es sospechoso por sí solo; compartir la dirección de envío de esa compra puntual con otra cuenta sí lo es — pero también tiene explicaciones inocentes reales (familiares, compañeros de casa, una oficina). Ninguna de las cuentas comparte además el método de pago ni aparece coordinando reseñas, así que esta señal por sí sola es más débil — conviene revisar el historial completo antes de actuar, no tratarla como confirmada.'
-    );
-  }
-
-  // Contexto neutral, no usado para subir NI bajar el nivel (ese ya quedó
-  // decidido arriba, antes de esto) — actividad propia sustancial y
-  // repartida en el tiempo es más compatible con una cuenta real (persona o
-  // familia) que con una armada solo para esto, pero decidir eso es trabajo
-  // de quien revisa, no de este texto.
-  for (const o of otrasCuentas) {
-    if (!o.ficha) continue;
-    frases.push(
-      `Contexto sobre ${o.nombre}: ${o.ficha.totalCompras} compra(s) y ${o.ficha.totalResenas} reseña(s) propias, cuenta activa desde hace ${diasATexto(o.ficha.diasDesdeCreacion)}.`
-    );
-  }
-
-  if (ficha?.cuentaReciente) {
-    frases.push(`La cuenta de ${usuario.nombre} se creó hace ${diasATexto(ficha.diasDesdeCreacion)}, lo que refuerza la señal.`);
+    frases.push('Pero dos personas distintas también pueden llamarse igual, así que el nombre por sí solo es una coincidencia a verificar, no una prueba.', cierreConfianza(corroboradores));
   }
   return frases.join(' ');
 }
 
-// Parámetros ajustables con default (ver PLAN-NEO4J-DETECCION-FRAUDE.md §10)
-// — nunca interpolados en la consulta.
-async function resenasCoordinadas({ ventanaSegundos = 3600, minimoProductosCompartidos = 3, calificacionMinima = 4 } = {}) {
-  const registros = await neo4j.leer(CONSULTA_RESENAS_COORDINADAS, { ventanaSegundos, minimoProductosCompartidos, calificacionMinima });
-  const filas = registros.map((r) => ({
-    usuario1: { id: aNumero(r.get('usuario1Id')), nombre: r.get('usuario1Nombre') },
-    usuario2: { id: aNumero(r.get('usuario2Id')), nombre: r.get('usuario2Nombre') },
-    productosCompartidos: aNumero(r.get('productosCompartidos')),
-    productos: r.get('productos'),
-    promedio1: aNumero(r.get('promedio1')),
-    promedio2: aNumero(r.get('promedio2')),
-    ultimaActividad: r.get('ultimaActividad')?.toString?.() ?? null,
-  }));
+// ---------- Orquestación ----------
 
-  const ids = [...new Set(filas.flatMap((f) => [f.usuario1.id, f.usuario2.id]))];
-  const fichas = await enriquecerUsuarios(ids);
-
-  return filas.map((f) => {
-    const ficha1 = fichas.get(f.usuario1.id) ?? null;
-    const ficha2 = fichas.get(f.usuario2.id) ?? null;
-    return {
-      usuario1: { ...f.usuario1, ficha: ficha1 },
-      usuario2: { ...f.usuario2, ficha: ficha2 },
-      productosCompartidos: f.productosCompartidos,
-      productos: f.productos,
-      promedio1: f.promedio1,
-      promedio2: f.promedio2,
-      ultimaActividad: f.ultimaActividad,
-      motivo: construirMotivoResenas(f, { ventanaSegundos, calificacionMinima }, ficha1, ficha2),
-    };
-  });
-}
-
-async function desviacionPatron() {
-  // resenas: para el cruce con la Señal A (ver apareceEnSenalA). Best-effort
-  // y con su propio catch — que esto falle no debe tirar abajo la Señal B
-  // entera, solo perder la posibilidad de escalar por ese corroborador
-  // (mismo criterio de "una señal no tira abajo a la otra" que ya rige
-  // consultarFraude()). Se pide con sus propios parámetros por defecto,
-  // igual que haría un llamado aparte a resenasCoordinadas() — duplica una
-  // consulta barata en vez de acoplar las dos funciones entre sí.
-  const [registros, resenas] = await Promise.all([
-    neo4j.leer(CONSULTA_DESVIACION_PATRON, {}),
-    resenasCoordinadas().catch(() => []),
-  ]);
-  const filas = colapsarRepetidos(
-    registros.map((r) => ({
-      usuario: { id: aNumero(r.get('usuarioId')), nombre: r.get('usuarioNombre') },
-      producto: { id: aNumero(r.get('productoId')), descripcion: r.get('productoDescripcion') },
-      subcategoriaId: r.get('subcategoriaId'),
-      fecha: r.get('fecha')?.toString?.() ?? null,
-      monto: aNumero(r.get('monto')),
-      otrasCuentas: r.get('otrasCuentas').map((o) => ({ id: aNumero(o.id), nombre: o.nombre, mismoMetodoPago: o.mismoMetodoPago })),
-    }))
-  );
-
-  const idsUsuarios = [...new Set(filas.flatMap((f) => [f.usuario.id, ...f.otrasCuentas.map((o) => o.id)]))];
-  const idsSubcategorias = [...new Set(filas.map((f) => f.subcategoriaId))];
-  const [fichas, subcategorias] = await Promise.all([enriquecerUsuarios(idsUsuarios), resolverSubcategorias(idsSubcategorias)]);
-
-  return filas.map((f) => {
-    const ficha = fichas.get(f.usuario.id) ?? null;
-    const subcategoriaNombre = subcategorias.get(f.subcategoriaId) ?? 'categoría desconocida';
-    const otrasCuentasEnriquecidas = f.otrasCuentas.map((o) => ({
-      ...o,
-      ficha: fichas.get(o.id) ?? null,
-      tambienEnSenalA: apareceEnSenalA(resenas, f.usuario.id, o.id),
-    }));
-    // 'alta' si CUALQUIER corroborador independiente aparece — mismo método
-    // de pago O esta misma pareja coordinando reseñas en la Señal A. Nunca
-    // al revés: nada de lo demás que se calcula acá puede bajar el nivel,
-    // solo subirlo — "alta" es la postura por defecto ante evidencia real,
-    // que sea inocente lo decide una persona revisando, no el algoritmo
-    // bajándose solo (ver construirMotivoDesviacion).
-    const nivelConfianza = otrasCuentasEnriquecidas.some((o) => o.mismoMetodoPago || o.tambienEnSenalA) ? 'alta' : 'posible';
-    return {
-      usuario: { ...f.usuario, ficha },
-      producto: f.producto,
-      subcategoria: subcategoriaNombre,
-      fecha: f.fecha,
-      monto: f.monto,
-      nivelConfianza,
-      otrasCuentas: otrasCuentasEnriquecidas,
-      motivo: construirMotivoDesviacion({ ...f, subcategoriaNombre, otrasCuentas: otrasCuentasEnriquecidas }, ficha),
-    };
-  });
-}
-
-// Corre las dos señales juntas para el panel — cada una es independiente,
-// que una falle no debe tirar abajo a la otra (mismo criterio que
-// ventasService.js con `advertencias` en vez de un error total).
+// Corre las seis señales juntas para el panel — cada una es independiente, que
+// una falle no debe tirar abajo a las otras (mismo criterio que
+// ventasService.js con `advertencias` en vez de un error total). Después las
+// cruza: una señal corroborada por otra, independiente, sube a confianza alta.
+//
+// Qué corrobora a qué:
+//   - B, C y E (conducta de una cuenta): la misma COMPRA en B y C, o el mismo
+//     DÍA en E con B/C (dos eventos sueltos de meses distintos no se refuerzan
+//     entre sí); y cualquier momento de la cuenta si además está en D, F o A —
+//     señales de IDENTIDAD o coordinación, no de un evento puntual.
+//   - D (cuentas de una misma persona): un vínculo por BUZÓN compartido ya es
+//     evidencia fuerte por sí solo — como `usuarios.correo` es único, usar la
+//     misma bandeja es una decisión deliberada — y parte en "alta". Un grupo que
+//     solo comparte NOMBRE parte en "posible" (dos personas distintas pueden
+//     llamarse igual) y sube con: misma fecha de nacimiento, una autocompra entre
+//     sus miembros, reseñas coordinadas entre ellos, o conducta anómala (B/C/E)
+//     en cualquiera de ellos. Compartir buzón además del nombre es lo que lo
+//     convierte en "alta": el correo corrobora al nombre.
+//   - F entre cuentas distintas de una misma persona (nombre o buzón) ya parte en
+//     "alta"; F de una cuenta consigo misma parte en "posible" (puede ser el
+//     vendedor probando su flujo).
 async function consultarFraude(parametros = {}) {
   const advertencias = [];
-  const [resenas, desviaciones] = await Promise.all([
-    resenasCoordinadas(parametros).catch((err) => {
-      advertencias.push(`No se pudo evaluar reseñas coordinadas: ${err.message}`);
+  const aislar = (nombre, promesa) =>
+    promesa.catch((err) => {
+      advertencias.push(`No se pudo evaluar ${nombre}: ${err.message}`);
       return [];
+    });
+
+  const [resenas, relacionadas, gastos, categorias, rafagas, autocompras] = await Promise.all([
+    aislar('reseñas coordinadas', buscarResenasCoordinadas(parametros.resenas)),
+    aislar('cuentas de una misma persona', buscarCuentasRelacionadas(parametros.relacionadas)),
+    aislar('gasto anómalo', buscarGastoAnomalo(parametros.gasto)),
+    aislar('categoría inusual', buscarCategoriaInusual(parametros.categoria)),
+    aislar('ráfagas de gasto', buscarRafagaGasto(parametros.rafaga)),
+    aislar('autocompras', buscarAutocompra()),
+  ]);
+
+  const idsUsuarios = [
+    ...new Set([
+      ...resenas.flatMap((r) => [r.usuario1.id, r.usuario2.id]),
+      ...relacionadas.flatMap((a) => a.miembros.map((m) => m.id)),
+      ...gastos.map((g) => g.usuario.id),
+      ...categorias.map((c) => c.usuario.id),
+      ...rafagas.map((r) => r.usuario.id),
+      ...autocompras.flatMap((f) => [f.comprador.id, f.vendedor.id]),
+    ]),
+  ];
+  const idsCategorias = [
+    ...new Set([
+      ...categorias.flatMap((c) => [c.categoriaId, ...c.habituales.map((h) => h.categoria)]),
+      ...gastos.flatMap((g) => g.lineas.map((l) => l.categoria)),
+      ...relacionadas.flatMap((a) => a.miembros.flatMap((m) => m.categorias)),
+    ]),
+  ].filter(Boolean);
+  const idsSubcategorias = [...new Set(categorias.flatMap((c) => c.productos.map((p) => p.subcategoria)))].filter(Boolean);
+
+  // Enriquecimiento independiente: que falle el catálogo no debe dejar sin
+  // fichas a los hallazgos, ni al revés — los hallazgos se muestran igual.
+  const [{ fichas, nacimientos }, catalogo] = await Promise.all([
+    enriquecerUsuarios(idsUsuarios).catch((err) => {
+      advertencias.push(`No se pudieron cargar las fichas de usuario: ${err.message}`);
+      return { fichas: new Map(), nacimientos: new Map() };
     }),
-    desviacionPatron().catch((err) => {
-      advertencias.push(`No se pudo evaluar desviación de patrón: ${err.message}`);
-      return [];
+    resolverCatalogo(idsSubcategorias, idsCategorias).catch((err) => {
+      advertencias.push(`No se pudieron cargar los nombres del catálogo: ${err.message}`);
+      return { subcategorias: new Map(), categorias: new Map() };
     }),
   ]);
-  return { resenasCoordinadas: resenas, desviacionPatron: desviaciones, advertencias };
+  const nombreCategoria = (id) => catalogo.categorias.get(id) ?? 'categoría desconocida';
+
+  // ----- Índices de cruce entre señales -----
+  const agruparPor = (lista, claves) => {
+    const mapa = new Map();
+    for (const item of lista) {
+      for (const clave of new Set(claves(item))) {
+        if (!mapa.has(clave)) mapa.set(clave, []);
+        mapa.get(clave).push(item);
+      }
+    }
+    return mapa;
+  };
+  const resenasDe = agruparPor(resenas, (r) => [r.usuario1.id, r.usuario2.id]);
+  const relacionadaDe = agruparPor(relacionadas, (a) => a.miembros.map((m) => m.id));
+  const autocompraDe = agruparPor(autocompras, (f) => [f.comprador.id, f.vendedor.id]);
+  const gastoDe = agruparPor(gastos, (g) => [g.usuario.id]);
+  const categoriaDe = agruparPor(categorias, (c) => [c.usuario.id]);
+  const rafagaDe = agruparPor(rafagas, (r) => [r.usuario.id]);
+  const gastoPorCompra = agruparPor(gastos, (g) => [g.compraId]);
+  const categoriaPorCompra = agruparPor(categorias, (c) => [c.compraId]);
+  const gastoPorDia = agruparPor(gastos, (g) => [`${g.usuario.id}|${fechaGuatemala(g.fecha)}`]);
+  const categoriaPorDia = agruparPor(categorias, (c) => [`${c.usuario.id}|${fechaGuatemala(c.fecha)}`]);
+  const rafagaPorDia = agruparPor(rafagas, (r) => [`${r.usuario.id}|${r.dia}`]);
+
+  const nombresPorId = new Map();
+  for (const lista of [gastos, categorias, rafagas]) for (const x of lista) nombresPorId.set(x.usuario.id, x.usuario.nombre);
+  for (const a of relacionadas) for (const m of a.miembros) nombresPorId.set(m.id, m.nombre);
+  for (const f of autocompras) {
+    nombresPorId.set(f.comprador.id, f.comprador.nombre);
+    nombresPorId.set(f.vendedor.id, f.vendedor.nombre);
+  }
+  for (const r of resenas) {
+    nombresPorId.set(r.usuario1.id, r.usuario1.nombre);
+    nombresPorId.set(r.usuario2.id, r.usuario2.nombre);
+  }
+  const quien = (id) => fichas.get(id)?.nombre ?? nombresPorId.get(id) ?? `la cuenta #${id}`;
+
+  // Señales de IDENTIDAD/coordinación de una cuenta (D, F, A) — corroboran
+  // cualquier momento de la cuenta.
+  function corroboradoresDeIdentidad(usuarioId, { sinAutocompra = false } = {}) {
+    const lista = [];
+    // Una entrada por vínculo de ESTA cuenta (nombre y/o buzón): el que sea
+    // por buzón pesa más, y el motivo lo dice.
+    const persona = relacionadaDe.get(usuarioId)?.[0];
+    for (const v of persona?.vinculos.filter((x) => x.ids.includes(usuarioId)) ?? []) {
+      const otras = v.ids.filter((id) => id !== usuarioId).map((id) => `#${id}`);
+      const cuentas = `${otras.length === 1 ? 'la cuenta' : 'las cuentas'} ${otras.join(', ')}`;
+      lista.push({
+        tipo: 'cuentasRelacionadas',
+        detalle: `esta cuenta ${v.tipo === 'correo' ? 'usa el mismo buzón de correo que' : 'comparte nombre completo con'} ${cuentas} (ver "Cuentas de una misma persona")`,
+      });
+    }
+    if (!sinAutocompra && autocompraDe.has(usuarioId)) {
+      lista.push({ tipo: 'autocompra', detalle: 'esta cuenta aparece en una autocompra, comprando o vendiendo (ver "Autocompra")' });
+    }
+    if (resenasDe.has(usuarioId)) {
+      lista.push({ tipo: 'resenasCoordinadas', detalle: 'esta cuenta también aparece coordinando reseñas (ver "Reseñas coordinadas")' });
+    }
+    return lista;
+  }
+
+  // Conducta anómala de una cuenta (B, C, E), en cualquier momento — la usan
+  // las señales de identidad (D, F) como corroborador.
+  function corroboradoresDeConducta(usuarioId) {
+    const lista = [];
+    const nombre = quien(usuarioId);
+    if (gastoDe.has(usuarioId)) lista.push({ tipo: 'gastoAnomalo', usuarioId, detalle: `${nombre} tiene una compra con gasto anómalo respecto a su propio historial` });
+    if (rafagaDe.has(usuarioId)) lista.push({ tipo: 'rafagaGasto', usuarioId, detalle: `${nombre} tuvo una ráfaga de gasto en un solo día` });
+    if (categoriaDe.has(usuarioId)) lista.push({ tipo: 'categoriaInusual', usuarioId, detalle: `${nombre} compró por primera vez en una categoría ajena a su historial` });
+    return lista;
+  }
+
+  const conNivel = (corroboradores, base = 'posible') => ({
+    corroboradores,
+    nivelConfianza: corroboradores.length > 0 || base === 'alta' ? 'alta' : 'posible',
+  });
+
+  // ----- A: reseñas coordinadas -----
+  const hallazgosResenas = resenas.map((r) => {
+    const ficha1 = fichas.get(r.usuario1.id) ?? null;
+    const ficha2 = fichas.get(r.usuario2.id) ?? null;
+    return {
+      ...r,
+      usuario1: { ...r.usuario1, ficha: ficha1 },
+      usuario2: { ...r.usuario2, ficha: ficha2 },
+      motivo: construirMotivoResenas(r, conDefectos('resenas', parametros.resenas), ficha1, ficha2),
+    };
+  });
+
+  // ----- D: cuentas de una misma persona -----
+  const hallazgosRelacionadas = relacionadas.map((a) => {
+    // Todas las cuentas del grupo, no solo las que compraron: un vendedor que
+    // nunca compró sigue siendo parte de la misma persona.
+    const idsMiembros = a.miembros.map((m) => m.id);
+    const porBuzon = a.vinculos.some((v) => v.tipo === 'correo');
+    const corroboradores = [];
+    const porNacimiento = new Map();
+    for (const id of idsMiembros) {
+      const nac = nacimientos.get(id);
+      if (nac) porNacimiento.set(nac, [...(porNacimiento.get(nac) ?? []), id]);
+    }
+    const mismaFechaNacimiento = [...porNacimiento.values()].some((cuentas) => cuentas.length >= 2);
+    if (mismaFechaNacimiento) corroboradores.push({ tipo: 'fechaNacimiento', detalle: 'al menos dos de estas cuentas declararon la misma fecha de nacimiento' });
+    for (const f of autocompras) {
+      if (!f.mismaCuenta && idsMiembros.includes(f.comprador.id) && idsMiembros.includes(f.vendedor.id)) {
+        corroboradores.push({ tipo: 'autocompra', detalle: `la cuenta #${f.comprador.id} le compró a la cuenta #${f.vendedor.id} (${formatoQ(f.total)} en ${pluralPedidos(f.pedidos)}), ver "Autocompra"` });
+      }
+    }
+    for (const r of resenas) {
+      if (idsMiembros.includes(r.usuario1.id) && idsMiembros.includes(r.usuario2.id)) {
+        corroboradores.push({ tipo: 'resenasCoordinadas', detalle: `las cuentas #${r.usuario1.id} y #${r.usuario2.id} también coordinan reseñas, ver "Reseñas coordinadas"` });
+      }
+    }
+    for (const id of idsMiembros) corroboradores.push(...corroboradoresDeConducta(id));
+    const miembros = a.miembros.map((m) => ({ ...m, categorias: m.categorias.map(nombreCategoria), ficha: fichas.get(m.id) ?? null }));
+    const hallazgo = { ...a, miembros, mismaFechaNacimiento };
+    // El buzón compartido ya es evidencia por sí solo (parte en "alta"); el
+    // nombre solo, no.
+    return { ...hallazgo, ...conNivel(corroboradores, porBuzon ? 'alta' : 'posible'), motivo: construirMotivoRelacionadas(hallazgo, corroboradores) };
+  });
+
+  // ----- F: autocompra -----
+  const hallazgosAutocompra = autocompras.map((f) => {
+    const corroboradores = [];
+    if (f.mismaCuenta) {
+      corroboradores.push(...corroboradoresDeIdentidad(f.comprador.id, { sinAutocompra: true }), ...corroboradoresDeConducta(f.comprador.id));
+    } else {
+      const nacComprador = nacimientos.get(f.comprador.id);
+      if (nacComprador && nacComprador === nacimientos.get(f.vendedor.id)) {
+        corroboradores.push({ tipo: 'fechaNacimiento', detalle: 'las dos cuentas declararon la misma fecha de nacimiento' });
+      }
+    }
+    return {
+      ...f,
+      comprador: { ...f.comprador, ficha: fichas.get(f.comprador.id) ?? null },
+      vendedor: { ...f.vendedor, ficha: fichas.get(f.vendedor.id) ?? null },
+      ...conNivel(corroboradores, f.mismaCuenta ? 'posible' : 'alta'),
+      motivo: construirMotivoAutocompra(f, corroboradores),
+    };
+  });
+
+  // ----- E: ráfaga de gasto -----
+  const hallazgosRafaga = rafagas.map((r) => {
+    const ficha = fichas.get(r.usuario.id) ?? null;
+    const corroboradores = [];
+    for (const g of gastoPorDia.get(`${r.usuario.id}|${r.dia}`) ?? []) {
+      corroboradores.push({ tipo: 'gastoAnomalo', detalle: `ese mismo día el pedido #${g.compraId} (${formatoQ(g.total)}) fue un gasto anómalo respecto a su propio historial` });
+    }
+    for (const c of categoriaPorDia.get(`${r.usuario.id}|${r.dia}`) ?? []) {
+      corroboradores.push({ tipo: 'categoriaInusual', detalle: `ese mismo día compró por primera vez en una categoría ajena a su historial (pedido #${c.compraId})` });
+    }
+    corroboradores.push(...corroboradoresDeIdentidad(r.usuario.id));
+    return {
+      ...r,
+      usuario: { ...r.usuario, ficha },
+      ...conNivel(corroboradores),
+      motivo: construirMotivoRafaga(r, ficha, corroboradores, conDefectos('rafaga', parametros.rafaga)),
+    };
+  });
+
+  // ----- B: gasto anómalo -----
+  const hallazgosGasto = gastos.map((g) => {
+    const ficha = fichas.get(g.usuario.id) ?? null;
+    const corroboradores = [];
+    for (const c of categoriaPorCompra.get(g.compraId) ?? []) {
+      corroboradores.push({ tipo: 'categoriaInusual', detalle: `en esa misma compra ${g.usuario.nombre} compró por primera vez en la categoría "${nombreCategoria(c.categoriaId)}", ajena a su historial` });
+    }
+    const dia = fechaGuatemala(g.fecha);
+    for (const r of rafagaPorDia.get(`${g.usuario.id}|${dia}`) ?? []) {
+      corroboradores.push({ tipo: 'rafagaGasto', detalle: `ese mismo día (${formatoDia(r.dia)}) hizo ${pluralPedidos(r.pedidos)} por ${formatoQ(r.gastado)} — una ráfaga de gasto` });
+    }
+    corroboradores.push(...corroboradoresDeIdentidad(g.usuario.id));
+    const lineas = g.lineas.map((l) => ({ ...l, categoria: nombreCategoria(l.categoria) }));
+    return {
+      ...g,
+      usuario: { ...g.usuario, ficha },
+      lineas,
+      ...conNivel(corroboradores),
+      motivo: construirMotivoGasto({ ...g, lineas }, ficha, corroboradores),
+    };
+  });
+
+  // ----- C: categoría inusual -----
+  const hallazgosCategoria = categorias.map((c) => {
+    const ficha = fichas.get(c.usuario.id) ?? null;
+    const corroboradores = [];
+    for (const g of gastoPorCompra.get(c.compraId) ?? []) {
+      corroboradores.push({ tipo: 'gastoAnomalo', detalle: `esa misma compra (${formatoQ(g.total)}) es ${textoVeces(g)} su compra promedio de ${formatoQ(g.promedio)}, un gasto anómalo respecto a su propio historial` });
+    }
+    const dia = fechaGuatemala(c.fecha);
+    for (const r of rafagaPorDia.get(`${c.usuario.id}|${dia}`) ?? []) {
+      corroboradores.push({ tipo: 'rafagaGasto', detalle: `ese mismo día (${formatoDia(r.dia)}) hizo ${pluralPedidos(r.pedidos)} por ${formatoQ(r.gastado)} — una ráfaga de gasto` });
+    }
+    corroboradores.push(...corroboradoresDeIdentidad(c.usuario.id));
+    const hallazgo = {
+      usuario: { ...c.usuario, ficha },
+      categoria: nombreCategoria(c.categoriaId),
+      compraId: c.compraId,
+      fecha: c.fecha,
+      productos: c.productos.map((p) => ({ ...p, subcategoria: catalogo.subcategorias.get(p.subcategoria) ?? 'subcategoría desconocida' })),
+      ordenesPrevias: c.ordenesPrevias,
+      diasHistorial: c.diasHistorial,
+      habituales: c.habituales.map((h) => ({
+        categoria: nombreCategoria(h.categoria),
+        ordenes: h.ordenes,
+        porcentaje: Math.min(100, Math.round((100 * h.ordenes) / c.ordenesPrevias)),
+      })),
+    };
+    return { ...hallazgo, ...conNivel(corroboradores), motivo: construirMotivoCategoria(hallazgo, ficha, corroboradores) };
+  });
+
+  // Confianza alta primero; dentro de cada nivel se conserva el orden de la
+  // consulta (por monto o por fecha). El sort de JS es estable.
+  const porSeveridad = (a, b) => (b.nivelConfianza === 'alta') - (a.nivelConfianza === 'alta');
+
+  return {
+    cuentasRelacionadas: hallazgosRelacionadas.sort(porSeveridad),
+    autocompra: hallazgosAutocompra.sort(porSeveridad),
+    resenasCoordinadas: hallazgosResenas,
+    rafagaGasto: hallazgosRafaga.sort(porSeveridad),
+    gastoAnomalo: hallazgosGasto.sort(porSeveridad),
+    categoriaInusual: hallazgosCategoria.sort(porSeveridad),
+    advertencias,
+  };
 }
 
-module.exports = { resenasCoordinadas, desviacionPatron, consultarFraude };
+module.exports = {
+  consultarFraude,
+  buscarResenasCoordinadas,
+  buscarCuentasRelacionadas,
+  buscarGastoAnomalo,
+  buscarCategoriaInusual,
+  buscarRafagaGasto,
+  buscarAutocompra,
+  PARAMETROS_POR_DEFECTO,
+};

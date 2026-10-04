@@ -51,6 +51,9 @@ export function ProductDetailPage() {
   const stock = producto.inventario?.cantidad ?? 0;
   const sinStock = stock <= 0;
   const subcategoria = producto.subcategoria;
+  // Nadie compra lo que él mismo vende (el servidor lo rechaza con 403, ver
+  // productoService.verificarNoEsPropio): no se ofrece ninguna forma de comprarlo.
+  const esPropio = usuario?.id_usuario != null && usuario.id_usuario === producto.vendedor_id;
 
   async function handleAgregar() {
     const ok = await agregar(producto, cantidad);
@@ -111,9 +114,11 @@ export function ProductDetailPage() {
                 <span className="text-sm text-neutral-500 line-through">{formatCurrency(producto.inventario?.precio)}</span>
               </div>
               <p className="mt-1 text-sm font-semibold text-accent-700">Quedan {ofertaStock.restante} al precio de oferta</p>
-              <Button variant="accent" onClick={() => navigate(`/ofertas/${producto.id}/comprar`)} className="mt-3 w-full py-2.5">
-                Comprar oferta ahora
-              </Button>
+              {!esPropio && (
+                <Button variant="accent" onClick={() => navigate(`/ofertas/${producto.id}/comprar`)} className="mt-3 w-full py-2.5">
+                  Comprar oferta ahora
+                </Button>
+              )}
             </div>
           )}
 
@@ -128,7 +133,7 @@ export function ProductDetailPage() {
             </dl>
           )}
 
-          {!sinStock && (
+          {!sinStock && !esPropio && (
             <div className="flex items-center gap-3">
               <label htmlFor="cantidad" className="text-sm font-medium text-neutral-700">
                 Cantidad
@@ -148,22 +153,28 @@ export function ProductDetailPage() {
             </div>
           )}
 
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button variant="accent" onClick={handleAgregar} disabled={sinStock} className="flex-1 py-3">
-              {sinStock ? 'Sin stock' : agregado ? 'Agregado ✓' : 'Agregar al carrito'}
-            </Button>
-            <Button
-              variant="primary"
-              disabled={sinStock}
-              onClick={async () => {
-                const ok = await agregar(producto, cantidad);
-                if (ok) navigate('/carrito');
-              }}
-              className="flex-1 py-3"
-            >
-              Comprar ahora
-            </Button>
-          </div>
+          {esPropio ? (
+            <p role="note" className="rounded-lg bg-neutral-100 p-4 text-sm text-neutral-600">
+              Este producto es tuyo: no podés comprarlo. Para cambiar su precio, stock u oferta, editalo desde tu panel.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button variant="accent" onClick={handleAgregar} disabled={sinStock} className="flex-1 py-3">
+                {sinStock ? 'Sin stock' : agregado ? 'Agregado ✓' : 'Agregar al carrito'}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={sinStock}
+                onClick={async () => {
+                  const ok = await agregar(producto, cantidad);
+                  if (ok) navigate('/carrito');
+                }}
+                className="flex-1 py-3"
+              >
+                Comprar ahora
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 

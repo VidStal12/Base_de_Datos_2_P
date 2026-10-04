@@ -2,6 +2,7 @@ const { conectar } = require('../config/redis');
 const { conectar: conectarMongo } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const productoService = require('./productoService');
+const compromisoService = require('./compromisoService');
 const checkoutService = require('./checkoutService');
 const ofertaDatos = require('./ofertaDatosService');
 
@@ -168,7 +169,15 @@ async function refundStock(productoId, cantidad) {
 // Deliberadamente separado de checkoutService.checkout() (el carrito normal)
 // — no pasa por Redis del carrito ni por CartContext, siempre es este único
 // producto. Ver ENTREGA-2-PLAN.md §4.2, "no reemplaza el checkout normal".
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado } = {}) {
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa } = {}) {
+  // Antes de tocar Redis: si el dueño intenta comprar su propia oferta, que se
+  // rechace sin gastar (ni tener que devolver) una unidad del pool.
+  // checkoutOferta() lo vuelve a verificar como autoridad final.
+  await productoService.verificarNoEsPropio(usuarioId, [productoId]);
+  // Igual con el compromiso de no reventa: una cuenta que puede vender y no lo
+  // aceptó se rechaza antes de gastar cupo (checkoutOferta lo vuelve a exigir
+  // y es quien deja la constancia en el pedido).
+  await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
   const admision = await intentarComprar(productoId, cantidad, precioEsperado);
 
   try {
@@ -179,6 +188,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
       precioUnitario: admision.producto.oferta_flash.precio_oferta,
       direccionId,
       metodoPagoId,
+      aceptaNoReventa,
     });
   } catch (err) {
     try {

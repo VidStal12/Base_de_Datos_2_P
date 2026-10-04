@@ -75,7 +75,7 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   }
 
   await conectar();
-  const producto = await Producto.findOne({ producto_id: productoId }).select('_id descripcion subcategoria_id');
+  const producto = await Producto.findOne({ producto_id: productoId }).select('_id descripcion subcategoria_id vendedor_id vendedor_nombre');
   if (!producto) throw new Error('Producto no encontrado');
 
   const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuario.id_usuario } });
@@ -126,6 +126,8 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
       usuarioId: usuario.id_usuario,
       usuarioNombre: `${usuarioDb.nombres} ${usuarioDb.apellidos}`,
       usuarioRol: usuario.rol,
+      vendedorId: producto.vendedor_id,
+      vendedorNombre: producto.vendedor_nombre,
       productoId,
       productoDescripcion: producto.descripcion,
       subcategoriaId: producto.subcategoria_id,

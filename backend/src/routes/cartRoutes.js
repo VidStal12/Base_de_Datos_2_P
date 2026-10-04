@@ -24,7 +24,7 @@ router.post('/items', async (req, res) => {
     const carrito = await cartService.agregar(req.usuario.id_usuario, Number(productoId), Number(cantidad));
     res.status(201).json(carrito);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -37,7 +37,7 @@ router.patch('/items/:productoId', async (req, res) => {
     );
     res.json(carrito);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 

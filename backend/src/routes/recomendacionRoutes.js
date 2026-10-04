@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const tendenciaService = require('../services/tendenciaService');
+const { cuerpoDeError } = require('../utils/http');
 
 const router = express.Router();
 
@@ -17,15 +18,16 @@ router.get('/', requireAuth, async (req, res) => {
 
 router.post('/:productoId/comprar', requireAuth, async (req, res) => {
   try {
-    const { cantidad, direccionId, metodoPagoId } = req.body;
+    const { cantidad, direccionId, metodoPagoId, aceptaNoReventa } = req.body;
     const resultado = await tendenciaService.comprar(req.usuario.id_usuario, Number(req.params.productoId), {
       cantidad,
       direccionId,
       metodoPagoId,
+      aceptaNoReventa: aceptaNoReventa === true,
     });
     res.status(201).json(resultado);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json(cuerpoDeError(err));
   }
 });
 

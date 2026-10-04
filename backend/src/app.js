@@ -52,7 +52,7 @@ app.get('/', (req, res) => {
       'GET /api/compras (requiere token — pedidos del usuario autenticado)',
       'GET /api/compras/:id (requiere token)',
       'GET /api/admin/ventas (solo administrador — desde/hasta inclusivos, intervalo dia/semana/mes, productoId, minUnidades)',
-      'GET /api/admin/fraude (solo administrador — reseñas coordinadas y desviación de patrón de compra, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md)',
+      'GET /api/admin/fraude (solo administrador — reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona (mismo nombre o mismo buzón de correo), ráfaga de gasto y autocompra, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §17-§18)',
       'POST /api/admin/recalcular-ventas (requiere token, rol administrador — recalcula total_vendido desde compra_detalle, sobrescribe la caché)',
       'POST /api/admin/recalcular-inventario (requiere token, rol administrador — recalcula precio/cantidad desde inventario (MySQL), sobrescribe la caché)',
       'GET /api/ofertas/:productoId/stock (datos propios de la oferta en Redis y remanente en vivo)',

@@ -1,12 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cargar } = require('./redisHelpers');
+const { cargar, productoFalso, compromisoFalso } = require('./redisHelpers');
 
-function escenario() {
+// `propios`: ids de producto que pertenecen a quien compra; `vendedores`: las
+// cuentas que pueden vender y por lo tanto deben aceptar el compromiso de no
+// reventa (ver compromisoService.js).
+function escenario({ propios = [], vendedores = [] } = {}) {
   const producto = { id: 1, estado: 'activo', descripcion: 'Flash', oferta_flash: { activo: true, precio_oferta: 8, stock_oferta: 2, vigente_desde: new Date(Date.now() - 1000), vigente_hasta: new Date(Date.now() + 60000) } };
   let restante = 2;
   let reintegros = 0;
   let falla = false;
+  const pedidos = [];
   const servicio = cargar('../src/services/ofertaFlashService.js', {
     '../config/redis': { conectar: () => ({
       get: async () => String(restante),
@@ -14,11 +18,12 @@ function escenario() {
       reintegrarOferta: async (k, cantidad) => { reintegros += cantidad; restante += cantidad; },
     }) },
     '../config/mongo': {}, '../models/mongo/Producto': {},
-    './productoService': { obtener: () => assert.fail('el camino caliente no lee el catálogo') },
+    './productoService': productoFalso({ propios, obtener: () => assert.fail('el camino caliente no lee el catálogo') }),
+    './compromisoService': compromisoFalso({ vendedores }),
     './ofertaDatosService': { obtener: async () => producto },
-    './checkoutService': { checkoutOferta: async ({ precioUnitario }) => { if (falla) throw new Error('MySQL rechazó'); return { precioUnitario }; } },
+    './checkoutService': { checkoutOferta: async (datos) => { pedidos.push(datos); if (falla) throw new Error('MySQL rechazó'); return { precioUnitario: datos.precioUnitario }; } },
   });
-  return { servicio, producto, restante: () => restante, reintegros: () => reintegros, fallar: () => { falla = true; } };
+  return { servicio, producto, pedidos, restante: () => restante, reintegros: () => reintegros, fallar: () => { falla = true; } };
 }
 
 test('consulta y admisión flash usan los datos propios de la oferta y su precio del servidor', async () => {
@@ -53,4 +58,28 @@ test('fallo SQL devuelve el cupo admitido', async () => {
   await assert.rejects(e.servicio.comprar(7, 1, { cantidad: 1 }), /MySQL/);
   assert.equal(e.restante(), 2);
   assert.equal(e.reintegros(), 1);
+});
+
+test('el dueño de la oferta no gasta cupo comprándola: se rechaza antes de Redis', async () => {
+  const e = escenario({ propios: [1] });
+  await assert.rejects(e.servicio.comprar(7, 1, { cantidad: 1 }), (err) => err.status === 403);
+  assert.equal(e.restante(), 2);
+  assert.equal(e.reintegros(), 0, 'no hubo nada que devolver: nunca se gastó');
+  assert.equal(e.pedidos.length, 0);
+});
+
+test('un vendedor sin el compromiso de no reventa no gasta cupo; con él, la compra lo lleva al pedido', async () => {
+  const e = escenario({ vendedores: [7] });
+  await assert.rejects(e.servicio.comprar(7, 1, { cantidad: 1 }), (err) => err.status === 400 && err.codigo === 'COMPROMISO_NO_REVENTA');
+  assert.equal(e.restante(), 2);
+  assert.equal(e.pedidos.length, 0);
+
+  await e.servicio.comprar(7, 1, { cantidad: 1, aceptaNoReventa: true });
+  assert.equal(e.restante(), 1);
+  assert.equal(e.pedidos[0].aceptaNoReventa, true, 'checkoutOferta recibe la aceptación para dejar la constancia');
+
+  // Un comprador no tiene que aceptar nada.
+  const otro = escenario({ vendedores: [7] });
+  await otro.servicio.comprar(8, 1, { cantidad: 1 });
+  assert.equal(otro.restante(), 1);
 });

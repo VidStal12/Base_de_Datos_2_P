@@ -247,6 +247,10 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         findOne: () => ({ select: () => ({ lean: async () => null }) }),
       },
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
+      // checkoutService también valida "nadie compra lo suyo" y el compromiso de
+      // no reventa; estas pruebas son de la captura del outbox, no de esas reglas.
+      './productoService': { verificarNoEsPropio: async () => {} },
+      './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       './fraudeSyncService': { registrarCompra: async () => {} },
       './ventasOutboxService': capturaPausada,
     });
@@ -284,6 +288,8 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         updateOne: async () => { cacheEscrita = true; },
       },
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; } },
+      './productoService': { verificarNoEsPropio: async () => {} },
+      './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       './ventasOutboxService': { encolarCompra: async (mismoTx) => {
         assert.equal(mismoTx, tx);
         assert.equal(pagoCreado, true);

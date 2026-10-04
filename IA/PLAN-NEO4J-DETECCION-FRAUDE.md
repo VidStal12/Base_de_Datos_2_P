@@ -2,6 +2,8 @@
 
 > Creado: 2026-09-08. **Actualizado 2026-09-08: implementado y verificado.** Infraestructura, sincronización en vivo (checkout + reseñas), backfill histórico, las dos consultas y el panel en `/admin/fraude` — todo corriendo contra datos reales, no solo diseñado. Detalle de la verificación al final de este documento (§12) y en ESTADO-PROYECTO.md.
 
+> **Rediseños 2026-10-04 (ver §16, §17 y §18):** el grafo ya no guarda dirección de envío ni método de pago. Hoy son **seis señales** — reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona, ráfaga de gasto y autocompra — y la identidad entre cuentas son **dos vínculos**: el **nombre completo normalizado** y el **buzón de correo normalizado** (hash). Además, desde §18 el sistema **impide** que un vendedor compre sus propios productos. Las secciones §4 (Señal B por dirección), §5/§6 (nodos `Direccion`/`MetodoPago`, `ENVIÓ_A`/`PAGÓ_CON`), §12, §14 y §15 describen el modelo original, §16 la etapa intermedia solo por correo y §17 la etapa solo por nombre; se conservan como historial de cómo se llegó acá — **el modelo vigente es el de §18.**
+
 ## 1. Por qué esto y por qué ahora
 
 El PRD exige implementar **al menos una** familia entre grafos y columnar (§5, Entrega 2) — eso ya está satisfecho con Cassandra ([ADR-004](ADR-004-analitica-ventas-cassandra.md)). Neo4j acá no es para cumplir un mínimo del PRD: es una decisión del equipo de sumar la segunda familia, con un propósito propio (detección de fraude) distinto del panel de ventas.
@@ -187,3 +189,244 @@ Dos mejoras a `fraudeSyncService.js`/`fraudeService.js`, motivadas por preguntas
 - **Cruce con la Señal A** (`apareceEnSenalA()`, `fraudeService.js`): si la MISMA pareja de cuentas de una fila de Señal B también aparece coordinando reseñas en la Señal A, sube a 'alta' aunque no compartan método de pago — dos señales independientes, cada una con su propio criterio, apuntando al mismo par es mucho más difícil de explicar como familia que cualquiera de las dos sola. `desviacionPatron()` pide su propia copia de `resenasCoordinadas()` (best-effort, con su propio `.catch(() => [])`) en vez de depender de que `consultarFraude()` se la pase — una consulta barata duplicada a cambio de que Señal B siga siendo llamable y correcta por sí sola, sin acoplarse a la otra señal.
 - **Contexto de actividad propia** (siempre visible, nunca sube ni baja `nivelConfianza`): el motivo ahora cita, por cada cuenta involucrada, cuántas compras/reseñas propias tiene y desde hace cuánto existe — dato que ya se pedía (`enriquecerUsuarios`), solo no se usaba en el texto. Deliberadamente informativo, no decisorio: una cuenta con actividad propia larga y repartida en el tiempo es más compatible con una persona (o familia) real que con una cuenta armada solo para esto, pero decidir eso es trabajo de quien revisa, no de este texto — el nivel de confianza no se recalcula con este dato, a propósito, para no darle al sistema una forma de autoconvencerse de que algo es inocente.
 - Verificado con un tercer caso construido a propósito: `fraude.test1`/`fraude.test2` (que YA coordinaban en Señal A desde antes) compraron cada uno una bicicleta — categoría nueva para los dos — enviada a una dirección nueva compartida, con sus tokens de pago de siempre (distintos entre sí, sin tocar). Salió "alta" únicamente por el cruce con Señal A, insignia "También en Señal A" en la ficha correcta — confirma que el segundo camino de escalamiento funciona de forma aislada, no solo en combinación con el primero.
+
+## 16. Rediseño de señales: gasto, categoría y correo en lugar de dirección y método de pago (2026-10-04)
+
+> **Superado en parte por §17 y recuperado en §18 (mismo día):** el nodo `Correo`/`USA_CORREO` y la señal "anillo por correo" de esta sección se reemplazaron primero por el nombre completo normalizado (§17) y **§18 los devolvió** — ya no como la única identidad, sino como un segundo vínculo entre cuentas junto al nombre. Todo lo demás de §16 — el modelo de `COMPRÓ` con `compra_id`/`monto`/`categoria`, las señales de gasto anómalo y categoría inusual, la regla de confianza que solo sube, la migración y la corrección de la Señal A — sigue vigente.
+
+**Qué cambió y por qué.** A pedido explícito del equipo, el grafo deja de registrar dónde recibe y con qué paga cada cuenta, y pasa a modelar tres cosas más cercanas a cómo un banco vigila a un cliente: cuánto gasta una cuenta frente a su propio pasado, en qué categorías compra, y qué buzón de correo usa. Las secciones §4, §5, §6, §12, §14 y §15 quedan como historial del modelo anterior.
+
+### Modelo vigente
+
+```
+(:Usuario {id_usuario, nombre, rol})
+(:Producto {producto_id, descripcion, subcategoria, categoria})
+(:Correo {hash})
+
+(:Usuario)-[:COMPRÓ {detalle_id, compra_id, fecha, monto, categoria, subcategoria}]->(:Producto)
+(:Usuario)-[:RESEÑÓ {calificacion, fecha}]->(:Producto)
+(:Usuario)-[:USA_CORREO]->(:Correo)
+```
+
+Eliminados: `Direccion`, `MetodoPago`, `ENVIÓ_A`, `PAGÓ_CON` y las propiedades `direccion_texto`/`metodo_pago_token` de `COMPRÓ`. También salieron las direcciones y métodos de pago de la ficha de usuario del panel: ya no son señal, y mostrar ese dato sin un propósito es exposición gratuita.
+
+- **`compra_id` en cada línea.** El gasto se mide por *pedido* (suma de sus líneas), que es el movimiento que un banco compara contra los anteriores del cliente — no por línea.
+- **`categoria` en la arista.** Es el id de Mongo de la categoría de primer nivel (Ropa, Electrónica…), "en qué categoría compró ESA vez", mismo criterio con que `COMPRÓ` guardaba la dirección de esa compra puntual. `fraudeSyncService` resuelve subcategoría → categoría internamente (con caché en memoria: el catálogo no permite editar ni borrar categorías, ESTADO-PROYECTO.md §5), así los puntos de llamada solo envían la subcategoría que ya tenían.
+
+### El correo: el mismo error que tuvo la dirección, evitado de entrada
+
+`usuarios.correo` es `@unique` en MySQL — dos cuentas **nunca** pueden compartir el correo exacto, igual que dos filas de `direcciones` nunca podían compartir un `id` (§12). Comparar el texto crudo no encontraría nada. Lo que sí comparten dos cuentas de una misma persona es el **buzón**: `ana+2@x.com` y `ana@x.com` llegan al mismo lugar, Gmail ignora los puntos (`a.na@gmail.com` == `ana@gmail.com`) y trata `googlemail.com` como `gmail.com`. `normalizarCorreo()` colapsa solo eso — mayúsculas, alias `+etiqueta` y, **solo en Gmail**, los puntos — y nunca variaciones de contenido (fuera de Gmail, `ana.gomez` y `anagomez` SON buzones distintos).
+
+Neo4j guarda únicamente el **SHA-256 del buzón normalizado** (`:Correo {hash}`), no el correo: sirve para saber si dos cuentas comparten buzón sin copiar un dato personal a una base que todavía no tiene control de acceso real (§5; Entrega Final). El correo legible se resuelve en vivo desde MySQL al armar la ficha del administrador.
+
+### Las cuatro señales
+
+Parámetros ajustables en `PARAMETROS_POR_DEFECTO` (`fraudeService.js`) — nunca interpolados en la consulta.
+
+| Señal | Qué detecta | Regla por defecto |
+|---|---|---|
+| **A. Reseñas coordinadas** | Cuentas distintas reseñando lo mismo, en bloque | Sin cambios de criterio (§3): ≥3 productos en común, calificación ≥4, ventana de 1 h |
+| **B. Gasto anómalo** | Un pedido muy por encima de lo que *esa misma cuenta* gastó antes | ≥5 pedidos previos; total ≥ 3× el promedio previo **y** mayor que su máximo previo; total ≥ Q500 |
+| **C. Categoría inusual** | Primera compra de una cuenta en una categoría, después de un historial establecido | Antes de esa compra: ≥5 pedidos repartidos en ≥30 días |
+| **D. Anillo por correo** | Varias cuentas con el mismo buzón, todas comprando | ≥2 cuentas con el mismo buzón, ≥2 de ellas con compras |
+
+- **B** compara cada pedido solo contra los que lo *precedieron* (la lista previa excluye al propio pedido) y exige un baseline mínimo — sin historial no hay "lo normal para esta cuenta". El piso de Q500 evita señalar saltos relativos pero triviales (de Q40 a Q150) en un catálogo donde un celular cuesta Q2,600. Se señala el *primer* salto de una racha: después de él, el máximo previo ya lo incluye, así que un segundo pedido parecido no vuelve a marcarse.
+- **C** es una fila por (cuenta, categoría) con la primera compra en esa categoría; el motivo cita contra qué se compara ("6 compras en 60 días, siempre en Ropa, 100%"). Ser cliente nuevo y explorar categorías no dispara nada: la regla exige el historial.
+- **D** interpreta "cuentas que hacen compras distintas" como *cada cuenta compra por su lado* (≥2 cuentas con pedidos propios). Una cuenta duplicada que nunca compró no es señal. Una cuenta solo entra al grafo cuando compra o reseña (que exige comprar), así que el filtro es consistente con lo que el grafo puede ver.
+
+### Nivel de confianza: solo sube, nunca baja
+
+Se mantiene la regla de §15, ahora uniforme: una señal corroborada por otra independiente sube a `alta`; nada de lo que se calcula puede bajarla.
+
+- **D (anillo)** siempre `alta` — con el correo único, cualquier buzón compartido es aliasing deliberado, no un homónimo.
+- **B y C** parten en `posible`. Suben a `alta` si **la misma compra** aparece en las dos (un salto de monto *y* una categoría ajena en un mismo pedido es el patrón clásico de cuenta tomada; dos eventos sueltos de meses distintos no se refuerzan entre sí), o si la cuenta pertenece a un anillo (D) o a un par de reseñas coordinadas (A).
+
+### Migración
+
+`npm run fraude:backfill` ahora empieza con `limpiarModeloAnterior()` (borra `Direccion`/`MetodoPago` y las propiedades viejas de `COMPRÓ`) y después reenvía todo con el modelo nuevo. Seguro por ser Neo4j una copia derivada y por ser idempotente (sobre un grafo ya limpio no borra nada). Resultado real: 149 compras y 8 reseñas reenviadas, 0 omitidas; el grafo quedó con solo `Usuario`/`Correo`/`Producto`.
+
+### Corrección colateral en la Señal A
+
+Al diseñar las ventanas de tiempo apareció un error latente: `duration.between(a, b).seconds` solo devuelve el resto de segundos *después* de los días completos — dos reseñas con 2 días y 5 minutos de diferencia daban `300`, así que la "ventana corta" aceptaba reseñas separadas por días. Reproducido contra el Neo4j real y corregido con `duration.inSeconds(a, b).seconds` (total real, 173,100 en ese ejemplo).
+
+### Verificación
+
+`npm run verificar:fraude` (reescrito): corre `checkout()` y `resenaService.crear()` **reales**; como B y C dependen del tiempo, tras cada checkout de "historial" corrige `compra.fecha` en MySQL y reenvía esa compra al grafo con la fecha vieja. Es idempotente (la segunda corrida no siembra nada, 4 s) y cubre: la normalización del buzón, Señal A, D (alias `+` entre `fraude.anillo@` y `fraude.anillo+segunda@`), B+C juntas (historial barato en Ropa y de golpe un televisor de Q13,059: 161.6× su promedio → `alta` por corroboración mutua), C sola (compra barata en Hogar → `posible`, sin corroboradores) y controles negativos (buzones distintos no forman anillo; una compra barata no es gasto anómalo; el grafo ya no contiene `Direccion`/`MetodoPago`). Probado también con navegador real como administrador en `/admin/fraude`.
+
+Con los datos orgánicos actuales ninguna de B/C/D se dispara por sí sola — esperable: casi todas las cuentas tienen pocos pedidos, y la única con historial largo (Ana, 88 pedidos en 31 días) compró en Hogar a los 2 días de su primera compra, cuando la regla de 5 pedidos / 30 días todavía no se cumplía (el control correcto funcionando sobre datos reales).
+
+### Límites honestos
+
+- El hash es seudonimización, no cifrado: un SHA-256 sin sal de un correo se puede revertir con un diccionario de correos probables. Reduce la exposición en el grafo; no la elimina.
+- B mide el *primer* salto de una racha, no cada pedido posterior parecido (ver arriba).
+- La "velocidad" (mucho gasto en poco tiempo, aunque cada pedido sea normal) no estaba cubierta cuando se escribió esto; se agregó como la señal E en §17.
+
+## 17. Identidad por nombre, ráfaga de gasto y autocompra (2026-10-04)
+
+> **Modificado por §18 (mismo día):** el buzón de correo volvió al grafo (`Correo`/`USA_CORREO`) como segundo vínculo entre cuentas, así que "Eliminados respecto a §16: `Correo` y `USA_CORREO`" y la señal D "mismo nombre" de abajo describen el estado intermedio. Las señales E y F, el modelo de `VENDE` y la regla de que la confianza solo sube siguen vigentes.
+
+Tres cambios pedidos por el equipo sobre §16, el mismo día:
+
+1. **El correo deja de ser la identidad entre cuentas; pasa a serlo el nombre completo.** El equipo notó que `usuarios.correo` es único y por tanto nunca se repite; el buzón normalizado de §16 sí detectaba alias (`+etiqueta`, puntos de Gmail), pero se prefirió una clave que atrapa el caso más simple y frecuente de una persona con varias cuentas: registrarse otra vez con el mismo nombre y apellido.
+2. **Señal E — ráfaga de gasto** (la "velocidad" anotada al final de §16).
+3. **Señal F — autocompra** (cuentas que se compran entre sí), que exige saber quién vende cada producto.
+
+### Modelo vigente
+
+```
+(:Usuario {id_usuario, nombre, rol})
+(:Producto {producto_id, descripcion, subcategoria, categoria})
+(:Nombre {clave})                                  -- nombre completo normalizado
+
+(:Usuario)-[:COMPRÓ {detalle_id, compra_id, fecha, monto, categoria, subcategoria}]->(:Producto)
+(:Usuario)-[:RESEÑÓ {calificacion, fecha}]->(:Producto)
+(:Usuario)-[:SE_LLAMA]->(:Nombre)
+(:Usuario)-[:VENDE]->(:Producto)
+```
+
+Eliminados respecto a §16: `Correo` y `USA_CORREO`. Agregados: `Nombre`/`SE_LLAMA` y `VENDE`.
+
+- **`Nombre.clave`** es `normalizarNombre("nombres apellidos")` (`fraudeSyncService.js`): minúsculas, tildes de las vocales, puntuación y espacios repetidos colapsados — comparación **exacta** después de normalizar, nunca aproximada (mismo criterio que tenía el normalizador de direcciones: una coincidencia aproximada cambia falsos negativos de hoy por falsos positivos nuevos). La **"ñ" se deja intacta** a propósito ("Peña" y "Pena" son apellidos distintos). Límite honesto: "Ana Gómez" y "Ana María Gómez" **no** coinciden. A diferencia del hash de correo de §16, la clave es el nombre en claro: el grafo ya guardaba `Usuario.nombre`, así que no agrega ningún dato personal nuevo.
+- **`VENDE`** sale del documento del producto en Mongo (`vendedor_id`/`vendedor_nombre`, cacheados al crearlo): los puntos de llamada solo agregan esos dos campos a un `select` que ya hacían. El vendedor se crea como `Usuario` aunque nunca haya comprado — un vendedor que solo vende también puede ser parte de una autocompra; su `rol` queda sin setear hasta que esa cuenta compre o reseñe.
+
+### Las seis señales
+
+Parámetros ajustables en `PARAMETROS_POR_DEFECTO` (`fraudeService.js`).
+
+| Señal | Qué detecta | Regla por defecto |
+|---|---|---|
+| **A. Reseñas coordinadas** | Cuentas distintas reseñando lo mismo, en bloque | ≥3 productos en común, calificación ≥4, ventana de 1 h |
+| **B. Gasto anómalo** | Un pedido muy por encima de lo que *esa cuenta* gastó antes | ≥5 pedidos previos; ≥3× el promedio previo y mayor que su máximo; ≥Q500 |
+| **C. Categoría inusual** | Primera compra en una categoría, con historial establecido | Antes: ≥5 pedidos en ≥30 días |
+| **D. Cuentas con el mismo nombre** | Varias cuentas que se llaman igual, todas comprando | ≥2 cuentas con el mismo nombre normalizado, ≥2 con compras |
+| **E. Ráfaga de gasto** | Mucho gasto o muchos pedidos en un solo día | Ver abajo |
+| **F. Autocompra** | Una cuenta que le compra a sí misma o a otra con su mismo nombre | `(comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor)` con misma cuenta o mismo nombre |
+
+**E — ráfaga de gasto.** Agrupa los pedidos de cada cuenta por **día de Guatemala** (UTC−6, el mismo día del panel de ventas) y compara cada día solo contra los días *con compras* anteriores. Dos reglas, ambas relativas al pasado de esa cuenta:
+- *Muchos pedidos*: ≥5 pedidos **y** ≥2× el día más activo previo de la cuenta (con historial vacío basta con llegar a 5 — una cuenta nueva con 6 pedidos el primer día es el patrón de prueba de tarjetas). "Cualquier récord" no alcanza: una cuenta que sube su propio récord de a poco (5, 12, 13, 18) quedaba señalada en cada escalón con los datos reales de Ana.
+- *Mucho gasto*: total del día ≥3× el gasto diario promedio previo, mayor que el máximo diario previo y ≥Q500, con ≥3 días previos con compras **y ≥2 pedidos ese día**. El mínimo de 2 pedidos es deliberado: un solo pedido grande ya es la señal B, y contarlo también como ráfaga lo haría "corroborarse" a sí mismo con la misma evidencia. Es justo lo que B no ve: varios pedidos que, uno por uno, parecen normales.
+- Limitación aceptada: una ráfaga que cruza la medianoche se reparte en dos días.
+
+**F — autocompra.** Dos variantes: **cuentas distintas con el mismo nombre** (el "comprador" paga, el "vendedor" cobra menos la comisión de la plataforma y el dinero queda con apariencia de venta legítima — el patrón de lavado que motivó la señal; parte en confianza **alta**), y **la misma cuenta** (un vendedor que se compra sus propios productos; parte en **posible**, porque puede ser un vendedor probando su propio flujo de compra). Con datos reales ya apareció una autocompra "misma cuenta" orgánica: 5 compras de Luis Ramírez de sus propios productos, salidas de pruebas de desarrollo.
+
+### Nivel de confianza (mismo principio de §16: solo sube)
+
+- **F entre cuentas con el mismo nombre**: `alta` desde el principio. **F misma cuenta**: `posible`, sube con corroboración.
+- **D (mismo nombre)**: `posible` por sí solo — **a diferencia del correo de §16**, un nombre sí puede repetirse entre dos personas distintas, así que el nombre solo es una coincidencia débil. Sube a `alta` si: al menos dos de las cuentas declararon la **misma fecha de nacimiento**, hay una **autocompra** entre ellas, **coordinan reseñas**, o alguna tiene conducta anómala (B/C/E).
+- **B, C, E**: parten en `posible`. Suben a `alta` por la misma compra (B↔C), el mismo día (E↔B, E↔C) o si la cuenta aparece en D, F o A.
+- **La fecha de nacimiento nunca viaja al navegador**: se lee de MySQL para corroborar y se descarta; la ficha del panel no la muestra. Tampoco se guarda en el grafo.
+
+### Migración
+
+`limpiarModeloAnterior()` (en `backfillNeo4j.js`) ahora también borra los nodos `Correo`. Resultado real tras `npm run fraude:backfill`: 170 compras y 8 reseñas reenviadas, 0 omitidas; el grafo quedó con 14 `Usuario`, 14 `Nombre` y 9 `Producto`, y relaciones `COMPRÓ`, `RESEÑÓ`, `SE_LLAMA` y `VENDE`.
+
+### Verificación
+
+`npm run verificar:fraude` (reescrito, idempotente — la segunda corrida tarda 4 s y no siembra nada) cubre las seis señales con compras **reales** y fechas pasadas corregidas después, más controles negativos: el normalizador (tildes, mayúsculas, la "ñ" y los segundos nombres distinguen); D (dos parejas con el mismo nombre — una con la misma fecha de nacimiento → `alta`, otra con fechas distintas → `posible` sin corroboradores; un grupo con una autocompra entre sus miembros → `alta`; nombres distintos no se mezclan); F (comprador y vendedor con el mismo nombre → `alta`; vendedor que se compra a sí mismo → `posible`; comprarle a un vendedor ajeno no cuenta); E (una cuenta nueva con 6 pedidos en un día; otra con 4 días de compras chicas que un día hace 3 pedidos de ~Q200 = Q597 contra Q71.67 habitual — y ninguno de esos pedidos es un gasto anómalo por separado; un solo pedido grande no es ráfaga); y B/C como antes. Los vendedores de prueba y sus productos son sintéticos (`[PRUEBA fraude] …`) y se crean **inactivos**: `checkout()` rechaza productos no activos, así que el script activa cada uno solo durante el instante de su compra y lo vuelve a ocultar siempre.
+
+Con los datos orgánicos aparecen, además de lo sembrado: la autocompra de Luis Ramírez (`posible`) y dos ráfagas de volumen de Ana (el primer día de su cuenta, 5 pedidos; y 12 pedidos el 23/08, más del doble de su día más activo previo), todas producto de pruebas de desarrollo y todas `posible`. Probado también en `/admin/fraude` con navegador real como administrador.
+
+### Límites honestos
+
+- Dos personas distintas **pueden** llamarse igual: por eso D parte en `posible` y la fecha de nacimiento corrobora. Una persona que cambie un solo carácter de su nombre (o use un segundo nombre) no se detecta — el alias de correo de §16 sí lo habría atrapado; **§18 devolvió el buzón normalizado** precisamente para ese caso.
+- La fecha de nacimiento es un dato que el usuario declara: sirve para corroborar, no para probar.
+- `VENDE` solo existe para productos que alguien compró o reseñó (el grafo se alimenta de compras y reseñas, no del catálogo entero).
+- La ventana de E es el día calendario de Guatemala, no una ventana móvil de 24 h.
+
+## 18. El buzón vuelve como segundo vínculo, y nadie compra lo que vende (2026-10-04)
+
+Dos cambios pedidos por el equipo sobre §17, el mismo día:
+
+1. **Vuelve el correo — como vínculo y como corroborador.** §17 dejó solo el nombre porque `usuarios.correo` es único y nunca se repite. Pero el buzón *normalizado* sí detecta lo que el nombre no: quien se registra otra vez con otro nombre pero la misma bandeja (`ana+2@x.com`, o los puntos de Gmail). Se reintroduce **junto** al nombre, no en su lugar: cualquiera de los dos puede unir cuentas, y cuando coinciden, el correo respalda al nombre.
+2. **Un vendedor no puede comprar sus propios productos.** Hasta ahora la autocompra (Señal F) solo se *detectaba* a posteriori; ahora la forma más directa — la misma cuenta comprando lo que ella misma vende — se *impide* en la compra.
+
+### Modelo vigente
+
+```
+(:Usuario {id_usuario, nombre, rol})
+(:Producto {producto_id, descripcion, subcategoria, categoria})
+(:Nombre {clave})                                  -- nombre completo normalizado
+(:Correo {hash})                                   -- SHA-256 del buzón normalizado
+
+(:Usuario)-[:COMPRÓ {detalle_id, compra_id, fecha, monto, categoria, subcategoria}]->(:Producto)
+(:Usuario)-[:RESEÑÓ {calificacion, fecha}]->(:Producto)
+(:Usuario)-[:SE_LLAMA]->(:Nombre)
+(:Usuario)-[:USA_CORREO]->(:Correo)
+(:Usuario)-[:VENDE]->(:Producto)
+```
+
+Respecto a §17 vuelven `Correo` y `USA_CORREO`, con el mismo `normalizarCorreo()` y el mismo hash de §16 (mayúsculas, alias `+etiqueta` y, solo en Gmail, los puntos y `googlemail.com`; **nunca** variaciones de contenido: fuera de Gmail, `ana.gomez` y `anagomez` son buzones distintos). El grafo guarda solo el SHA-256, no el correo.
+
+- **El correo lo resuelve el servicio de sincronización, no el llamador** (`hashCorreoDe(usuarioId)`, una consulta a MySQL con caché por proceso). Hace falta para el comprador *y* para el vendedor del producto — que puede no haber comprado nunca y solo llega con su id —, y así los puntos de llamada de `checkout()`/reseñas **no cambiaron**.
+- El vendedor entra al grafo con su nombre, su buzón y `VENDE`, igual que el comprador.
+
+### Señal D: cuentas de una misma persona
+
+Antes "mismo nombre" (§17); ahora hay **dos vínculos** y un grupo puede tener los dos:
+
+- Dos consultas, una por nodo compartido (`Nombre`/`SE_LLAMA` y `Correo`/`USA_CORREO`), y después una **unión transitiva** en JavaScript (`unirGrupos`, *union-find* sobre el id de cuenta): si A y B se llaman igual y B y C comparten buzón, las tres son **una sola persona**. Cada grupo conserva sus `vinculos` (`{tipo: 'nombre' | 'correo', ids, nombre?}`) para explicar y dibujar qué cuentas comparten qué.
+- El mínimo "≥2 cuentas con compras" se exige **sobre la persona ya unida**, no sobre cada vínculo suelto: A y C (que compraron) quedan juntas aunque el puente B solo venda.
+- La respuesta cambió de nombre: `cuentasMismoNombre` → `cuentasRelacionadas`. **El hash del buzón nunca sale del servidor**: al panel le llegan los ids de las cuentas que lo comparten, y los correos legibles salen de la ficha (MySQL), como siempre.
+
+**Nivel de confianza (mismo principio: solo sube):**
+
+| Grupo | Nivel |
+|---|---|
+| Comparte **buzón** (con o sin el mismo nombre) | `alta` por sí solo — como en §16: con el correo único, compartir bandeja es aliasing deliberado, no un homónimo |
+| Comparte **solo el nombre** | `posible`; sube a `alta` con los corroboradores de §17 (misma fecha de nacimiento, autocompra entre ellas, reseñas coordinadas, conducta anómala B/C/E) |
+
+Los corroboradores también se citan cuando el grupo ya es `alta` por buzón: no cambian el nivel, pero sí el motivo ("Además, al menos dos de estas cuentas declararon la misma fecha de nacimiento"). Y en el sentido contrario, *estar en un grupo D* es una corroboración de identidad para las señales B, C y E de cada cuenta — ahora con una entrada por vínculo ("usa el mismo buzón de correo que la cuenta #19", "comparte nombre completo con la cuenta #3").
+
+### Señal F: autocompra, ahora también por buzón
+
+La consulta devuelve dos banderas, `mismoNombre` y `mismoBuzon`, calculadas solo para cuentas **distintas** (sobre la misma cuenta un patrón no reutiliza la misma relación, y no aporta). F entre cuentas distintas — por nombre, por buzón o por ambos — parte en `alta`; F de una cuenta consigo misma, en `posible`.
+
+### La regla: nadie compra lo que vende
+
+`productoService.verificarNoEsPropio(usuarioId, productoIds)` rechaza con **403** ("No podés comprar tus propios productos") si algún producto del pedido tiene `id_vendedor = usuarioId`. Consulta MySQL, la fuente transaccional (`producto.id_vendedor`), no el `vendedor_id` cacheado en Mongo — un dato derivado no debe ser la única barrera de una regla de negocio.
+
+Se aplica en **todos** los caminos de compra, no solo en uno:
+
+| Camino | Dónde | Detalle |
+|---|---|---|
+| Checkout normal | `checkout()` | Autoridad final, **antes** de tocar stock: un pedido con un solo producto propio entre otros se rechaza completo (atómico) |
+| Compra directa de oferta | `checkoutOferta()` | Mismo control |
+| Carrito | `cartService.guardar()` | `agregar` y `actualizarCantidad` — el carrito nunca llega a contener algo que el checkout va a rechazar |
+| Oferta flash | `ofertaFlashService.comprar()` | Antes de Redis: el rechazo no gasta (ni hay que devolver) una unidad del pool |
+| Recomendación | `tendenciaService.comprar()` | Antes del cupo personal; además `buscarCoincidencias` excluye los productos del propio vendedor (`vendedor_id: { $ne }`), así que nunca se le recomienda |
+| Interfaz | `ProductCard`, `ProductDetailPage`, `OfertasPage` | Se ocultan los controles de compra y se avisa "Es tu producto" — la UI es comodidad, el 403 es la garantía |
+
+Para que la tarjeta del buscador sepa si un resultado es propio, se agregó `vendedor_id` al mapping y al documento de Elasticsearch (reindexado: 108 productos).
+
+**Qué cubre y qué no.** La regla cierra el caso de **la misma cuenta**. No cierra el de una persona con **dos** cuentas (una compra, la otra vende): ese es justo el patrón que la Señal F entre cuentas distintas — y el vínculo por nombre o buzón de la Señal D — existen para atrapar. Y los pedidos hechos *antes* de la regla siguen en MySQL y en el grafo (p. ej. 5 pedidos de Luis Ramírez de sus propios productos), así que la F "misma cuenta" **no se elimina**: queda para el histórico y como segunda barrera.
+
+### Panel `/admin/fraude`
+
+La sección "Cuentas con el mismo nombre" pasó a **"Cuentas de una misma persona"**. El diagrama dibuja cada vínculo como un nodo compartido (un `Nombre` o un `Correo`) al que convergen las cuentas, así una pareja que comparte nombre *y* buzón muestra dos nodos, y una cadena A-B-C muestra a B conectada a los dos. Las fichas llevan insignias por cuenta ("Mismo nombre", "Mismo buzón") y la tarjeta explica por qué es `alta` cuando no hay una segunda señal ("Alta por sí sola: comparten buzón de correo"). La autocompra entre cuentas distintas dibuja el mismo nodo compartido (nombre, buzón o los dos).
+
+### Migración
+
+`limpiarModeloAnterior()` (en `backfillNeo4j.js`) **ya no borra** `Correo`; `npm run fraude:backfill` reconstruye el grafo con buzones para compradores y vendedores. Resultado real tras la reconstrucción: ningún `Usuario` sin buzón y un buzón compartido entre las cuentas del anillo de prueba. Con las cuentas sembradas por `verificar:fraude` el grafo hoy tiene 30 `Usuario`, 26 `Correo`, 25 `Nombre` y 15 `Producto`, con 206 `COMPRÓ`, 8 `RESEÑÓ`, 30 `SE_LLAMA`, 30 `USA_CORREO` y 15 `VENDE`.
+
+### Verificación
+
+`npm run verificar:fraude` (ampliado, idempotente — la segunda corrida no siembra nada):
+
+- **Normalizador de buzones**: `Ana+Compras@Example.com` → `ana@example.com`, puntos de Gmail, `googlemail.com`; los puntos fuera de Gmail y el dominio sí distinguen; el hash es de lo normalizado.
+- **D por buzón** (`fraude.anillo` / `fraude.anillo+segunda`, **nombres distintos**): único vínculo `correo`, `alta`; la ficha trae el correo legible y la respuesta nunca contiene el hash.
+- **D nombre + buzón** (`fraude.dual`, fechas de nacimiento distintas, sin otra señal): los dos vínculos y `alta` sin corroboradores — el buzón sostiene solo.
+- **D en cadena** (`fraude.cadena.a/b/b+c`: A y B se llaman igual, B y C comparten buzón): **un solo grupo de tres cuentas**, con sus dos vínculos.
+- Gemelos y homónimos siguen como en §17 (`alta` por fecha de nacimiento / `posible`), y ahora se afirma que su único vínculo es el nombre; controles negativos: parejas con nombres y buzones distintos no se funden.
+- **F por nombre** (`mismoNombre`, no `mismoBuzon`) y **F por buzón** (`fraude.autobuzon` / `fraude.autobuzon+tienda`, nombres distintos: `mismoBuzon`, no `mismoNombre`, `alta`); el vendedor de ese par nunca compró, así que D no se dispara y F sí.
+- **F misma cuenta histórica**: el script comprueba que `checkout()` ya la rechaza (403) y siembra el pedido "de antes de la regla" insertándolo directo en MySQL (pedido, línea y pago aprobado, sin tocar stock ni el outbox de ventas) y reenviándolo al grafo — así un `fraude:backfill` posterior lo reconstruye igual.
+- **Forma del grafo**: sin `Direccion`/`MetodoPago`; todo `Usuario` tiene su `USA_CORREO`; todo `Correo` tiene únicamente un SHA-256 de 64 hex; ningún nodo guarda un correo en claro.
+
+`npm run verificar:compraPropia` (nuevo): con el vendedor de prueba `luis.ramirez` prueba que **cada camino rechaza** la compra de su propio producto con 403 y que el rechazo **no deja rastro** — ni pedido, ni stock descontado, ni cupo gastado en Redis; un pedido mixto (un producto ajeno y uno propio) se rechaza completo sin descontar el ajeno; el carrito no llega a contener el producto propio; las recomendaciones no lo incluyen. Controles: otra cuenta sí puede comprar ese producto y el dueño sí puede comprar los de otros. Además, con HTTP real: `POST /api/carrito/items` del producto propio → 403 y de uno ajeno → 201, y `npm run verificar:ofertaFlash` sigue pasando (15 intentos simultáneos: 5 admitidos, 10 rechazados, contador en 0, 5 unidades descontadas en MySQL). Probado también en el navegador: el vendedor ve su producto sin botones de compra, y `/admin/fraude` muestra los grupos por nombre, por buzón, la pareja con ambos y la cadena.
+
+### Límites honestos
+
+- El hash es seudonimización, no cifrado (§16): un SHA-256 sin sal de un correo se puede revertir con un diccionario de correos probables.
+- Solo se normaliza lo que sabemos que es el mismo buzón. Alias de un dominio propio con puntos distintos (`ana.gomez@` / `anagomez@`) o direcciones de reenvío no se detectan, y una persona con otro nombre **y** otra bandeja es invisible para D — eso solo lo atrapan las señales de conducta (B, C, E) y de coordinación (A).
+- Compartir buzón puede tener una explicación inocente (una familia que usa alias `+papa` / `+mama` de una misma bandeja). Por eso el panel lo marca como candidato para revisión humana, con el motivo explicado, no como acusación.
+- La regla de compra propia depende de `producto.id_vendedor`: no impide que una persona abra otra cuenta compradora — para eso están D y F.
+- Los pedidos anteriores a la regla no se alteran: las autocompras históricas siguen apareciendo en el panel (como `posible`) hasta que alguien las revise.

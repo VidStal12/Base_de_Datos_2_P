@@ -38,6 +38,7 @@ function aProducto(hit) {
     id: Number(hit._id),
     descripcion: s.descripcion,
     imagen_url: s.imagen_url || '',
+    vendedor_id: s.vendedor_id,
     vendedor_nombre: s.vendedor_nombre,
     atributos: s.atributos || [],
     inventario: { precio: s.precio, cantidad: s.cantidad },

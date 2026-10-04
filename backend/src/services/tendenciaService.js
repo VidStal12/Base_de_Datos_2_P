@@ -4,6 +4,7 @@ const { conectar: conectarRedis } = require('../config/redis');
 const Producto = require('../models/mongo/Producto');
 const checkoutService = require('./checkoutService');
 const productoService = require('./productoService');
+const compromisoService = require('./compromisoService');
 
 // Ofertas por tendencia (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) — a
 // diferencia de la oferta flash de ofertaFlashService.js (que un vendedor
@@ -109,9 +110,12 @@ async function analizarTendencia(usuarioId) {
 // exacta en todo lo pedido): con un catálogo chico, exigir todo a la vez
 // devuelve fácilmente cero resultados. Cualquier vendedor entra, incluido el
 // preferido — el punto es mostrar el panorama completo, no excluir al
-// vendedor de siempre.
-async function buscarCoincidencias(subcategoriaId, atributosPreferidos) {
-  const candidatos = await Producto.find({ subcategoria_id: subcategoriaId, estado: 'activo' }).lean();
+// vendedor de siempre. Lo único que se excluye son los productos del propio
+// usuario: nadie puede comprar lo que él mismo vende (productoService.
+// verificarNoEsPropio), así que recomendárselo sería ofrecerle algo que el
+// checkout va a rechazar.
+async function buscarCoincidencias(subcategoriaId, atributosPreferidos, usuarioId) {
+  const candidatos = await Producto.find({ subcategoria_id: subcategoriaId, estado: 'activo', vendedor_id: { $ne: usuarioId } }).lean();
   const clavesPreferidas = new Set(atributosPreferidos.map(({ nombre, valor }) => `${nombre}::${valor}`));
 
   return candidatos
@@ -130,7 +134,7 @@ async function calcularRecomendaciones(usuarioId) {
   const tendencia = await analizarTendencia(usuarioId);
   if (!tendencia) return { tendencia: null, productos: [] };
 
-  const puntuados = await buscarCoincidencias(tendencia.subcategoriaId, tendencia.atributosPreferidos);
+  const puntuados = await buscarCoincidencias(tendencia.subcategoriaId, tendencia.atributosPreferidos, usuarioId);
   const productos = puntuados.slice(0, CANTIDAD_RECOMENDACIONES).map(({ doc, score }) => {
     const precioNormal = doc.inventario.precio;
     const precioRecomendado = calcularPrecioRecomendado(precioNormal);
@@ -172,8 +176,15 @@ async function recomendar(usuarioId) {
 // producto sea de verdad una recomendación vigente para este usuario antes
 // de nada — sin esto, cualquiera podría pedir el descuento en un producto al
 // que no le corresponde con solo adivinar la URL.
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId } = {}) {
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, aceptaNoReventa } = {}) {
   if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('cantidad debe ser un entero positivo');
+  // Antes de tocar el caché o el cupo en Redis — también cubre una
+  // recomendación ya cacheada (1 h) de antes de que existiera la regla.
+  await productoService.verificarNoEsPropio(usuarioId, [productoId]);
+  // Y el compromiso de no reventa de las cuentas que pueden vender: sin
+  // aceptación, no se gasta el cupo personal (checkoutOferta lo vuelve a exigir
+  // y deja la constancia en el pedido).
+  await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
 
   const { productos } = await recomendar(usuarioId);
   const match = productos.find((p) => p.id === productoId);
@@ -214,6 +225,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
       precioUnitario: precioRecomendadoActual,
       direccionId,
       metodoPagoId,
+      aceptaNoReventa,
     });
   } catch (err) {
     try {

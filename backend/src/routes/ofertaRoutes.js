@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const ofertaFlashService = require('../services/ofertaFlashService');
+const { cuerpoDeError } = require('../utils/http');
 
 const router = express.Router();
 
@@ -30,19 +31,23 @@ router.patch('/:productoId', requireAuth, requireRole('vendedor', 'administrador
 // Compra directa de una oferta flash — separada del carrito/checkout normal
 // a propósito (ver ENTREGA-2-PLAN.md §4.2). Cualquier usuario autenticado,
 // no solo compradores: nada en el resto del catálogo restringe comprar por
-// rol tampoco.
+// rol tampoco — salvo que nadie compra lo que él mismo vende
+// (productoService.verificarNoEsPropio, responde 403) y que una cuenta que puede
+// vender acepte el compromiso de no reventa (compromisoService, responde 400
+// con codigo COMPROMISO_NO_REVENTA).
 router.post('/:productoId/comprar', requireAuth, async (req, res) => {
   try {
-    const { cantidad, direccionId, metodoPagoId, precioEsperado } = req.body;
+    const { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa } = req.body;
     const resultado = await ofertaFlashService.comprar(req.usuario.id_usuario, Number(req.params.productoId), {
       cantidad,
       direccionId,
       metodoPagoId,
       precioEsperado,
+      aceptaNoReventa: aceptaNoReventa === true,
     });
     res.status(201).json(resultado);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    res.status(err.status || 400).json(cuerpoDeError(err));
   }
 });
 
