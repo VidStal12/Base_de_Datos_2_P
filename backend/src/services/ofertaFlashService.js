@@ -3,6 +3,7 @@ const { conectar: conectarMongo } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const productoService = require('./productoService');
 const checkoutService = require('./checkoutService');
+const ofertaDatos = require('./ofertaDatosService');
 
 // Oferta flash (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.2): cupo limitado a
 // precio rebajado, con dos guardas independientes — Redis (acá, admisión
@@ -52,6 +53,7 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
 
   doc.oferta_flash = { activo: nuevoActivo, precio_oferta: precioFinal, stock_oferta: stockFinal, vigente_desde: desde, vigente_hasta: hasta };
   await doc.save();
+  await ofertaDatos.actualizar(doc);
 
   // Reinicia el contador en Redis para que el próximo intento lo re-inicialice
   // desde el stock_oferta (posiblemente nuevo) y con el TTL (atado a
@@ -72,25 +74,25 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
 // existe: el remanente en ese caso es el pool completo, nadie lo tocó
 // todavía. Pública, sin auth — mismo criterio que ver el precio normal.
 async function consultarStock(productoId) {
-  const producto = await productoService.obtener(productoId);
+  const producto = await ofertaDatos.obtener(productoId);
   const oferta = producto.oferta_flash;
   const ahora = new Date();
 
-  if (!oferta?.activo || !oferta.vigente_desde || !oferta.vigente_hasta) {
-    return { activo: false };
+  if (producto.estado !== 'activo' || !oferta?.activo || !oferta.vigente_desde || !oferta.vigente_hasta) {
+    return { activo: false, producto };
   }
   if (ahora < new Date(oferta.vigente_desde)) {
-    return { activo: false, motivo: 'todavia_no_empieza', vigente_desde: oferta.vigente_desde };
+    return { activo: false, producto, motivo: 'todavia_no_empieza', vigente_desde: oferta.vigente_desde };
   }
-  if (ahora > new Date(oferta.vigente_hasta)) {
-    return { activo: false, motivo: 'vencida' };
+  if (ahora >= new Date(oferta.vigente_hasta)) {
+    return { activo: false, producto, motivo: 'vencida' };
   }
 
   const redis = conectar();
   const crudo = await redis.get(clave(productoId));
   const restante = crudo === null ? oferta.stock_oferta : Number(crudo);
 
-  return { activo: true, precio_oferta: oferta.precio_oferta, restante: Math.max(restante, 0), vigente_hasta: oferta.vigente_hasta };
+  return { activo: true, producto, precio_oferta: oferta.precio_oferta, restante: Math.max(restante, 0), vigente_hasta: oferta.vigente_hasta };
 }
 
 // Guardia 1 — admisión rápida en Redis, un solo EVAL atómico (ver
@@ -99,20 +101,30 @@ async function consultarStock(productoId) {
 // ACÁ, antes de tocar Redis para nada — más barato que un round-trip, y dos
 // de los tres motivos de rechazo (todavía no empieza / ya venció) no son algo
 // que Redis pueda decidir por sí solo.
-async function intentarComprar(productoId, cantidad) {
+async function intentarComprar(productoId, cantidad, precioEsperado) {
   if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('cantidad debe ser un entero positivo');
 
-  const producto = await productoService.obtener(productoId);
+  const producto = await ofertaDatos.obtener(productoId);
   const oferta = producto.oferta_flash;
   const ahora = new Date();
 
-  if (!oferta?.activo) {
+  if (producto.estado !== 'activo' || !oferta?.activo) {
     const err = new Error('Este producto no tiene una oferta flash activa');
     err.status = 409;
     throw err;
   }
   const desde = new Date(oferta.vigente_desde);
   const hasta = new Date(oferta.vigente_hasta);
+  if (!oferta.vigente_desde || !oferta.vigente_hasta || !Number.isFinite(desde.getTime()) || !Number.isFinite(hasta.getTime())) {
+    const err = new Error('La oferta no tiene una vigencia válida');
+    err.status = 409;
+    throw err;
+  }
+  if (precioEsperado !== undefined && Number(precioEsperado) !== Number(oferta.precio_oferta)) {
+    const err = new Error('Revisá el precio vigente de la oferta antes de confirmar.');
+    err.status = 409;
+    throw err;
+  }
   const ttlSegundos = Math.ceil((hasta.getTime() - ahora.getTime()) / 1000);
 
   if (ahora < desde) {
@@ -147,7 +159,8 @@ async function intentarComprar(productoId, cantidad) {
 // de la oferta (un cupo de menos disponible), no un dato incorrecto.
 async function refundStock(productoId, cantidad) {
   const redis = conectar();
-  await redis.incrby(clave(productoId), cantidad);
+  // Si el pool ya venció, no recrear un contador sin TTL.
+  await redis.reintegrarOferta(clave(productoId), cantidad);
 }
 
 // Punto de entrada único: guardia 1 (Redis) → guardia 2 (MySQL, autoridad
@@ -155,8 +168,8 @@ async function refundStock(productoId, cantidad) {
 // Deliberadamente separado de checkoutService.checkout() (el carrito normal)
 // — no pasa por Redis del carrito ni por CartContext, siempre es este único
 // producto. Ver ENTREGA-2-PLAN.md §4.2, "no reemplaza el checkout normal".
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId } = {}) {
-  const admision = await intentarComprar(productoId, cantidad);
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado } = {}) {
+  const admision = await intentarComprar(productoId, cantidad, precioEsperado);
 
   try {
     return await checkoutService.checkoutOferta({

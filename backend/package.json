@@ -12,6 +12,8 @@
     "seed": "prisma db seed",
     "verificar:checkout": "node scripts/verificarCheckout.js",
     "verificar:carrito": "node scripts/verificarCarrito.js",
+    "carrito:migrar": "node scripts/migrarCarritosRedis.js",
+    "test:redis": "node --test tests/carrito*.test.js tests/oferta*.test.js",
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",
     "verificar:recomendaciones": "node scripts/verificarRecomendaciones.js",
     "verificar:fraude": "node scripts/verificarFraudeNeo4j.js",

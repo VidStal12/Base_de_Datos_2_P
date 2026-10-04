@@ -2,10 +2,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { formatCurrency } from '../utils/format';
 import { Button } from '../components/common/Button';
+import { Spinner } from '../components/common/Spinner';
 
 export function CartPage() {
-  const { items, actualizarCantidad, quitar, total } = useCart();
+  const { items, actualizarCantidad, quitar, total, cargando, error } = useCart();
   const navigate = useNavigate();
+
+  if (cargando) return <Spinner />;
+  if (error) return <p role="alert" className="py-8 text-danger-600">{error}</p>;
 
   if (items.length === 0) {
     return (
@@ -31,7 +35,6 @@ export function CartPage() {
       <div className="flex flex-col gap-4">
         <h1 className="text-xl font-bold text-neutral-900">Carrito ({items.length})</h1>
         {items.map(({ producto, cantidad }) => {
-          const stock = producto.inventario?.cantidad ?? 0;
           return (
             <div key={producto.id} className="flex gap-4 rounded-xl border border-neutral-200 bg-white p-4">
               <Link to={`/productos/${producto.id}`} className="size-24 shrink-0 overflow-hidden rounded-lg bg-neutral-100">
@@ -46,7 +49,7 @@ export function CartPage() {
                   <Link to={`/productos/${producto.id}`} className="font-medium text-neutral-800 hover:text-brand-700">
                     {producto.descripcion}
                   </Link>
-                  <p className="text-sm text-neutral-500">{formatCurrency(producto.inventario?.precio)} c/u</p>
+                  <p className="text-sm text-neutral-500">{formatCurrency(producto.precio)} c/u</p>
                 </div>
                 <div className="flex items-center gap-3">
                   <select
@@ -54,7 +57,8 @@ export function CartPage() {
                     onChange={(e) => actualizarCantidad(producto.id, Number(e.target.value))}
                     className="rounded-lg border border-neutral-300 px-2 py-1 text-sm"
                   >
-                    {Array.from({ length: Math.min(stock, 10) }, (_, i) => i + 1).map((n) => (
+                    {cantidad > 10 && <option value={cantidad}>{cantidad}</option>}
+                    {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
                       <option key={n} value={n}>
                         {n}
                       </option>
@@ -66,7 +70,7 @@ export function CartPage() {
                 </div>
               </div>
               <span className="shrink-0 font-semibold text-neutral-900">
-                {formatCurrency(Number(producto.inventario?.precio ?? 0) * cantidad)}
+                {formatCurrency(Number(producto.precio ?? 0) * cantidad)}
               </span>
             </div>
           );

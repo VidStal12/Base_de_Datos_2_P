@@ -26,7 +26,17 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     }
   }
 
+  await conectar();
+  const docs = await Producto.find({ producto_id: { $in: items.map((item) => item.productoId) } }).select('producto_id estado').lean();
+  const activos = new Set(docs.filter((doc) => doc.estado === 'activo').map((doc) => doc.producto_id));
+  if (items.some((item) => !activos.has(item.productoId))) {
+    const err = new Error('Hay productos no disponibles. Revisá el carrito.');
+    err.status = 409;
+    throw err;
+  }
+
   return prisma.$transaction(async (tx) => {
+    await cartService.bloquearUsuario(tx, usuarioId);
     // La dirección y el método de pago deben pertenecer a quien está pagando —
     // si no, cualquier usuario autenticado podría pasar el ID de otro y usar
     // su dirección o su tarjeta guardada.
@@ -45,13 +55,21 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     let total = 0;
     const detalles = [];
 
-    for (const { productoId, cantidad } of items) {
+    for (const { productoId, cantidad, precioEsperado } of items) {
       const inventario = await tx.inventario.findUnique({
         where: { id_producto: productoId },
       });
 
       if (!inventario || inventario.cantidad < cantidad) {
-        throw new Error(`Stock insuficiente para el producto ${productoId}`);
+        const err = new Error(`Stock insuficiente para el producto ${productoId}`);
+        err.status = 409;
+        throw err;
+      }
+
+      if (precioEsperado !== undefined && Number(precioEsperado) !== Number(inventario.precio)) {
+        const err = new Error(`El precio del producto ${productoId} cambió. Revisá el carrito antes de confirmar.`);
+        err.status = 409;
+        throw err;
       }
 
       const precioFinal = Number(inventario.precio) * cantidad;
@@ -65,10 +83,15 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
         estado: 'pendiente',
       });
 
-      await tx.inventario.update({
-        where: { id_producto: productoId },
+      const descontado = await tx.inventario.updateMany({
+        where: { id_producto: productoId, cantidad: { gte: cantidad }, precio: inventario.precio },
         data: { cantidad: { decrement: cantidad } },
       });
+      if (descontado.count !== 1) {
+        const err = new Error(`Precio o stock cambió para el producto ${productoId}; revisá el carrito`);
+        err.status = 409;
+        throw err;
+      }
     }
 
     const compra = await tx.compra.create({
@@ -95,8 +118,13 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
     // Cassandra no pierde esta venta ni requiere volver a ejecutar el checkout.
     await encolarCompra(tx, compra);
 
+    // Durable y atómico con el pedido: una caída de Redis no recupera productos comprados.
+    await tx.carrito.deleteMany({ where: { id_usuario: usuarioId } });
+
     return { compra, pago };
   }).then(async (resultado) => {
+    // Invalidar inmediatamente después del commit, antes de los reenvíos lentos.
+    await cartService.invalidarCache(usuarioId);
     // Fuera de la transacción a propósito: la compra ya está confirmada y es
     // irreversible en MySQL en este punto, esto solo actualiza las cachés de
     // lectura en Mongo (total_vendido Y cantidad, ver Producto.js — MySQL
@@ -115,18 +143,6 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items }) {
       );
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo:', err.message);
-    }
-
-    // Vaciar el carrito en Redis acá, no solo confiar en que el frontend lo
-    // haga después de recibir la respuesta (ver ENTREGA-2-PLAN.md §4.1) — si
-    // el checkout ya se confirmó pero esa segunda llamada del cliente nunca
-    // llega (pestaña cerrada, red cortada justo ahí), el usuario volvería a
-    // ver en su carrito algo que ya compró. Try/catch propio, independiente
-    // del de arriba: que falle el reenvío a Mongo no debería impedir este intento.
-    try {
-      await cartService.vaciar(usuarioId);
-    } catch (err) {
-      console.error('No se pudo vaciar el carrito en Redis tras el checkout:', err.message);
     }
 
     // Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md)
@@ -216,7 +232,11 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
       throw new Error(`Stock insuficiente para el producto ${productoId}`);
     }
 
-    await tx.inventario.update({ where: { id_producto: productoId }, data: { cantidad: { decrement: cantidad } } });
+    const descontado = await tx.inventario.updateMany({
+      where: { id_producto: productoId, cantidad: { gte: cantidad } },
+      data: { cantidad: { decrement: cantidad } },
+    });
+    if (descontado.count !== 1) throw new Error(`Stock insuficiente para el producto ${productoId}`);
 
     const precioFinal = precioUnitario * cantidad;
     const descuentoUnitario = Math.max(Number(inventario.precio) - precioUnitario, 0);

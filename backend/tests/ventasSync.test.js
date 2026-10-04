@@ -224,7 +224,8 @@ for (const variante of ['checkout', 'checkoutOferta']) {
     const tx = {
       direcciones: { findUnique: async () => ({ id_usuario: 7 }) },
       metodo_pago: { findUnique: async () => ({ id_usuario: 7 }) },
-      inventario: { findUnique: async () => ({ cantidad: 10, precio: '12.25' }), update: async () => {} },
+      inventario: { findUnique: async () => ({ cantidad: 10, precio: '12.25' }), updateMany: async () => ({ count: 1 }) },
+      carrito: { deleteMany: async () => {} },
       compra: { create: async () => compra },
       pago: { create: async () => ({ id: 1, estado: 'aprobado' }) },
     };
@@ -242,9 +243,10 @@ for (const variante of ['checkout', 'checkoutOferta']) {
       '../config/mongo': { conectar: async () => {} },
       '../models/mongo/Producto': {
         updateOne: async () => { cacheEscrita = true; },
+        find: () => ({ select: () => ({ lean: async () => [{ producto_id: 3, estado: 'activo' }] }) }),
         findOne: () => ({ select: () => ({ lean: async () => null }) }),
       },
-      './cartService': { vaciar: async () => {} },
+      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
       './fraudeSyncService': { registrarCompra: async () => {} },
       './ventasOutboxService': capturaPausada,
     });
@@ -265,7 +267,8 @@ for (const variante of ['checkout', 'checkoutOferta']) {
     const tx = {
       direcciones: { findUnique: async () => ({ id_usuario: 7 }) },
       metodo_pago: { findUnique: async () => ({ id_usuario: 7 }) },
-      inventario: { findUnique: async () => ({ cantidad: 10, precio: '12.25' }), update: async () => {} },
+      inventario: { findUnique: async () => ({ cantidad: 10, precio: '12.25' }), updateMany: async () => ({ count: 1 }) },
+      carrito: { deleteMany: async () => {} },
       compra: { create: async () => ({ id: 7, compra_detalles: [] }) },
       pago: { create: async () => { pagoCreado = true; return { id: 1 }; } },
     };
@@ -275,9 +278,12 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         confirmado = true;
         return resultado;
       } },
-      '../config/mongo': { conectar: async () => { cacheEscrita = true; } },
-      '../models/mongo/Producto': { updateOne: async () => { cacheEscrita = true; } },
-      './cartService': { vaciar: async () => { cacheEscrita = true; } },
+      '../config/mongo': { conectar: async () => {} },
+      '../models/mongo/Producto': {
+        find: () => ({ select: () => ({ lean: async () => [{ producto_id: 3, estado: 'activo' }] }) }),
+        updateOne: async () => { cacheEscrita = true; },
+      },
+      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; } },
       './ventasOutboxService': { encolarCompra: async (mismoTx) => {
         assert.equal(mismoTx, tx);
         assert.equal(pagoCreado, true);

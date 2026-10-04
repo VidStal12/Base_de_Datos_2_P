@@ -11,7 +11,7 @@ import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
 
 export function CheckoutPage() {
   const { token } = useAuth();
-  const { items, total, vaciar } = useCart();
+  const { items, total, limpiarLocal, refrescar, cargando: cargandoCarrito, error: errorCarrito } = useCart();
   const navigate = useNavigate();
 
   const [direcciones, setDirecciones] = useState([]);
@@ -25,8 +25,10 @@ export function CheckoutPage() {
   const [confirmando, setConfirmando] = useState(false);
 
   useEffect(() => {
-    Promise.all([direccionesApi.listar(token), metodosPagoApi.listar(token)])
+    let vigente = true;
+    Promise.all([direccionesApi.listar(token), metodosPagoApi.listar(token), refrescar(true)])
       .then(([dirs, metodos]) => {
+        if (!vigente) return;
         setDirecciones(dirs);
         setMetodosPago(metodos);
         if (dirs.length) setDireccionId(dirs[0].id);
@@ -34,8 +36,10 @@ export function CheckoutPage() {
         setMostrarFormDireccion(dirs.length === 0);
         setMostrarFormPago(metodos.length === 0);
       })
-      .finally(() => setCargando(false));
-  }, [token]);
+      .catch((err) => { if (vigente) setError(err.message); })
+      .finally(() => { if (vigente) setCargando(false); });
+    return () => { vigente = false; };
+  }, [token, refrescar]);
 
   async function crearDireccion(datos) {
     const nueva = await direccionesApi.crear(datos, token);
@@ -59,25 +63,27 @@ export function CheckoutPage() {
         {
           direccionId,
           metodoPagoId,
-          items: items.map(({ producto, cantidad }) => ({ productoId: producto.id, cantidad })),
+          items: items.map(({ producto, cantidad }) => ({ productoId: producto.id, cantidad, precioEsperado: Number(producto.precio) })),
         },
         token
       );
-      vaciar();
+      // El servidor ya vació SQL en la transacción. No borrar artículos añadidos después.
+      limpiarLocal();
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
       setError(err.message);
+      await refrescar(true).catch(() => {});
     } finally {
       setConfirmando(false);
     }
   }
 
+  if (cargando || cargandoCarrito) return <Spinner />;
+  if (errorCarrito) return <p role="alert" className="py-8 text-danger-600">{errorCarrito}</p>;
   if (items.length === 0) {
     return <p className="py-16 text-center text-neutral-600">Tu carrito está vacío.</p>;
   }
-  if (cargando) return <Spinner />;
-
-  const listoParaConfirmar = direccionId && metodoPagoId && !confirmando;
+  const listoParaConfirmar = direccionId && metodoPagoId && !confirmando && !items.some((item) => item.disponible === false);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
@@ -147,7 +153,7 @@ export function CheckoutPage() {
               <span className="line-clamp-1">
                 {producto.descripcion} × {cantidad}
               </span>
-              <span>{formatCurrency(Number(producto.inventario?.precio ?? 0) * cantidad)}</span>
+              <span>{formatCurrency(Number(producto.precio ?? 0) * cantidad)}</span>
             </li>
           ))}
         </ul>
@@ -157,6 +163,7 @@ export function CheckoutPage() {
         </div>
 
         {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
+        {items.some((item) => item.disponible === false) && <p role="alert" className="mt-3 text-sm text-danger-600">Hay productos sin disponibilidad. Revisá el carrito.</p>}
 
         <Button
           variant="accent"

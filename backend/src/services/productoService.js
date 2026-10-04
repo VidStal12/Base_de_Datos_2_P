@@ -5,6 +5,7 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { esEnteroPositivo } = require('../utils/validation');
 const busquedaSyncService = require('./busquedaSyncService');
+const ofertaDatos = require('./ofertaDatosService');
 
 // Todo el contenido de catálogo, incluido precio/cantidad, vive en el
 // documento de Mongo — ver Producto.js. MySQL (`inventario`) sigue siendo la
@@ -308,6 +309,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
 
     doc.version += 1;
     await doc.save();
+    await ofertaDatos.actualizar(doc);
 
     await ProductoEvento.create({
       producto_id: productoId,

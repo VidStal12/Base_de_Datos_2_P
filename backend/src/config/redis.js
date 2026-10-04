@@ -30,6 +30,35 @@ else
 end
 `;
 
+const LUA_REINTEGRAR_OFERTA = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return redis.call('INCRBY', KEYS[1], ARGV[1])
+end
+return 0
+`;
+
+// La revisión evita que una lectura iniciada antes de una escritura/checkout
+// vuelva a publicar cantidades anteriores. La marca permite cachear carritos vacíos.
+const LUA_LEER_CARRITO = `
+local contenido = redis.call('HGETALL', KEYS[1])
+if #contenido > 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return {redis.call('GET', KEYS[2]) or '0', contenido}
+`;
+const LUA_PUBLICAR_CARRITO = `
+if (redis.call('GET', KEYS[2]) or '0') ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+redis.call('HSET', KEYS[1], '_formato', '3')
+local contenido = cjson.decode(ARGV[3])
+for campo, valor in pairs(contenido) do redis.call('HSET', KEYS[1], campo, valor) end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return 1
+`;
+const LUA_INVALIDAR_CARRITO = `
+local revision = redis.call('INCR', KEYS[2])
+redis.call('DEL', KEYS[1])
+return revision
+`;
+
 // Conexión perezosa y reutilizada, mismo patrón que config/mongo.js — se abre
 // una sola vez, la primera vez que algún servicio la necesita.
 function conectar() {
@@ -38,6 +67,10 @@ function conectar() {
     // Registrado una sola vez acá (no en cada llamada) — ioredis expone esto
     // después como cliente.decrementarOferta(key, ...argv), un comando más.
     cliente.defineCommand('decrementarOferta', { numberOfKeys: 1, lua: LUA_DECREMENTAR_OFERTA });
+    cliente.defineCommand('reintegrarOferta', { numberOfKeys: 1, lua: LUA_REINTEGRAR_OFERTA });
+    cliente.defineCommand('leerCarrito', { numberOfKeys: 2, lua: LUA_LEER_CARRITO });
+    cliente.defineCommand('publicarCarrito', { numberOfKeys: 2, lua: LUA_PUBLICAR_CARRITO });
+    cliente.defineCommand('invalidarCarrito', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
   }
   return cliente;
 }

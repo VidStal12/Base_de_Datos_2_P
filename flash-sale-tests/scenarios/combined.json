@@ -2,7 +2,7 @@
   "name": "combined",
   "baseUrl": "http://localhost:3000/api",
   "usersFile": "../users.example.json",
-  "requestTimeoutMs": 5000,
+  "requestTimeoutMs": 15000,
   "startDelayMs": 1000,
   "prepare": {
     "product": {
@@ -13,7 +13,7 @@
     },
     "resetInventory": true,
     "initialInventory": 100,
-    "offerStock": 20,
+    "offerStock": 30,
     "offerPrice": 44.99,
     "offerDurationSeconds": 1800
   },

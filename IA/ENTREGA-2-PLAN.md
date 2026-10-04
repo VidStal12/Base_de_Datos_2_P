@@ -131,6 +131,8 @@ La ausencia actual de reseñas y la prioridad acordada del panel permiten aplaza
 
 ### 4.1 Carrito en Redis (implementado y verificado, 2026-08-30)
 
+> **Cambio vigente, 2026-10-03:** carrito SQL durable con índice único usuario/producto; Redis guarda una copia propia `{producto: {id, descripcion, imagen_url, estado, precio}, cantidad, disponible}`, sin cantidad de inventario, marca `_formato=3` y TTL 450s por inactividad. Abrirlo con caché vigente usa solo Redis. Si falta el hash, recupera cantidades SQL y datos Mongo/SQL por lote. `POST /api/carrito/revisar` actualiza los datos al entrar al checkout; la interfaz muestra únicamente información actual, sin comparaciones de precios. Al confirmar, Mongo comprueba productos activos y MySQL valida precio/stock. Si se rechaza, el frontend revisa nuevamente. El pedido borra SQL en su transacción e invalida Redis tras el commit; Lua y revisión por usuario impiden publicaciones viejas durante mutaciones. Los formatos persistentes anteriores se reconstruyen desde SQL. Para hashes anteriores a la persistencia: `npm run carrito:migrar`. Detalle y límites en [README](../README.md#cambios-de-carrito-y-caché--2026-10-03). Lo que sigue es registro histórico de 2026-08-30.
+
 **Decisión de identidad de sesión:** el carrito ahora **requiere sesión iniciada** — ya no hay carrito anónimo. Se clavea directamente por `usuario.id_usuario` (no una cookie de sesión separada), así que no hace falta ningún mecanismo de fusión al iniciar sesión: el carrito de un usuario es siempre el mismo carrito, esté logueado desde hace rato o recién.
 
 **Esquema de claves (Redis), tal cual implementado:**
@@ -160,6 +162,8 @@ DELETE /api/carrito              → vaciar completo
 Verificación completa (`npm run verificar:carrito`) y en el navegador: agregar/TTL/clamp/quitar/checkout, más un caso que el plan original no había previsto — el carrito **persiste a través de un ciclo logout→login** (beneficio directo de clavear por usuario en vez de por sesión de navegador), confirmado manualmente.
 
 ### 4.2 Oferta de inventario limitado (implementado y verificado, 2026-08-30)
+
+> **Actualización 2026-10-03:** cada oferta tiene sus propios datos en `oferta:{id}:datos` (TTL fijo 60s): producto, imagen, vendedor, estado, precios y configuración promocional, sin cantidad de inventario. Se publican al editar/configurar/pausar; la consulta de stock los devuelve para mostrar el checkout flash desde Redis. El carrito no depende de esta clave. Vencer o actualizar estos datos no repone el contador `oferta:{id}:stock`, con TTL hasta `vigente_hasta`; configurar una oferta activa mantiene el reinicio explícito existente. Un precio distinto al mostrado se rechaza antes de gastar cupo. La compensación Lua solo reintegra si el contador existe. El cupo no es durable ante pérdida de Redis; SQL protege inventario real. Ver [README](../README.md#cambios-de-carrito-y-caché--2026-10-03).
 
 **Estado:** implementado end-to-end y probado bajo concurrencia real — ver `backend/scripts/verificarOfertaFlash.js` (`npm run verificar:ofertaFlash`) y ESTADO-PROYECTO.md §3.8 para el detalle completo. Resumen de lo que cambió respecto al plan original de abajo:
 

@@ -115,6 +115,8 @@ model carrito {
 
   usuario  usuarios @relation(fields: [id_usuario], references: [id_usuario])
   producto producto @relation(fields: [id_producto], references: [id])
+
+  @@unique([id_usuario, id_producto])
 }
 
 model compra {

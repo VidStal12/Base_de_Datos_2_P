@@ -5,9 +5,8 @@ const ofertaFlashService = require('../services/ofertaFlashService');
 const router = express.Router();
 
 // Pública (sin auth) — el remanente EN VIVO de una oferta, mismo criterio que
-// ver el precio normal de un producto. En /:productoId/stock, no en
-// /:productoId, para que quede claro que esto es solo el contador en vivo,
-// no la configuración completa (ver ofertaFlashService.consultarStock).
+// ver el precio normal de un producto. Conserva la ruta /stock y devuelve
+// también los datos propios de la oferta para pintar su checkout desde Redis.
 router.get('/:productoId/stock', async (req, res) => {
   try {
     const info = await ofertaFlashService.consultarStock(Number(req.params.productoId));
@@ -34,11 +33,12 @@ router.patch('/:productoId', requireAuth, requireRole('vendedor', 'administrador
 // rol tampoco.
 router.post('/:productoId/comprar', requireAuth, async (req, res) => {
   try {
-    const { cantidad, direccionId, metodoPagoId } = req.body;
+    const { cantidad, direccionId, metodoPagoId, precioEsperado } = req.body;
     const resultado = await ofertaFlashService.comprar(req.usuario.id_usuario, Number(req.params.productoId), {
       cantidad,
       direccionId,
       metodoPagoId,
+      precioEsperado,
     });
     res.status(201).json(resultado);
   } catch (err) {

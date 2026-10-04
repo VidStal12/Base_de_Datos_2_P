@@ -10,6 +10,8 @@ require('../src/models/mongo/Categoria');
 const { conectar: conectarMongo } = require('../src/config/mongo');
 const Producto = require('../src/models/mongo/Producto');
 const ofertaFlashService = require('../src/services/ofertaFlashService');
+const ofertaDatos = require('../src/services/ofertaDatosService');
+const neo4j = require('../src/config/neo4j');
 
 // Evidencia de funcionamiento de la oferta flash bajo concurrencia (PRD
 // Entrega 2, el ítem de mayor peso — ver IA/ENTREGA-2-PLAN.md §4.2): dispara
@@ -60,6 +62,7 @@ async function main() {
   );
 
   const redis = conectarRedis();
+  await ofertaDatos.invalidar(productoId); // el script editó Mongo directamente
   const clave = `oferta:${productoId}:stock`;
   await redis.del(clave); // estado limpio, por si quedó algo de una corrida anterior
 
@@ -124,5 +127,6 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
     await mongoose.disconnect();
+    await neo4j.cerrar();
     conectarRedis().disconnect();
   });

@@ -1,6 +1,6 @@
 # Estado del proyecto — TiendaYa
 
-> Última actualización: 2026-09-05. Este documento resume qué se construyó, qué se decidió y qué falta, para que cualquiera (o una sesión futura) pueda retomar el proyecto sin releer todo el historial. El detalle técnico vive en los ADR y en [ERD-ARQUITECTURA-POLIGLOTA.md](ERD-ARQUITECTURA-POLIGLOTA.md). Las comprobaciones históricas conservan sus fechas; la evidencia de Cassandra está registrada en §3.10 y ADR-004 §9.
+> Última actualización: 2026-10-03. Este documento resume qué se construyó, qué se decidió y qué falta, para que cualquiera (o una sesión futura) pueda retomar el proyecto sin releer todo el historial. El detalle técnico vive en los ADR y en [ERD-ARQUITECTURA-POLIGLOTA.md](ERD-ARQUITECTURA-POLIGLOTA.md). Las comprobaciones históricas conservan sus fechas; la evidencia de Cassandra está registrada en §3.10 y ADR-004 §9.
 
 ---
 
@@ -110,6 +110,10 @@ Visible solo para `administrador` (link "Panel admin" en el header, ruta `/admin
 
 ### 3.7 Entrega 2 — carrito en Redis (`cartService.js`, `cartRoutes.js`, `CartContext.jsx`)
 
+> **Actualización 2026-10-03:** el carrito es durable en MySQL (`carrito`, único por usuario/producto). Redis conserva su propia copia del producto (id, descripción, imagen, estado y precio), cantidad solicitada y disponibilidad revisada, sin cantidad de inventario. Formato 3, TTL de 450s por inactividad. Abrirlo con caché vigente solo consulta Redis; al faltar/vencer se reconstruye con cantidades SQL y datos Mongo/SQL por lote. Entrar al checkout llama `POST /api/carrito/revisar`, reemplaza las copias y muestra únicamente los datos vigentes. Al confirmar se comprueban productos activos y precio/stock otra vez; el rechazo provoca una nueva revisión. Se eliminó el resumen compartido. Lua con revisión por usuario evita publicaciones viejas tras una mutación/checkout. El pedido borra SQL en su transacción e invalida Redis tras el commit. Diseño y límites en [README](../README.md#cambios-de-carrito-y-caché--2026-10-03). Los puntos fechados abajo describen la implementación histórica de 2026-08-30.
+
+**Verificación del cambio:** 18 pruebas aisladas Redis y 19 de ventas aprobadas. La integración real por HTTP/JWT verifica lectura caliente sin SQL/Mongo, TTL efectivo, revisión actualizada y concurrencia flash con datos sintéticos exclusivos; conserva los pedidos. Evidencia en README. Build aprobado, lint sin errores y con advertencias React existentes. Sin inspección visual del navegador ni benchmark de latencia.
+
 Primera pieza de Entrega 2 implementada — plan completo en [ENTREGA-2-PLAN.md §4.1](ENTREGA-2-PLAN.md#41-carrito-en-redis-implementado-y-verificado-2026-08-30).
 
 - **Infra:** servicio `redis` en `docker-compose.yml` (imagen `redis:7`, sin volumen — dato transitorio a propósito, no hace falta persistirlo), `ioredis` como dependencia, `backend/src/config/redis.js` (conexión perezosa, mismo patrón que `config/mongo.js`).
@@ -122,6 +126,8 @@ Primera pieza de Entrega 2 implementada — plan completo en [ENTREGA-2-PLAN.md 
 - **Verificación:** `npm run verificar:carrito` (`backend/scripts/verificarCarrito.js`, mismo espíritu que `verificar:checkout`) cubre agregar+TTL inicial, reinicio de TTL en una interacción posterior, clamp contra stock, borrado de la clave al quitar el último ítem, y vaciado del carrito tras un checkout real — las 5 verificaciones pasan contra los datos reales del proyecto. Probado también a mano en el navegador: agregar sin sesión (redirige a login), agregar con sesión, actualizar cantidad, checkout completo (carrito vacío después, stock descontado, orden visible en `/pedidos`), y persistencia a través de logout/login.
 
 ### 3.8 Entrega 2 — oferta flash (`ofertaFlashService.js`, `ofertaRoutes.js`, `checkoutService.checkoutOferta`)
+
+> **Actualización 2026-10-03:** stock y admisión leen los datos propios de `oferta:{id}:datos` (TTL fijo 60s): descripción, imagen, vendedor, estado, precios y configuración de oferta, sin cantidad de inventario. Editar producto o configurar/pausar publica esos datos; ningún carrito los referencia. El checkout flash usa la consulta de stock para mostrar el producto y envía el precio esperado. Su vencimiento/actualización no reinicializa `oferta:{id}:stock`; configurar una oferta activa conserva el reinicio explícito existente. La compra admitida sigue pasando por SQL. El reembolso Lua no recrea contadores vencidos. El contador no es durable ante pérdida de Redis: SQL protege inventario real, pero no reconstruye cupo promocional.
 
 Segunda pieza de Entrega 2, el ítem de mayor peso de la rúbrica (3.0 pts) — plan completo en [ENTREGA-2-PLAN.md §4.2](ENTREGA-2-PLAN.md#42-oferta-de-inventario-limitado-implementado-y-verificado-2026-08-30).
 
@@ -223,7 +229,7 @@ Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el
 
 ## 5. Limitaciones conocidas (decisiones explícitas, no descuidos)
 
-- **El carrito expira en Redis** tras 450 s de inactividad y exige sesión. La limitación inicial de carrito exclusivamente en `localStorage` quedó resuelta en §3.7.
+- **La caché del carrito expira en Redis** tras 450s de inactividad; se recupera desde SQL/Mongo. Leerlo caliente usa solo Redis: su copia puede quedar desactualizada hasta revisar el checkout, una mutación o una carga fría. No reserva inventario; precio/stock se validan al confirmar. Los datos propios flash tienen TTL fijo 60s y publicación al editar (§3.7).
 - **No hay forma de crear cuentas `vendedor`/`administrador`** desde el registro público — es a propósito (evita que cualquiera se autoasigne un rol con privilegios). Por ahora esas cuentas se crean a mano o por el seed.
 - **No se puede recategorizar un producto** ni editar/borrar categorías, subcategorías o atributos ya creados.
 - **El panel de ventas no es un gestor de pedidos** — agrega métricas para administrador; `GET /api/compras` sigue devolviendo los pedidos del usuario autenticado. No hay una vista de administración de pedidos de todos los compradores.

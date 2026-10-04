@@ -15,7 +15,7 @@ router.post('/', requireAuth, async (req, res) => {
     });
     res.status(201).json(resultado);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 

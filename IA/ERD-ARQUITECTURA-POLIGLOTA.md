@@ -1,4 +1,4 @@
-# ERD — Arquitectura políglota (actualizado, 2026-09-09)
+# ERD — Arquitectura políglota (actualizado, 2026-10-03)
 
 > Este documento reúne el modelo de MySQL, MongoDB, Redis, Cassandra (copia analítica de ventas) y Neo4j (detección de fraude). Describe responsabilidades y relaciones; no acredita por sí solo que los contenedores estén corriendo. El estado de comprobaciones está en [ESTADO-PROYECTO.md §3.10](ESTADO-PROYECTO.md#310-entrega-2--panel-de-ventas-con-cassandra) (Cassandra) y §3.11 (Neo4j). [ERD.md](ERD.md) conserva el modelo relacional histórico de la Fase Inicial.
 >
@@ -10,9 +10,9 @@
 
 | Base | Rol | Qué le pertenece |
 |---|---|---|
-| **MySQL** | Fuente transaccional única | Usuarios/auth, direcciones, métodos de pago, inventario (precio/cantidad reales), compras/pagos y `venta_outbox` capturado en la misma transacción de la venta |
+| **MySQL** | Fuente transaccional única | Usuarios/auth, carrito durable, direcciones, métodos de pago, inventario (precio/cantidad reales), compras/pagos y `venta_outbox` capturado en la misma transacción de la venta |
 | **MongoDB** | Fuente del catálogo descriptivo + historial | Categorías, subcategorías, contenido de producto (descripción/atributos/imágenes/estado), historial de cambios por evento |
-| **Redis** | Estado temporal y admisión atómica | Carrito con TTL de 7.5 min, cupos de ofertas y recomendaciones cacheadas; MySQL sigue siendo autoridad del inventario vendido |
+| **Redis** | Caché y admisión atómica | Caché del carrito con TTL de 7.5 min, resúmenes producto/oferta con TTL fijo de 60s, cupos de ofertas y recomendaciones cacheadas; MySQL conserva cantidades del carrito e inventario real |
 | **Cassandra** | Copia analítica de ventas | Proyecciones por día y por producto/mes, reconstruibles desde las ventas pagadas en MySQL; importes y unidades del panel |
 | **Neo4j** | Copia analítica de fraude | Grafo de usuarios/productos/direcciones/métodos de pago derivado de compras y reseñas ya confirmadas; reconstruible con `fraude:backfill` |
 
@@ -28,7 +28,7 @@ flowchart LR
         M_producto[producto — solo ancla de FK]
         M_compra[compra / compra_detalle / pago]
         M_outbox[venta_outbox]
-        M_carrito["carrito (tabla vestigial, sin uso)"]
+        M_carrito["carrito durable, único por usuario/producto"]
     end
 
     subgraph Mongo["MongoDB (documental)"]
@@ -39,6 +39,7 @@ flowchart LR
 
     subgraph Redis["Redis (clave-valor)"]
         R_carrito["carrito:usuario_id"]
+        R_oferta_datos["oferta:producto_id:datos"]
         R_oferta["oferta:producto_id:stock"]
         R_recomendacion["recomendaciones y cupos personales"]
     end
@@ -69,8 +70,14 @@ flowchart LR
     MG_producto -- "snapshot completo, en cada alta/edición" --> MG_evento
 
     M_usuarios -. "id_usuario ancla la clave" .-> R_carrito
-    M_compra -- "vacía el carrito, tras checkout exitoso" --> R_carrito
-    R_carrito -- "resuelve cada productoId, en cada lectura del carrito" --> MG_producto
+    M_carrito -- "cantidades al recuperar caché y revisar checkout" --> R_carrito
+    M_inventario -- "precio y disponibilidad en carga fría y checkout" --> R_carrito
+    M_inventario -- "valida precio y stock al comprar" --> M_compra
+    M_compra -- "vacía en la misma transacción" --> M_carrito
+    M_compra -- "invalida caché después de confirmar" --> R_carrito
+    MG_producto -- "copia propia en carga fría y revisión checkout" --> R_carrito
+    MG_producto -- "datos flash en miss y al editar" --> R_oferta_datos
+    R_oferta_datos -- "configuración para admisión flash" --> R_oferta
     M_compra -- "misma transacción MySQL" --> M_outbox
     M_outbox --> W
     W -- "inserciones idempotentes" --> C_dia
@@ -110,7 +117,7 @@ Esquema completo en [`backend/prisma/schema.prisma`](../backend/prisma/schema.pr
 | `metodo_pago` | id | id_usuario | titular, token_pasarela, ultimos_4_digitos, marca | número completo/CVV nunca se guardan |
 | `producto` | id | id_vendedor | — | **solo ancla de FK** desde Entrega 1 — lo descriptivo vive en Mongo |
 | `inventario` | id | id_producto (único, 1:1) | precio, cantidad | fuente transaccional real de precio/stock |
-| `carrito` | id | id_usuario, id_producto | cantidad, estado | **vestigial, sin uso** — el carrito real vive en Redis desde Entrega 2, esta tabla nunca se escribe ni se lee en código vivo |
+| `carrito` | id | id_usuario, id_producto | cantidad, estado | **durable** desde 2026-10-03; único `(id_usuario, id_producto)`, FK a usuario/producto, borrado transaccional al pagar |
 | `compra` | id | id_usuario, id_direccion | total, fecha | — |
 | `pago` | id | id_compra, id_metodo_pago | monto, estado, fecha_pago, referencia_transaccion | — |
 | `compra_detalle` | id | id_compra, id_producto | cantidad, precio_final, descuento, estado | — |
@@ -292,12 +299,14 @@ Patrones del carrito, la oferta flash y las recomendaciones — ver servicios y 
 
 | Clave | Tipo | Forma | TTL |
 |---|---|---|---|
-| `carrito:{usuario.id_usuario}` | Hash | `{ "productoId": "cantidad", ... }` | 450s (7.5 min), reiniciado en **cualquier** interacción (lectura o escritura) — expiración por inactividad, no fija |
+| `carrito:{usuario.id_usuario}` | Hash | `productoId → JSON {producto: {id, descripcion, imagen_url, estado, precio}, cantidad, disponible}` y `_formato=3` | 450s por inactividad; sin cantidad de inventario; también cachea el carrito vacío |
+| `carrito:{usuario.id_usuario}:revision` | String entero | Generación de la caché; Lua rechaza publicaciones anteriores a una mutación | Sin TTL; no durable ante pérdida de Redis |
+| `oferta:{productoId}:datos` | String JSON | id, descripción, estado, imagen principal, vendedor, precio normal y oferta con precio/cupo inicial/fechas | 60s fijos; publicación al editar producto/oferta; independiente del carrito y contador |
 | `oferta:{productoId}:stock` | String entero | Cupo de oferta restante, descontado mediante Lua atómico | Hasta el fin de la oferta |
 | `recomendaciones:{usuarioId}` | String JSON | Resultado temporal del análisis personalizado | 3600s |
 | `oferta-recomendada:{productoId}:{usuarioId}:stock` | String entero | Cupo personal restante, descontado mediante el mismo Lua | 3600s al inicializar el cupo |
 
-`usuario.id_usuario` en la clave es la misma referencia entera que en MySQL — no hay una tabla `carrito` real detrás en Redis, ni falta: el hash completo es el carrito. Al leer (`GET /api/carrito`), cada `productoId` se resuelve contra `productos` (Mongo) para traer descripción/precio/imagen vigentes — el carrito en sí nunca guarda una copia de esos datos, solo cantidades.
+La tabla `carrito` es durable. Abrirlo con caché vigente lee su propia copia solo en Redis. SQL recupera cantidades al faltar el hash, persiste mutaciones y valida precio/stock al comprar; Mongo aporta descripción, imagen y estado en carga fría. Entrar al checkout revisa productos/inventarios por lote, reemplaza las copias y muestra únicamente datos actuales. No se copia cantidad de inventario. La revisión por usuario evita publicar cantidades previas a una mutación en condiciones normales. Los datos flash son independientes; actualizar o vencer sus datos no repone su contador. Perder Redis puede perder cupo gastado: SQL limita inventario real, pero no reconstruye cupo promocional.
 
 ---
 
@@ -311,11 +320,12 @@ Patrones del carrito, la oferta flash y las recomendaciones — ver servicios y 
 | MySQL `compra`/`compra_detalle` → Mongo `Producto.total_vendido` + `Producto.inventario.cantidad` | unidades vendidas, descuento de stock | Reenvío | Checkout exitoso (después de confirmada la transacción) | `checkoutService.checkout()` / `checkoutOferta()` |
 | MySQL `usuarios` → Mongo `Producto.vendedor_nombre` | nombre completo del vendedor | Reenvío (una sola vez) | Alta de producto | `productoService.crear()` |
 | MySQL `usuarios` → Redis `carrito:{id}` | — | Referencia (la clave misma) | — | `cartService.js` |
-| MySQL `compra` → Redis `carrito:{id}` | — (borra la clave entera) | Reenvío de mejor esfuerzo | Checkout normal exitoso | `checkoutService.checkout()` (servidor) + `CartContext.jsx` (cliente) |
+| MySQL `compra` → MySQL `carrito` → Redis `carrito:{id}` | Borra filas SQL e invalida la clave Redis | Borrado SQL en transacción; invalidación Redis de mejor esfuerzo | Checkout normal exitoso | `checkoutService.checkout()`; el cliente solo limpia su estado |
 | Mongo `Producto.producto_id` → MySQL `producto.id` | — | Referencia, sin FK real | — | Todo el catálogo |
 | Mongo `Producto.vendedor_id` → MySQL `usuarios.id_usuario` | — | Referencia, sin FK real | — | Todo el catálogo |
 | Mongo `ProductoEvento.usuario_id` → MySQL `usuarios.id_usuario` | — | Referencia, sin FK real | — | Historial de cambios |
-| Redis `carrito:{id}` → Mongo `productos` | descripción, precio, imagen vigentes | Resolución en lectura | Cada `GET /api/carrito` | `cartService.obtener()` |
+| Mongo `productos` + MySQL `inventario` → Redis `carrito:{usuarioId}` | Copia propia: descripción, imagen, estado y precio, con cantidad solicitada y disponibilidad | Carga fría y revisión checkout por lote; TTL 450s por inactividad; SQL valida al comprar | Recuperación del carrito, mutación o entrada al checkout | `cartService` |
+| Mongo `productos` → Redis `oferta:{id}:datos` → admisión/checkout flash | Descripción, imagen, vendedor, estado, precios y configuración de oferta | TTL fijo 60s; publicación al editar; contador independiente | Consulta/admisión flash o edición del producto/oferta | `ofertaDatosService` / `ofertaFlashService` |
 | Mongo `producto_eventos` | snapshot completo de `Producto` | (interno a Mongo, no cruza bases) | Cada alta/edición | `productoService.crear()` / `actualizar()` |
 | MySQL `compra_detalle` → MySQL `venta_outbox` | Línea de venta pagada e identidad estable | Captura dentro de la transacción | Ambos métodos de checkout | Integración de outbox de ventas |
 | MySQL `venta_outbox` → Cassandra | Misma línea en dos proyecciones | Entrega con reintentos; inserciones idempotentes | Worker cada 30s por defecto o sincronización manual | Worker de ventas |

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { productosApi } from '../api/productos';
 import { ofertasApi } from '../api/ofertas';
 import { direccionesApi, metodosPagoApi } from '../api/cuenta';
 import { formatCurrency } from '../utils/format';
@@ -33,9 +32,9 @@ export function OfertaCheckoutPage() {
   const [confirmando, setConfirmando] = useState(false);
 
   useEffect(() => {
-    Promise.all([productosApi.obtener(id), ofertasApi.consultarStock(id), direccionesApi.listar(token), metodosPagoApi.listar(token)])
-      .then(([prod, stock, dirs, metodos]) => {
-        setProducto(prod);
+    Promise.all([ofertasApi.consultarStock(id), direccionesApi.listar(token), metodosPagoApi.listar(token)])
+      .then(([stock, dirs, metodos]) => {
+        setProducto(stock.producto);
         setOfertaStock(stock);
         setDirecciones(dirs);
         setMetodosPago(metodos);
@@ -66,7 +65,7 @@ export function OfertaCheckoutPage() {
     setError('');
     setConfirmando(true);
     try {
-      const { compra } = await ofertasApi.comprar(id, { cantidad: 1, direccionId, metodoPagoId }, token);
+      const { compra } = await ofertasApi.comprar(id, { cantidad: 1, direccionId, metodoPagoId, precioEsperado: ofertaStock.precio_oferta }, token);
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
       setError(err.message);
@@ -75,7 +74,7 @@ export function OfertaCheckoutPage() {
       // quede una pantalla ofreciendo algo que ya no existe.
       ofertasApi
         .consultarStock(id)
-        .then(setOfertaStock)
+        .then((stock) => { setOfertaStock(stock); setProducto(stock.producto); })
         .catch(() => {});
     } finally {
       setConfirmando(false);
@@ -166,7 +165,7 @@ export function OfertaCheckoutPage() {
         <h2 className="mt-3 font-bold text-neutral-900">{producto.descripcion}</h2>
         <div className="mt-2 flex items-baseline gap-2">
           <span className="text-2xl font-bold text-neutral-900">{formatCurrency(ofertaStock.precio_oferta)}</span>
-          <span className="text-sm text-neutral-500 line-through">{formatCurrency(producto.inventario?.precio)}</span>
+          {producto.precio_normal != null && <span className="text-sm text-neutral-500 line-through">{formatCurrency(producto.precio_normal)}</span>}
         </div>
         <p className="mt-1 text-sm font-semibold text-accent-700">Quedan {ofertaStock.restante} al precio de oferta</p>
 

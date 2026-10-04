@@ -9,8 +9,13 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const carrito = await cartService.obtener(req.usuario.id_usuario);
-  res.json(carrito);
+  try { res.json(await cartService.obtener(req.usuario.id_usuario)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+});
+
+router.post('/revisar', async (req, res) => {
+  try { res.json(await cartService.revisar(req.usuario.id_usuario)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 router.post('/items', async (req, res) => {

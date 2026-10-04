@@ -58,10 +58,10 @@ services:
     image: redis:7
     container_name: tiendaya-redis
     restart: unless-stopped
-    # Carrito (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.1) — clave-valor con TTL
-    # por inactividad. Sin auth ni persistencia especial: es un dato
-    # transitorio a propósito, se puede perder sin consecuencia (no es la
-    # fuente de verdad de nada, a diferencia de MySQL/Mongo).
+    # Copias propias del carrito (durable en MySQL) y datos flash, con TTL.
+    # Los contadores flash siguen siendo transitorios: perder Redis puede
+    # reinicializar el cupo promocional aunque SQL limite el inventario real.
+    # Sin auth ni persistencia especial en este entorno de desarrollo.
     #
     # Puerto del host parametrizado (default sin cambios, 6379): en Windows,
     # Hyper-V/WSL2 reserva rangos de puertos efímeros de forma dinámica (ver

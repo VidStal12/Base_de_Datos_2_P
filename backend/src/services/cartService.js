@@ -1,104 +1,150 @@
+const prisma = require('../config/prisma');
 const { conectar } = require('../config/redis');
-const productoService = require('./productoService');
+const { conectar: conectarMongo } = require('../config/mongo');
+const Producto = require('../models/mongo/Producto');
 
-// 7.5 min — expiración por inactividad (ver IA/ENTREGA-2-PLAN.md §4.1).
-// Declarado acá, no repetido, para que el valor esté en un único lugar.
 const TTL_SEGUNDOS = 450;
+const clave = (usuarioId) => `carrito:${usuarioId}`;
+const revisionClave = (usuarioId) => `carrito:${usuarioId}:revision`;
 
-function clave(usuarioId) {
-  return `carrito:${usuarioId}`;
+async function cacheSeguro(operacion) {
+  try { return await operacion(conectar()); }
+  catch (err) { console.error('No se pudo actualizar/leer la caché del carrito:', err.message); }
 }
 
-// Reinicia el TTL en CUALQUIER interacción (lectura o escritura) — "por
-// inactividad" significa que ni siquiera mirar el carrito cuenta como
-// inactividad, no solo agregar/quitar ítems. Si la clave ya no existe (p.
-// ej. se vació del todo con el último hdel, que Redis borra solo cuando un
-// hash queda vacío) esto es un no-op, no un error.
-async function refrescarTTL(redis, usuarioId) {
-  await redis.expire(clave(usuarioId), TTL_SEGUNDOS);
+async function bloquearUsuario(tx, usuarioId) {
+  await tx.$queryRaw`SELECT id_usuario FROM usuarios WHERE id_usuario = ${usuarioId} FOR UPDATE`;
 }
 
-// Arma la respuesta pública resolviendo cada línea contra el catálogo
-// VIGENTE (Mongo) — nunca contra un precio/descripción que se haya cacheado
-// en Redis al momento de agregar. Si el producto cambió (o se borró) mientras
-// estaba en el carrito, esto siempre refleja el estado actual.
-async function obtener(usuarioId) {
-  const redis = conectar();
-  const crudo = await redis.hgetall(clave(usuarioId));
-  await refrescarTTL(redis, usuarioId);
+async function invalidarCache(usuarioId) {
+  await cacheSeguro((redis) => redis.invalidarCarrito(clave(usuarioId), revisionClave(usuarioId)));
+}
 
-  const items = [];
-  for (const [productoIdStr, cantidadStr] of Object.entries(crudo)) {
-    try {
-      const producto = await productoService.obtener(Number(productoIdStr));
-      items.push({ producto, cantidad: Number(cantidadStr) });
-    } catch {
-      // Producto borrado/desactivado entre que se agregó y ahora — se omite
-      // esa línea en vez de romper el carrito entero.
+function leerLineas(crudo) {
+  if (crudo._formato !== '3') return null;
+  const lineas = [];
+  try {
+    for (const [campo, valor] of Object.entries(crudo)) {
+      if (campo === '_formato') continue;
+      const linea = JSON.parse(valor);
+      if (linea.producto?.id !== Number(campo) || !Number.isInteger(linea.producto.id) || linea.producto.id <= 0 || !Number.isInteger(linea.cantidad) || linea.cantidad <= 0) return null;
+      lineas.push(linea);
     }
-  }
-
-  const cantidadTotal = items.reduce((acc, it) => acc + it.cantidad, 0);
-  const total = items.reduce((acc, it) => acc + Number(it.producto.inventario?.precio ?? 0) * it.cantidad, 0);
-  return { items, cantidadTotal, total };
+  } catch { return null; }
+  return lineas;
 }
 
-// Suma `cantidad` a lo que ya hubiera para ese producto (o lo crea) — clamp
-// contra el stock vigente, mismo comportamiento que ya tenía CartContext.jsx
-// del lado del cliente (ver ENTREGA-2-PLAN.md §4.1) antes de esta migración.
+function respuesta(items) {
+  return {
+    items,
+    cantidadTotal: items.reduce((acc, it) => acc + it.cantidad, 0),
+    total: Math.round(items.reduce((acc, it) => acc + Number(it.producto.precio || 0) * it.cantidad, 0) * 100) / 100,
+  };
+}
+
+// Solo en carga fría, mutaciones y entrada al checkout. No se guarda stock
+// dentro del carrito: se usa aquí para calcular la disponibilidad del checkout.
+async function cargarActual(usuarioId) {
+  const filas = await prisma.carrito.findMany({ where: { id_usuario: usuarioId }, orderBy: { id_producto: 'asc' }, select: { id_producto: true, cantidad: true } });
+  if (!filas.length) return [];
+  const ids = filas.map((fila) => fila.id_producto);
+  await conectarMongo();
+  const [docs, inventarios] = await Promise.all([
+    Producto.find({ producto_id: { $in: ids } }).select('producto_id descripcion estado imagenes').lean(),
+    prisma.inventario.findMany({ where: { id_producto: { in: ids } } }),
+  ]);
+  const productos = new Map(docs.map((doc) => [doc.producto_id, doc]));
+  const stock = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
+  return filas.map((fila) => {
+    const doc = productos.get(fila.id_producto);
+    const inv = stock.get(fila.id_producto);
+    const imagen = doc?.imagenes?.find((img) => img.principal) || doc?.imagenes?.[0];
+    return {
+      producto: { id: fila.id_producto, descripcion: doc?.descripcion || 'Producto no disponible', imagen_url: imagen?.url || '', estado: doc?.estado || 'inactivo', precio: inv ? Number(inv.precio) : null },
+      cantidad: fila.cantidad,
+      disponible: doc?.estado === 'activo' && !!inv && inv.cantidad >= fila.cantidad,
+    };
+  });
+}
+
+async function obtener(usuarioId, revisar = false) {
+  for (let intento = 0; intento < 3; intento += 1) {
+    const cache = await cacheSeguro((redis) => redis.leerCarrito(clave(usuarioId), revisionClave(usuarioId), TTL_SEGUNDOS));
+    const revision = cache?.[0] || '0';
+    const campos = cache?.[1] || [];
+    const crudo = {};
+    for (let i = 0; i < campos.length; i += 2) crudo[campos[i]] = campos[i + 1];
+    const guardadas = leerLineas(crudo);
+    if (!revisar && guardadas !== null) return respuesta(guardadas);
+    const items = await cargarActual(usuarioId);
+    const payload = {};
+    for (const item of items) payload[item.producto.id] = JSON.stringify(item);
+    const publicada = await cacheSeguro((redis) => redis.publicarCarrito(clave(usuarioId), revisionClave(usuarioId), revision, TTL_SEGUNDOS, JSON.stringify(payload)));
+    if (publicada === 0) continue; // Hubo una mutación/checkout durante esta lectura.
+    return respuesta(items);
+  }
+  const err = new Error('El carrito cambió durante la consulta. Volvé a revisarlo.');
+  err.status = 409;
+  throw err;
+}
+
+function validar(productoId, cantidad, permiteCero = false) {
+  if (!Number.isInteger(productoId) || productoId <= 0) throw new Error('productoId inválido');
+  if (!Number.isInteger(cantidad) || cantidad < (permiteCero ? 0 : 1)) {
+    throw new Error(`cantidad debe ser un entero ${permiteCero ? 'mayor o igual a 0' : 'positivo'}`);
+  }
+}
+
+async function guardar(usuarioId, productoId, cantidad, sumar) {
+  await conectarMongo();
+  const producto = await Producto.findOne({ producto_id: productoId }).select('estado').lean();
+  if (producto?.estado !== 'activo') throw new Error('El producto no está disponible');
+  await prisma.$transaction(async (tx) => {
+    await bloquearUsuario(tx, usuarioId);
+    const inventario = await tx.inventario.findUnique({ where: { id_producto: productoId } });
+    const existente = await tx.carrito.findUnique({ where: { id_usuario_id_producto: { id_usuario: usuarioId, id_producto: productoId } } });
+    const nueva = Math.min((sumar ? existente?.cantidad || 0 : 0) + cantidad, inventario?.cantidad || 0);
+    if (nueva <= 0) {
+      await tx.carrito.deleteMany({ where: { id_usuario: usuarioId, id_producto: productoId } });
+    } else {
+      await tx.carrito.upsert({
+        where: { id_usuario_id_producto: { id_usuario: usuarioId, id_producto: productoId } },
+        create: { id_usuario: usuarioId, id_producto: productoId, cantidad: nueva, estado: 'activo' },
+        update: { cantidad: nueva, estado: 'activo' },
+      });
+    }
+  });
+  await invalidarCache(usuarioId);
+  return obtener(usuarioId);
+}
+
 async function agregar(usuarioId, productoId, cantidad) {
-  if (!Number.isInteger(productoId) || productoId <= 0) throw new Error('productoId inválido');
-  if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('cantidad debe ser un entero positivo');
-
-  const producto = await productoService.obtener(productoId);
-  const stock = producto.inventario?.cantidad ?? 0;
-
-  const redis = conectar();
-  const k = clave(usuarioId);
-  const actual = Number((await redis.hget(k, String(productoId))) || 0);
-  const nueva = Math.min(actual + cantidad, stock);
-
-  if (nueva <= 0) {
-    await redis.hdel(k, String(productoId));
-  } else {
-    await redis.hset(k, String(productoId), String(nueva));
-  }
-  await refrescarTTL(redis, usuarioId);
-  return obtener(usuarioId);
+  validar(productoId, cantidad);
+  return guardar(usuarioId, productoId, cantidad, true);
 }
 
-// Fija la cantidad exacta (no suma) — para el selector de cantidad dentro del
-// carrito, distinto de "Agregar al carrito" (que sí suma).
 async function actualizarCantidad(usuarioId, productoId, cantidad) {
-  if (!Number.isInteger(productoId) || productoId <= 0) throw new Error('productoId inválido');
-  if (!Number.isInteger(cantidad) || cantidad < 0) throw new Error('cantidad debe ser un entero mayor o igual a 0');
-
-  const redis = conectar();
-  const k = clave(usuarioId);
-  if (cantidad === 0) {
-    await redis.hdel(k, String(productoId));
-  } else {
-    const producto = await productoService.obtener(productoId);
-    const stock = producto.inventario?.cantidad ?? 0;
-    await redis.hset(k, String(productoId), String(Math.min(cantidad, stock)));
-  }
-  await refrescarTTL(redis, usuarioId);
-  return obtener(usuarioId);
+  validar(productoId, cantidad, true);
+  if (cantidad === 0) return quitar(usuarioId, productoId);
+  return guardar(usuarioId, productoId, cantidad, false);
 }
 
 async function quitar(usuarioId, productoId) {
-  const redis = conectar();
-  await redis.hdel(clave(usuarioId), String(productoId));
-  await refrescarTTL(redis, usuarioId);
+  validar(productoId, 0, true);
+  await prisma.$transaction(async (tx) => {
+    await bloquearUsuario(tx, usuarioId);
+    await tx.carrito.deleteMany({ where: { id_usuario: usuarioId, id_producto: productoId } });
+  });
+  await invalidarCache(usuarioId);
   return obtener(usuarioId);
 }
 
-// Se llama al confirmar un checkout exitoso — a propósito un DEL directo, no
-// dejar que el TTL lo resuelva solo (ver ENTREGA-2-PLAN.md §4.1, "efecto
-// documentado sobre el checkout").
 async function vaciar(usuarioId) {
-  const redis = conectar();
-  await redis.del(clave(usuarioId));
+  await prisma.$transaction(async (tx) => {
+    await bloquearUsuario(tx, usuarioId);
+    await tx.carrito.deleteMany({ where: { id_usuario: usuarioId } });
+  });
+  await invalidarCache(usuarioId);
 }
 
-module.exports = { obtener, agregar, actualizarCantidad, quitar, vaciar, TTL_SEGUNDOS };
+module.exports = { obtener, revisar: (usuarioId) => obtener(usuarioId, true), agregar, actualizarCantidad, quitar, vaciar, invalidarCache, bloquearUsuario, TTL_SEGUNDOS };
