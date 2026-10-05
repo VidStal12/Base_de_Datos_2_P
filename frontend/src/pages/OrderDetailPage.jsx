@@ -78,6 +78,21 @@ export function OrderDetailPage() {
               <p className="text-neutral-600">Ref. {pago.referencia_transaccion}</p>
             </div>
           )}
+          {/* Solo las cuentas que pueden vender aceptan este compromiso al comprar
+              (ver utils/compromiso.js); en un pedido de comprador no aparece. */}
+          {pedido.no_reventa_aceptada_en && (
+            <div className="sm:col-span-2">
+              <h3 className="font-semibold text-neutral-800">Compromiso de no reventa</h3>
+              <p className="text-neutral-600">
+                Aceptado el {new Date(pedido.no_reventa_aceptada_en).toLocaleString('es-GT', { dateStyle: 'long', timeStyle: 'short' })} — revender los
+                productos de este pedido incumple los{' '}
+                <Link to="/terminos#no-reventa" className="font-medium text-brand-700 hover:underline">
+                  Términos de Servicio
+                </Link>{' '}
+                de TiendaYa.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

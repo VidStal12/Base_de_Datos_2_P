@@ -1,5 +1,4 @@
 require('dotenv').config();
-const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const neo4j = require('../src/config/neo4j');
@@ -7,22 +6,24 @@ const redis = require('../src/config/redis');
 const Categoria = require('../src/models/mongo/Categoria');
 const Subcategoria = require('../src/models/mongo/Subcategoria');
 const Producto = require('../src/models/mongo/Producto');
-const ProductoEvento = require('../src/models/mongo/ProductoEvento');
 const Resena = require('../src/models/mongo/Resena');
 const { conectar: conectarMongo } = require('../src/config/mongo');
 const { checkout } = require('../src/services/checkoutService');
 const resenaService = require('../src/services/resenaService');
+const productoService = require('../src/services/productoService');
 const fraudeService = require('../src/services/fraudeService');
 const fraudeSyncService = require('../src/services/fraudeSyncService');
+const { afirmar, prepararCuenta, asegurarProducto, conProductoActivo } = require('./lib/datosPrueba');
 
-// Evidencia de funcionamiento de las seis señales de fraude (Entrega 2, ver
-// IA/PLAN-NEO4J-DETECCION-FRAUDE.md §17-§18): A reseñas coordinadas, B gasto
+// Evidencia de funcionamiento de las siete señales de fraude (Entrega 2, ver
+// IA/PLAN-NEO4J-DETECCION-FRAUDE.md §17-§19): A reseñas coordinadas, B gasto
 // anómalo, C categoría inusual, D cuentas de una misma persona (mismo nombre o
-// mismo buzón de correo), E ráfaga de gasto, F autocompra. Con el catálogo y las
-// cuentas de prueba reales casi ninguna consulta encuentra nada (ver plan §8):
-// siembra los patrones, documentados como sintéticos, corriendo
-// checkout()/resenaService.crear() REALES (no MERGE directo a Neo4j) para probar
-// el camino en vivo de punta a punta, no solo las consultas de lectura.
+// mismo buzón de correo), E ráfaga de gasto, F autocompra, G reventa de lo
+// comprado. Con el catálogo y las cuentas de prueba reales casi ninguna consulta
+// encuentra nada (ver plan §8): siembra los patrones, documentados como
+// sintéticos, corriendo checkout()/resenaService.crear()/productoService.crear()
+// REALES (no MERGE directo a Neo4j) para probar el camino en vivo de punta a
+// punta, no solo las consultas de lectura.
 //
 // B, C y E dependen del TIEMPO, y el checkout siempre fecha la compra con el
 // instante actual: después de cada checkout "histórico" se corrige la fecha en
@@ -36,43 +37,9 @@ const fraudeSyncService = require('../src/services/fraudeSyncService');
 // probarlo se inserta uno directo en MySQL (`sembrarCompraHistorica`); el script
 // además comprueba que checkout() ya lo rechaza.
 
-function afirmar(condicion, mensaje) {
-  if (!condicion) throw new Error(`FALLO: ${mensaje}`);
-}
-
-// ---------- Cuentas y datos que el checkout exige ----------
-
-async function crearCuenta(correo, nombres, { apellidos = 'Prueba', nacimiento = '1995-01-01', rol = 'comprador' } = {}) {
-  const existente = await prisma.usuarios.findFirst({ where: { correo } });
-  if (existente) return existente;
-  const rolDb = await prisma.rol_usuario.findFirst({ where: { tipo_rol: rol } });
-  const hash = await bcrypt.hash('Password123!', 10);
-  return prisma.usuarios.create({
-    data: { rol_id: rolDb.id, nombres, apellidos, correo, contrasena: hash, fecha_nacimiento: new Date(nacimiento) },
-  });
-}
-
-// checkout() valida que la dirección y el método de pago sean del comprador —
-// siguen haciendo falta para comprar, aunque ya no entren al grafo de fraude.
-async function crearDireccion(usuarioId) {
-  const datos = { direccion: 'Calle de prueba 1-23', codigo_postal: '01001' };
-  const existente = await prisma.direcciones.findFirst({ where: { id_usuario: usuarioId, ...datos } });
-  if (existente) return existente;
-  return prisma.direcciones.create({ data: { id_usuario: usuarioId, pais: 'Guatemala', ...datos } });
-}
-
-async function crearMetodoPago(usuarioId, token) {
-  const existente = await prisma.metodo_pago.findFirst({ where: { id_usuario: usuarioId, token_pasarela: token } });
-  if (existente) return existente;
-  return prisma.metodo_pago.create({
-    data: { id_usuario: usuarioId, titular: 'Cuenta de prueba', token_pasarela: token, ultimos_4_digitos: '0000', marca: 'Visa' },
-  });
-}
-
-async function prepararCuenta(correo, nombres, token, opciones) {
-  const usuario = await crearCuenta(correo, nombres, opciones);
-  return { usuario, direccion: await crearDireccion(usuario.id_usuario), metodoPago: await crearMetodoPago(usuario.id_usuario, token) };
-}
+// Cuentas, direcciones, métodos de pago y productos sintéticos (`afirmar`,
+// `prepararCuenta`, `asegurarProducto`, `conProductoActivo`) viven en
+// scripts/lib/datosPrueba.js: los comparte verificarCompromisoReventa.js.
 
 // ---------- Productos ----------
 
@@ -94,59 +61,6 @@ async function elegirProducto({ categoria, precioMin = 0, precioMax = 1e12, unid
     if (inventario && inventario.cantidad >= unidades) return { id: c.producto_id, descripcion: c.descripcion, precio: Number(inventario.precio) };
   }
   throw new Error(`No hay un producto de "${categoria}" entre Q${precioMin} y Q${precioMax} con ${unidades}+ unidades de stock real.`);
-}
-
-// Producto sintético de un vendedor de prueba — para la autocompra hace falta
-// un vendedor que sea una de las cuentas del patrón, y los vendedores reales
-// del catálogo no deben aparecer como autocompradores. Se crea directo (mismo
-// criterio que verificarRecomendaciones.js con su producto competidor) y
-// INACTIVO: no aparece en la tienda ni en el buscador, pero checkout() solo
-// valida el inventario real, así que se puede comprar.
-async function asegurarProducto(vendedor, descripcion, precio) {
-  await conectarMongo();
-  const existente = await Producto.findOne({ descripcion }).lean();
-  if (existente) return { id: existente.producto_id, descripcion, precio };
-
-  const subcategoria = await Subcategoria.findOne({ subcategoria: 'Camisetas' });
-  afirmar(subcategoria, 'no existe la subcategoría "Camisetas" en el catálogo');
-  const cantidad = 20;
-  const relacional = await prisma.producto.create({
-    data: { id_vendedor: vendedor.id_usuario, inventario: { create: { precio, cantidad } } },
-  });
-  const doc = await Producto.create({
-    producto_id: relacional.id,
-    descripcion,
-    estado: 'inactivo',
-    subcategoria_id: subcategoria._id,
-    vendedor_id: vendedor.id_usuario,
-    vendedor_nombre: `${vendedor.nombres} ${vendedor.apellidos}`,
-    inventario: { precio, cantidad },
-    atributos: [],
-    imagenes: [],
-    version: 1,
-  });
-  await ProductoEvento.create({
-    producto_id: relacional.id,
-    version: 1,
-    tipo: 'creacion',
-    fecha: doc.actualizado_en,
-    usuario_id: vendedor.id_usuario,
-    campos_modificados: [],
-    snapshot: { descripcion, estado: 'inactivo', atributos: [], imagenes: [], inventario: { precio, cantidad } },
-  });
-  return { id: relacional.id, descripcion, precio };
-}
-
-// checkout() rechaza productos que no estén "activos" (409 "productos no
-// disponibles"), así que un producto sintético inactivo solo se activa durante
-// el instante de su compra y se vuelve a ocultar siempre, aunque la compra falle.
-async function conProductoActivo(producto, accion) {
-  await Producto.updateOne({ producto_id: producto.id }, { $set: { estado: 'activo' } });
-  try {
-    return await accion();
-  } finally {
-    await Producto.updateOne({ producto_id: producto.id }, { $set: { estado: 'inactivo' } });
-  }
 }
 
 // ---------- Compras (reales) y su corrección de fecha ----------
@@ -192,12 +106,16 @@ function ayerEnLaManana() {
 
 // `productos`: uno solo o un arreglo — una unidad de cada uno, en UN pedido.
 // `fecha`: si se indica, la compra se reubica en ese instante (pasado).
+// Siempre acepta el compromiso de no reventa, como lo haría el aviso del
+// frontend: a un comprador no le cambia nada (el servidor lo ignora) y a una
+// cuenta que puede vender se lo exige y lo deja asentado en el pedido.
 async function comprar(cuenta, productos, fecha = null) {
   const { compra } = await checkout({
     usuarioId: cuenta.usuario.id_usuario,
     direccionId: cuenta.direccion.id,
     metodoPagoId: cuenta.metodoPago.id,
     items: [].concat(productos).map((p) => ({ productoId: p.id, cantidad: 1 })),
+    aceptaNoReventa: true,
   });
   if (fecha) {
     await prisma.compra.update({ where: { id: compra.id }, data: { fecha } });
@@ -249,6 +167,19 @@ const lazy = (fn) => {
   return () => (promesa ||= fn());
 };
 
+// Cambia el estado de una publicación SOLO mientras dura una comprobación, y lo
+// restaura siempre. Va directo a Mongo, sin pasar por el historial de ediciones:
+// re-correr el script no acumula versiones del producto de prueba.
+async function conEstado(productoId, estado, accion) {
+  const antes = (await Producto.findOne({ producto_id: productoId }).select('estado').lean()).estado;
+  await Producto.updateOne({ producto_id: productoId }, { $set: { estado } });
+  try {
+    return await accion();
+  } finally {
+    await Producto.updateOne({ producto_id: productoId }, { $set: { estado: antes } });
+  }
+}
+
 async function main() {
   // --- Normalización del nombre (función pura, no depende de ninguna base) ---
   const { normalizarNombre } = fraudeSyncService;
@@ -268,6 +199,19 @@ async function main() {
   afirmar(normalizarCorreo('ana@example.com') !== normalizarCorreo('ana@example.org'), 'otro dominio es otro buzón');
   afirmar(/^[0-9a-f]{64}$/.test(hashCorreo('ana@example.com')) && hashCorreo('ANA+x@Example.com') === hashCorreo('ana@example.com'), 'el grafo guarda el SHA-256 del buzón normalizado');
   console.log('OK: normalización de buzones (alias "+", puntos de Gmail, googlemail; el hash es de lo normalizado).');
+
+  // --- Clave canónica de un artículo (también pura): decide cuándo dos
+  // productos son "el mismo artículo" para la señal de reventa ---
+  const { claveArticulo } = fraudeSyncService;
+  afirmar(
+    claveArticulo('Camiseta premium de algodón orgánico') === claveArticulo('ALGODÓN orgánico, camiseta PREMIUM'),
+    'mayúsculas, tildes, puntuación y el orden de las palabras no deben distinguir un artículo'
+  );
+  afirmar(claveArticulo('Taza de cerámica') === claveArticulo('Taza ceramica'), 'los artículos y preposiciones ("de") no cuentan');
+  afirmar(claveArticulo('Smartphone X100') !== claveArticulo('Smartphone X200'), 'el modelo (los números) SÍ distingue un artículo');
+  afirmar(claveArticulo('Sartén antiadherente') !== claveArticulo('Sarten antiadherente 26cm'), 'comparación exacta: una medida de más es otro producto');
+  afirmar(claveArticulo('de la') !== '', 'una descripción hecha solo de palabras vacías no puede quedar con clave vacía');
+  console.log('OK: clave de artículo (orden, tildes, mayúsculas y "de/la" no cuentan; el modelo y las medidas sí).');
 
   // --- Señal A: dos cuentas que reseñan los mismos 3 productos, en bloque ---
   const test1 = await prepararCuenta('fraude.test1@example.com', 'Fraude Test1', 'tok_fraude_test1');
@@ -436,6 +380,101 @@ async function main() {
   }
   console.log(`Señal E: ráfaga de volumen (cuenta nueva) y ráfaga de gasto con pedidos normales (${sembroRafagas ? 'sembrada ahora' : 'ya sembrada'}).`);
 
+  // --- Señal G: reventa. Un vendedor (mayorista) publica un producto; otro
+  // vendedor (revendedor) se lo compra —aceptando el compromiso de no reventa— y
+  // DESPUÉS publica uno con la misma descripción y los mismos atributos. Todo por
+  // los servicios reales: checkout() para la compra y productoService.crear()/
+  // actualizar() para la publicación (así se prueba el reenvío al grafo del alta).
+  // Un segundo vendedor (competidor) ya vendía el suyo ANTES de comprar el del
+  // mayorista y con atributos distintos: el mismo patrón, pero sin corroboración. ---
+  const mayorista = await prepararCuenta('fraude.mayorista@example.com', 'Fraude Mayorista', 'tok_fraude_mayorista', { rol: 'vendedor', nacimiento: '1984-02-02' });
+  const revendedor = await prepararCuenta('fraude.revendedor@example.com', 'Fraude Revendedor', 'tok_fraude_revendedor', { rol: 'vendedor', nacimiento: '1991-08-08' });
+  const competidor = await prepararCuenta('fraude.competidor@example.com', 'Fraude Competidor', 'tok_fraude_competidor', { rol: 'vendedor', nacimiento: '1989-12-12' });
+  const cocina = await Subcategoria.findOne({ subcategoria: 'Cocina' });
+  afirmar(cocina, 'no existe la subcategoría "Cocina" en el catálogo');
+  const TITULO_RELOJ = '[PRUEBA fraude] Reloj de pared reventa';
+  const ATRIBUTOS_RELOJ = [{ nombre: 'Material', valor: 'Metal' }, { nombre: 'Color', valor: 'Negro' }];
+  const TITULO_LAMPARA = '[PRUEBA fraude] Lámpara de mesa reventa';
+  const relojOriginal = await asegurarProducto(mayorista.usuario, TITULO_RELOJ, 80, { subcategoria: 'Cocina', atributos: ATRIBUTOS_RELOJ, cantidad: 10 });
+  const lamparaOriginal = await asegurarProducto(mayorista.usuario, TITULO_LAMPARA, 60, { subcategoria: 'Cocina', atributos: [{ nombre: 'Material', valor: 'Vidrio' }], cantidad: 10 });
+  const comoVendedor = (cuenta) => ({ id_usuario: cuenta.usuario.id_usuario, rol: 'vendedor' });
+  const compro = (cuenta, producto) =>
+    prisma.compra_detalle.count({ where: { id_producto: producto.id, compra: { id_usuario: cuenta.usuario.id_usuario } } });
+  let sembroReventa = false;
+
+  // (1) Sin aceptar el compromiso, el servidor no deja comprar a una cuenta que
+  // puede vender: se rechaza ANTES de tocar nada (ni stock ni pedido).
+  const pedidosAntes = await prisma.compra.count({ where: { id_usuario: revendedor.usuario.id_usuario } });
+  let sinCompromiso = null;
+  try {
+    await checkout({
+      usuarioId: revendedor.usuario.id_usuario,
+      direccionId: revendedor.direccion.id,
+      metodoPagoId: revendedor.metodoPago.id,
+      items: [{ productoId: relojOriginal.id, cantidad: 1 }],
+    });
+  } catch (err) {
+    sinCompromiso = err;
+  }
+  afirmar(
+    sinCompromiso?.status === 400 && sinCompromiso.codigo === 'COMPROMISO_NO_REVENTA',
+    `un vendedor que no acepta el compromiso de no reventa debe recibir 400 COMPROMISO_NO_REVENTA (llegó: ${sinCompromiso?.status ?? 'ningún error'})`
+  );
+  afirmar((await prisma.compra.count({ where: { id_usuario: revendedor.usuario.id_usuario } })) === pedidosAntes, 'el rechazo por falta de compromiso no debe dejar ningún pedido');
+
+  // (2) Con la aceptación sí compra, y el pedido guarda la constancia.
+  if ((await compro(revendedor, relojOriginal)) === 0) {
+    await conProductoActivo(relojOriginal, () => comprar(revendedor, relojOriginal));
+    sembroReventa = true;
+  }
+  const pedidoReloj = await prisma.compra.findFirst({
+    where: { id_usuario: revendedor.usuario.id_usuario, compra_detalles: { some: { id_producto: relojOriginal.id } } },
+    orderBy: { id: 'asc' },
+  });
+  afirmar(pedidoReloj.no_reventa_aceptada_en instanceof Date, 'el pedido de un vendedor debe guardar la constancia del compromiso de no reventa');
+
+  // (3) La publicación equivalente, DESPUÉS de comprar: por el alta real de
+  // producto (nace pausada, así no aparece en la tienda hasta que se activa).
+  let relojPropio = await Producto.findOne({ descripcion: TITULO_RELOJ, vendedor_id: revendedor.usuario.id_usuario }).lean();
+  if (!relojPropio) {
+    const creado = await productoService.crear(comoVendedor(revendedor), {
+      descripcion: TITULO_RELOJ, subcategoriaId: cocina._id, precio: 110, cantidad: 2, estado: 'inactivo', atributos: ATRIBUTOS_RELOJ,
+    });
+    relojPropio = { producto_id: creado.id, estado: 'inactivo' };
+    sembroReventa = true;
+  }
+  // El alta tiene que haber llegado al grafo (reenvío de mejor esfuerzo, así que se
+  // comprueba en vez de suponerlo), ya enlazada a su artículo.
+  const articuloDe = async (productoId) => {
+    const [fila] = await neo4j.leer('MATCH (p:Producto {producto_id: $id})-[:ES_ARTICULO]->(a:Articulo) RETURN count(a) AS n, collect(a.clave)[0] AS clave', { id: productoId });
+    return { n: fila.get('n').toNumber(), clave: fila.get('clave') };
+  };
+  const enlace = await articuloDe(relojPropio.producto_id);
+  afirmar(enlace.n === 1 && enlace.clave === fraudeSyncService.claveArticulo(TITULO_RELOJ), 'el alta de un producto debe reenviarse al grafo, enlazado a UN solo artículo');
+  // Lo "vende hoy" exige estado activo: la activa por la edición real del vendedor
+  // (que además prueba el reenvío de la edición) y se queda activa.
+  const estadoReloj = (await Producto.findOne({ producto_id: relojPropio.producto_id }).select('estado').lean()).estado;
+  if (estadoReloj !== 'activo') {
+    await productoService.actualizar(comoVendedor(revendedor), relojPropio.producto_id, { estado: 'activo' });
+    sembroReventa = true;
+  }
+
+  // (4) El competidor: ya vendía su lámpara (atributos distintos) y después compra
+  // la del mayorista, que se llama igual. La publicación nace ANTES de la compra.
+  let lamparaPropia = await Producto.findOne({ descripcion: TITULO_LAMPARA, vendedor_id: competidor.usuario.id_usuario }).lean();
+  if (!lamparaPropia) {
+    const creada = await productoService.crear(comoVendedor(competidor), {
+      descripcion: TITULO_LAMPARA, subcategoriaId: cocina._id, precio: 75, cantidad: 2, estado: 'inactivo', atributos: [{ nombre: 'Material', valor: 'Cerámica' }],
+    });
+    lamparaPropia = { producto_id: creada.id };
+    sembroReventa = true;
+  }
+  if ((await compro(competidor, lamparaOriginal)) === 0) {
+    await conProductoActivo(lamparaOriginal, () => comprar(competidor, lamparaOriginal));
+    sembroReventa = true;
+  }
+  console.log(`Señal G: un vendedor que le compra un producto a otro y publica uno equivalente después, y un competidor que ya vendía el suyo antes de comprarlo (${sembroReventa ? 'sembrada ahora' : 'ya sembrada'}).`);
+
   // El reenvío a Neo4j es de mejor esfuerzo — dar un margen breve antes de
   // consultar, aunque en la práctica ya corrió dentro de cada await de arriba.
   await new Promise((r) => setTimeout(r, 500));
@@ -523,6 +562,77 @@ async function main() {
   );
   console.log(`F OK: ${autocompraEntre.comprador.nombre} → ${autocompraEntre.vendedor.nombre} (mismo nombre, alta); ${autocompraBuzon.comprador.nombre} → ${autocompraBuzon.vendedor.nombre} (mismo buzón, alta); autoventa histórica de ${autoventa.comprador.nombre} (posible).`);
 
+  // --- G ---
+  const reventa = resultado.reventa.find((h) => h.vendedor.id === id(revendedor) && h.publicacion.id === relojPropio.producto_id);
+  afirmar(reventa, 'no se encontró la reventa sembrada (fraude.revendedor)');
+  afirmar(
+    reventa.originales.length === 1 && reventa.originales[0].producto.id === relojOriginal.id && reventa.originales[0].vendedor.id === id(mayorista),
+    'el original comprado debe ser el reloj del mayorista'
+  );
+  afirmar(reventa.originales[0].unidades === 1 && Math.abs(reventa.originales[0].precioUnitario - 80) < 0.01, 'el hallazgo debe citar 1 unidad a Q80');
+  afirmar(reventa.listadaDespues && reventa.corroboradores.some((c) => c.tipo === 'publicadaDespuesDeComprar'), 'publicar DESPUÉS de comprar debe corroborar');
+  afirmar(reventa.mismosAtributos && reventa.corroboradores.some((c) => c.tipo === 'mismosAtributos'), 'atributos idénticos deben corroborar');
+  afirmar(reventa.nivelConfianza === 'alta', 'misma descripción + publicada después + mismos atributos debe marcarse con confianza alta');
+  afirmar(
+    reventa.publicacion.estado === 'activo' && reventa.publicacion.cantidad === 2 && Math.abs(reventa.publicacion.precio - 110) < 0.01,
+    'la publicación se resuelve EN VIVO del catálogo: activa, 2 en stock, Q110'
+  );
+  afirmar(Math.abs(reventa.variacionPrecio - (110 / 80 - 1)) < 0.001, 'la publica a Q110 contra los Q80 que pagó: +37.5%');
+  afirmar(
+    reventa.compromiso.pedidos === 1 && reventa.compromiso.aceptados === 1 && reventa.compromiso.primeraAceptacion,
+    'el hallazgo debe citar la constancia del compromiso de no reventa del pedido'
+  );
+  afirmar(/aceptó expresamente el compromiso de no reventa/.test(reventa.motivo), 'el motivo debe citar el compromiso asentado');
+  afirmar(!resultado.reventa.some((h) => h.vendedor.id === id(mayorista)), 'control negativo: el vendedor ORIGINAL no revende, vende lo suyo');
+  afirmar(!resultado.reventa.some((h) => h.vendedor.id === id(vendedorA)), 'control negativo: fraude.autocompra.vendedor compró algo y vende otra cosa, no es reventa');
+  afirmar(!resultado.reventa.some((h) => h.vendedor.id === id(compradorA)), 'control negativo: una cuenta que no vende nada no puede revender');
+
+  // Sin otra evidencia, la misma coincidencia queda en "posible": la publicación
+  // del competidor ya existía antes de la compra y sus atributos difieren.
+  const competencia = await conEstado(lamparaPropia.producto_id, 'activo', async () => {
+    const r = await fraudeService.consultarFraude();
+    return r.reventa.find((h) => h.vendedor.id === id(competidor) && h.publicacion.id === lamparaPropia.producto_id);
+  });
+  afirmar(competencia, 'el competidor también compró algo equivalente a lo que vende: debe aparecer');
+  afirmar(!competencia.listadaDespues && !competencia.mismosAtributos, 'su publicación es anterior a la compra y sus atributos difieren');
+  afirmar(competencia.nivelConfianza === 'posible' && competencia.corroboradores.length === 0, 'sin corroboración, la reventa queda en "posible"');
+  afirmar(/no llevan constancia|aceptó expresamente/.test(competencia.motivo), 'el motivo debe decir si hay o no un compromiso asentado');
+
+  // "Hoy lo vende" se lee EN VIVO del catálogo: pausar la publicación hace
+  // desaparecer el hallazgo (es lo que debe pasar: ya no lo está vendiendo).
+  const sigueTrasPausar = await conEstado(relojPropio.producto_id, 'inactivo', async () =>
+    (await fraudeService.consultarFraude()).reventa.some((h) => h.publicacion.id === relojPropio.producto_id)
+  );
+  afirmar(!sigueTrasPausar, 'una publicación pausada no está "vendiéndose hoy": el hallazgo debe desaparecer');
+
+  // Una descripción editada se vuelve a enlazar al artículo que le toca: con otro
+  // título deja de coincidir (y el enlace viejo se borra), y al volver, reaparece.
+  const reenviarTitulo = (titulo) =>
+    fraudeSyncService.registrarProducto({
+      productoId: relojPropio.producto_id,
+      productoDescripcion: titulo,
+      subcategoriaId: cocina._id,
+      vendedorId: id(revendedor),
+      vendedorNombre: `${revendedor.usuario.nombres} ${revendedor.usuario.apellidos}`,
+    });
+  let sigueConOtroTitulo;
+  try {
+    await reenviarTitulo('[PRUEBA fraude] Un título sin relación alguna');
+    afirmar((await articuloDe(relojPropio.producto_id)).n === 1, 'tras editar la descripción el producto debe seguir enlazado a UN solo artículo (el viejo se desenlaza)');
+    sigueConOtroTitulo = (await fraudeService.consultarFraude()).reventa.some((h) => h.publicacion.id === relojPropio.producto_id);
+  } finally {
+    await reenviarTitulo(TITULO_RELOJ);
+  }
+  afirmar(!sigueConOtroTitulo, 'con otra descripción ya no es el mismo artículo: el hallazgo debe desaparecer');
+  afirmar(
+    (await fraudeService.consultarFraude()).reventa.some((h) => h.publicacion.id === relojPropio.producto_id),
+    'al restaurar la descripción el hallazgo debe reaparecer'
+  );
+  console.log(
+    `G OK: ${reventa.vendedor.nombre} compró "${reventa.originales[0].producto.descripcion}" a ${reventa.originales[0].vendedor.nombre} y hoy lo vende (alta: publicó después + mismos atributos, +${Math.round(reventa.variacionPrecio * 100)}%, compromiso asentado); ` +
+      `${competencia.vendedor.nombre} → posible (sin corroboración); pausar la publicación o cambiar el título hace desaparecer el hallazgo.`
+  );
+
   // --- E ---
   const rafagaVolumen = resultado.rafagaGasto.find((r) => r.usuario.id === id(rafagaA));
   afirmar(rafagaVolumen, 'no se encontró la ráfaga de volumen sembrada (fraude.rafaga.a)');
@@ -574,7 +684,14 @@ async function main() {
       (await contar('MATCH ()-[r]->() WHERE type(r) IN ["ENVIÓ_A", "PAGÓ_CON"] RETURN count(r) AS n')) === 0,
     'el grafo todavía tiene nodos/relaciones de dirección o método de pago'
   );
-  afirmar((await contar('MATCH ()-[r:VENDE]->() RETURN count(r) AS n')) > 0, 'el grafo debería tener relaciones VENDE (quién vende cada producto comprado)');
+  afirmar((await contar('MATCH ()-[r:VENDE]->() RETURN count(r) AS n')) > 0, 'el grafo debería tener relaciones VENDE (quién vende cada producto)');
+  // Reventa: todo producto del grafo pertenece a UN solo artículo, y un artículo
+  // es solo su clave canónica (nada personal).
+  afirmar(
+    (await contar('MATCH (p:Producto) WHERE size([(p)-[:ES_ARTICULO]->() | 1]) <> 1 RETURN count(p) AS n')) === 0,
+    'todo Producto del grafo debe estar enlazado a exactamente UN Articulo'
+  );
+  afirmar((await contar('MATCH (a:Articulo) WHERE size(keys(a)) <> 1 OR a.clave IS NULL RETURN count(a) AS n')) === 0, 'un nodo Articulo debe tener únicamente su clave');
   afirmar((await contar('MATCH (u:Usuario) WHERE NOT (u)-[:USA_CORREO]->(:Correo) RETURN count(u) AS n')) === 0, 'todo Usuario del grafo debe tener su buzón (USA_CORREO)');
   afirmar(
     (await contar("MATCH (e:Correo) WHERE NOT e.hash =~ '[0-9a-f]{64}' OR size(keys(e)) <> 1 RETURN count(e) AS n")) === 0,

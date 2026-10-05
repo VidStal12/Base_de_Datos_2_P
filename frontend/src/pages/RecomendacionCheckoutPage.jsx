@@ -8,6 +8,8 @@ import { Button } from '../components/common/Button';
 import { Spinner } from '../components/common/Spinner';
 import { NuevaDireccionForm } from '../components/account/NuevaDireccionForm';
 import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
+import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoReventaModal';
+import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
 
 // Compra directa de una recomendación por tendencia — mismo layout que
 // OfertaCheckoutPage.jsx (dirección + método de pago), pero contra
@@ -18,7 +20,7 @@ import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
 // reintentos, no para compras grandes.
 export function RecomendacionCheckoutPage() {
   const { id } = useParams();
-  const { token } = useAuth();
+  const { token, usuario } = useAuth();
   const navigate = useNavigate();
 
   const [recomendaciones, setRecomendaciones] = useState(null);
@@ -31,6 +33,7 @@ export function RecomendacionCheckoutPage() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [confirmando, setConfirmando] = useState(false);
+  const [pidiendoCompromiso, setPidiendoCompromiso] = useState(false);
 
   useEffect(() => {
     Promise.all([recomendacionesApi.obtener(token), direccionesApi.listar(token), metodosPagoApi.listar(token)])
@@ -61,14 +64,29 @@ export function RecomendacionCheckoutPage() {
     setMostrarFormPago(false);
   }
 
-  async function confirmar() {
+  // Una cuenta que puede vender acepta primero el compromiso de no reventa (ver
+  // utils/compromiso.js); los compradores confirman directo.
+  function pedirConfirmacion() {
+    if (puedeVender(usuario)) setPidiendoCompromiso(true);
+    else confirmar(false);
+  }
+
+  async function confirmar(aceptaNoReventa) {
     setError('');
+    setPidiendoCompromiso(false);
     setConfirmando(true);
     try {
-      const { compra } = await recomendacionesApi.comprar(id, { cantidad: 1, direccionId, metodoPagoId }, token);
+      const { compra } = await recomendacionesApi.comprar(
+        id,
+        { cantidad: 1, direccionId, metodoPagoId, ...(aceptaNoReventa && { aceptaNoReventa: true }) },
+        token
+      );
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
-      setError(err.message);
+      // El servidor pide el compromiso (rol desactualizado en la interfaz): se
+      // vuelve a mostrar el aviso en vez de un error suelto.
+      if (err.codigo === CODIGO_COMPROMISO) setPidiendoCompromiso(true);
+      else setError(err.message);
     } finally {
       setConfirmando(false);
     }
@@ -166,10 +184,17 @@ export function RecomendacionCheckoutPage() {
 
         {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
 
-        <Button variant="accent" disabled={!listoParaConfirmar} onClick={confirmar} className="mt-4 w-full py-3">
+        <Button variant="accent" disabled={!listoParaConfirmar} onClick={pedirConfirmacion} className="mt-4 w-full py-3">
           {confirmando ? 'Confirmando...' : 'Comprar ahora (1 unidad)'}
         </Button>
       </aside>
+
+      <CompromisoNoReventaModal
+        abierto={pidiendoCompromiso}
+        procesando={confirmando}
+        onCancelar={() => setPidiendoCompromiso(false)}
+        onAceptar={() => confirmar(true)}
+      />
     </div>
   );
 }

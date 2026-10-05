@@ -41,6 +41,28 @@ function redisFalso() {
       const siguiente = Number(valores.get(revision) || 0) + 1;
       valores.set(revision, String(siguiente)); await redis.del(k); return siguiente;
     },
+    // Los tres scripts de la oferta flash (config/redis.js), con la misma semántica
+    // que el Lua real — la prueba contra un Redis de verdad es verificar:ofertaCache.
+    async leerOferta(k, revision, ttl, ahora) {
+      if (valores.has(k)) { valores.delete(k); ttls.delete(k); } // clave de un formato anterior (cadena): se descarta
+      const contenido = hashes.get(k) || {};
+      if (Object.keys(contenido).length > 0) {
+        let restante = ttl;
+        const vence = Number(contenido.vence_en);
+        if (vence && vence - ahora < restante) restante = vence - ahora; // el TTL deslizante nunca pasa del fin de la oferta
+        if (restante > 0) ttls.set(k, restante);
+        else { hashes.delete(k); ttls.delete(k); return [valores.get(revision) || '0', []]; }
+      }
+      return [valores.get(revision) || '0', Object.entries(contenido).flat()];
+    },
+    async publicarOferta(k, revision, esperado, ttl, payload, formato) {
+      if ((valores.get(revision) || '0') !== esperado) return 0;
+      hashes.set(k, { _formato: formato, ...JSON.parse(payload) }); ttls.set(k, Number(ttl)); return 1;
+    },
+    async invalidarOferta(k, revision) {
+      const siguiente = Number(valores.get(revision) || 0) + 1;
+      valores.set(revision, String(siguiente)); hashes.delete(k); ttls.delete(k); return siguiente;
+    },
     pipeline() {
       const operaciones = [];
       const p = {};

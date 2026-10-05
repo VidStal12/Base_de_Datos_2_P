@@ -8,9 +8,11 @@ import { Button } from '../components/common/Button';
 import { Spinner } from '../components/common/Spinner';
 import { NuevaDireccionForm } from '../components/account/NuevaDireccionForm';
 import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
+import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoReventaModal';
+import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
 
 export function CheckoutPage() {
-  const { token } = useAuth();
+  const { token, usuario } = useAuth();
   const { items, total, limpiarLocal, refrescar, cargando: cargandoCarrito, error: errorCarrito } = useCart();
   const navigate = useNavigate();
 
@@ -23,6 +25,7 @@ export function CheckoutPage() {
   const [mostrarFormPago, setMostrarFormPago] = useState(false);
   const [error, setError] = useState('');
   const [confirmando, setConfirmando] = useState(false);
+  const [pidiendoCompromiso, setPidiendoCompromiso] = useState(false);
 
   useEffect(() => {
     let vigente = true;
@@ -55,8 +58,17 @@ export function CheckoutPage() {
     setMostrarFormPago(false);
   }
 
-  async function confirmarPedido() {
+  // Una cuenta que puede vender tiene que aceptar el compromiso de no reventa
+  // antes de pagar (ver utils/compromiso.js): el aviso se muestra primero y el
+  // pedido sale recién cuando lo acepta. Los compradores confirman directo.
+  function pedirConfirmacion() {
+    if (puedeVender(usuario)) setPidiendoCompromiso(true);
+    else confirmarPedido(false);
+  }
+
+  async function confirmarPedido(aceptaNoReventa) {
     setError('');
+    setPidiendoCompromiso(false);
     setConfirmando(true);
     try {
       const { compra } = await checkoutApi.confirmar(
@@ -64,6 +76,7 @@ export function CheckoutPage() {
           direccionId,
           metodoPagoId,
           items: items.map(({ producto, cantidad }) => ({ productoId: producto.id, cantidad, precioEsperado: Number(producto.precio) })),
+          ...(aceptaNoReventa && { aceptaNoReventa: true }),
         },
         token
       );
@@ -71,7 +84,10 @@ export function CheckoutPage() {
       limpiarLocal();
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
-      setError(err.message);
+      // Si el servidor pide el compromiso (la interfaz tenía el rol desactualizado),
+      // se vuelve a mostrar el aviso en vez de un error suelto.
+      if (err.codigo === CODIGO_COMPROMISO) setPidiendoCompromiso(true);
+      else setError(err.message);
       await refrescar(true).catch(() => {});
     } finally {
       setConfirmando(false);
@@ -168,12 +184,19 @@ export function CheckoutPage() {
         <Button
           variant="accent"
           disabled={!listoParaConfirmar}
-          onClick={confirmarPedido}
+          onClick={pedirConfirmacion}
           className="mt-4 w-full py-3"
         >
           {confirmando ? 'Confirmando...' : 'Confirmar pedido'}
         </Button>
       </aside>
+
+      <CompromisoNoReventaModal
+        abierto={pidiendoCompromiso}
+        procesando={confirmando}
+        onCancelar={() => setPidiendoCompromiso(false)}
+        onAceptar={() => confirmarPedido(true)}
+      />
     </div>
   );
 }

@@ -17,10 +17,11 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 // resenaService.js) y para el backfill de datos históricos — una sola
 // implementación, no dos que se puedan desalinear.
 //
-// Modelo (ver PLAN §17-§18): el grafo guarda cuánto gasta una cuenta (monto + id
+// Modelo (ver PLAN §17-§19): el grafo guarda cuánto gasta una cuenta (monto + id
 // de la compra), en qué categoría compra, cómo se llama y qué buzón de correo
-// usa (para encontrar cuentas de una misma persona) y quién vende cada producto
-// (para encontrar quien se compra a sí mismo).
+// usa (para encontrar cuentas de una misma persona), quién vende cada producto
+// (para encontrar quien se compra a sí mismo) y qué productos son el MISMO
+// artículo (para encontrar a un vendedor que revende lo que le compró a otro).
 
 // `usuarios.correo` es UNIQUE en MySQL y los nombres no: dos cuentas de una
 // misma persona suelen repetir "nombres + apellidos" tal cual. Se compara
@@ -61,6 +62,30 @@ function normalizarCorreo(correo) {
   local = local.split('+')[0] || local;
   if (dominio === 'gmail.com') local = local.replace(/\./g, '') || local;
   return `${local}@${dominio}`;
+}
+
+// Dos productos son "el mismo artículo" para la señal de reventa cuando sus
+// descripciones dicen lo mismo — la clave canónica de abajo. Es una coincidencia
+// de TÍTULO, nunca una prueba de que sea la misma pieza física (el catálogo no
+// tiene un código de producto compartido entre vendedores), así que la señal
+// que la usa parte como "posible" y sube con corroboración (ver fraudeService).
+//
+// Se compara EXACTO después de normalizar, nunca aproximado — mismo criterio que
+// el nombre de una persona: una coincidencia aproximada cambiaría falsos
+// negativos de hoy por falsos positivos nuevos. Lo que se normaliza es el
+// formato: mayúsculas, tildes, puntuación, y además el ORDEN de las palabras y
+// los artículos/preposiciones ("Camiseta de algodón orgánico" y "Algodón
+// orgánico, camiseta" dicen lo mismo). Se conservan números y unidades ("26cm",
+// "x100", "128gb"): distinguen modelos. Límite honesto: quien cambie una palabra
+// del título, o agregue un adjetivo, deja de coincidir.
+const PALABRAS_VACIAS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'e', 'o', 'u', 'con', 'sin', 'para', 'por', 'en', 'al']);
+
+function claveArticulo(descripcion) {
+  const palabras = normalizarNombre(descripcion).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const significativas = palabras.filter((palabra) => !PALABRAS_VACIAS.has(palabra));
+  // Una descripción hecha solo de palabras vacías ("de la") no puede quedar con
+  // clave vacía: colisionaría con cualquier otra igual de vacía.
+  return [...new Set(significativas.length > 0 ? significativas : palabras)].sort().join(' ');
 }
 
 // Neo4j guarda únicamente el SHA-256 del buzón normalizado, no el correo: sirve
@@ -118,6 +143,14 @@ FOREACH (ignorar IN CASE WHEN $correoHash IS NULL THEN [] ELSE [1] END |
 // no se conoce acá (no se consulta MySQL por cada línea); queda sin setear
 // hasta que esa misma cuenta compre o reseñe. `coalesce` para no pisar un
 // nombre ya sincronizado con el cacheado en el producto (vendedor_nombre).
+//
+// El producto se enlaza a su Articulo (la clave canónica de su descripción, ver
+// claveArticulo) y se DESENLAZA del anterior si la descripción cambió: un
+// producto pertenece a un solo artículo — y si ese artículo se queda sin ningún
+// producto, se borra, para que editar títulos no vaya dejando nodos huérfanos. Es una subconsulta "unitaria" (sin
+// RETURN), así que no cambia las filas ni las variables de la consulta que la
+// contiene — la misma plantilla sirve para compras, reseñas y altas/ediciones
+// de producto, y el enlace queda al día sin importar por cuál camino se tocó.
 const MERGE_PRODUCTO_Y_VENDEDOR = `
 MERGE (p:Producto {producto_id: $productoId})
   SET p.descripcion = $productoDescripcion, p.subcategoria = $subcategoriaId, p.categoria = $categoriaId
@@ -129,6 +162,18 @@ FOREACH (ignorar IN CASE WHEN $vendedorCorreoHash IS NULL THEN [] ELSE [1] END |
   MERGE (ev:Correo {hash: $vendedorCorreoHash})
   MERGE (v)-[:USA_CORREO]->(ev))
 MERGE (v)-[:VENDE]->(p)
+WITH *
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[viejo:ES_ARTICULO]->(anterior:Articulo)
+  WHERE anterior.clave <> $articuloClave
+  DELETE viejo
+  WITH anterior
+  WHERE anterior IS NOT NULL AND NOT (anterior)<-[:ES_ARTICULO]-()
+  DELETE anterior
+}
+MERGE (a:Articulo {clave: $articuloClave})
+MERGE (p)-[:ES_ARTICULO]->(a)
 `;
 
 const MERGE_COMPRA = `
@@ -180,6 +225,7 @@ async function registrarCompra({
     vendedorCorreoHash,
     productoId,
     productoDescripcion,
+    articuloClave: claveArticulo(productoDescripcion),
     subcategoriaId: String(subcategoriaId),
     categoriaId,
     fecha: new Date(fecha).toISOString(),
@@ -227,6 +273,7 @@ async function registrarResena({
     vendedorCorreoHash,
     productoId,
     productoDescripcion,
+    articuloClave: claveArticulo(productoDescripcion),
     subcategoriaId: String(subcategoriaId),
     categoriaId,
     calificacion,
@@ -234,4 +281,29 @@ async function registrarResena({
   });
 }
 
-module.exports = { registrarCompra, registrarResena, normalizarNombre, normalizarCorreo, hashCorreo };
+// Un producto PUBLICADO entra al grafo aunque nadie lo haya comprado todavía:
+// la reventa se ve justamente en la publicación que un vendedor hace DESPUÉS de
+// comprarle a otro, y esa publicación casi nunca tiene una sola compra. Se llama
+// al crear y al editar un producto (productoService) y desde el backfill — así
+// la descripción nueva se vuelve a enlazar a su Articulo. El estado (activo /
+// inactivo), la fecha de publicación y los atributos NO se copian acá: cambian
+// por otros caminos y se leen EN VIVO de Mongo al armar el hallazgo, para que
+// "hoy lo está vendiendo" sea siempre lo que dice el catálogo y no una copia.
+const MERGE_PRODUCTO = MERGE_PRODUCTO_Y_VENDEDOR;
+
+async function registrarProducto({ productoId, productoDescripcion, subcategoriaId, vendedorId, vendedorNombre }) {
+  const [categoriaId, vendedorCorreoHash] = await Promise.all([resolverCategoriaId(subcategoriaId), hashCorreoDe(vendedorId)]);
+  await neo4j.escribir(MERGE_PRODUCTO, {
+    vendedorId,
+    vendedorNombre,
+    vendedorNombreClave: normalizarNombre(vendedorNombre),
+    vendedorCorreoHash,
+    productoId,
+    productoDescripcion,
+    articuloClave: claveArticulo(productoDescripcion),
+    subcategoriaId: String(subcategoriaId),
+    categoriaId,
+  });
+}
+
+module.exports = { registrarCompra, registrarResena, registrarProducto, normalizarNombre, normalizarCorreo, hashCorreo, claveArticulo };

@@ -59,6 +59,49 @@ redis.call('DEL', KEYS[1])
 return revision
 `;
 
+// Datos de la oferta flash (`oferta:{id}:datos`) — mismo protocolo que el carrito
+// (ver ofertaDatosService.js): un hash con su marca de formato, una revisión que
+// evita publicar datos viejos, y una lectura que renueva el TTL. Dos diferencias
+// pensadas para una oferta:
+//   - el TTL deslizante NUNCA pasa del fin de la oferta: el hash guarda `vence_en`
+//     (epoch en segundos) y la lectura renueva a min(inactividad, vence_en - ahora).
+//     Si ya pasó, la clave se borra y el lector regenera (y encuentra la oferta
+//     vencida).
+//   - una clave de un formato anterior (la oferta guardaba antes UNA CADENA JSON en
+//     este mismo nombre) se descarta en vez de fallar con WRONGTYPE.
+// KEYS[1] = datos, KEYS[2] = revisión. ARGV[1] = TTL por inactividad, ARGV[2] = ahora.
+const LUA_LEER_OFERTA = `
+local tipo = redis.call('TYPE', KEYS[1]).ok
+if tipo ~= 'hash' and tipo ~= 'none' then redis.call('DEL', KEYS[1]) end
+local contenido = redis.call('HGETALL', KEYS[1])
+if #contenido > 0 then
+  local ttl = tonumber(ARGV[1])
+  local vence = tonumber(redis.call('HGET', KEYS[1], 'vence_en'))
+  if vence and vence - tonumber(ARGV[2]) < ttl then ttl = vence - tonumber(ARGV[2]) end
+  if ttl > 0 then
+    redis.call('EXPIRE', KEYS[1], ttl)
+  else
+    redis.call('DEL', KEYS[1])
+    contenido = {}
+  end
+end
+return {redis.call('GET', KEYS[2]) or '0', contenido}
+`;
+// Solo publica si la revisión sigue siendo la que el lector vio ANTES de
+// regenerar: una edición/pausa entre medio la incrementó, y publicar lo que se
+// leyó antes la desharía. Devuelve 1 si publicó, 0 si no.
+// ARGV[1] = revisión esperada, ARGV[2] = TTL, ARGV[3] = {campo: valor} en JSON,
+// ARGV[4] = marca de formato.
+const LUA_PUBLICAR_OFERTA = `
+if (redis.call('GET', KEYS[2]) or '0') ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+redis.call('HSET', KEYS[1], '_formato', ARGV[4])
+local contenido = cjson.decode(ARGV[3])
+for campo, valor in pairs(contenido) do redis.call('HSET', KEYS[1], campo, valor) end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return 1
+`;
+
 // Conexión perezosa y reutilizada, mismo patrón que config/mongo.js — se abre
 // una sola vez, la primera vez que algún servicio la necesita.
 function conectar() {
@@ -71,6 +114,11 @@ function conectar() {
     cliente.defineCommand('leerCarrito', { numberOfKeys: 2, lua: LUA_LEER_CARRITO });
     cliente.defineCommand('publicarCarrito', { numberOfKeys: 2, lua: LUA_PUBLICAR_CARRITO });
     cliente.defineCommand('invalidarCarrito', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
+    cliente.defineCommand('leerOferta', { numberOfKeys: 2, lua: LUA_LEER_OFERTA });
+    cliente.defineCommand('publicarOferta', { numberOfKeys: 2, lua: LUA_PUBLICAR_OFERTA });
+    // Invalidar es lo mismo para el carrito y la oferta: subir la revisión y
+    // borrar los datos, en un solo paso atómico.
+    cliente.defineCommand('invalidarOferta', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
   }
   return cliente;
 }

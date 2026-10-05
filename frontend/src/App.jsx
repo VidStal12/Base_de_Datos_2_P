@@ -21,6 +21,7 @@ import { SellerProductFormPage } from './pages/seller/SellerProductFormPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminVentasPage } from './pages/admin/AdminVentasPage';
 import { AdminFraudePage } from './pages/admin/AdminFraudePage';
+import { TerminosPage } from './pages/TerminosPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 const ROLES_VENDEDOR = ['vendedor', 'administrador'];
@@ -46,6 +47,7 @@ export default function App() {
               />
               <Route path="login" element={<LoginPage />} />
               <Route path="registro" element={<RegisterPage />} />
+              <Route path="terminos" element={<TerminosPage />} />
               <Route
                 path="checkout"
                 element={

@@ -5,6 +5,7 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { esEnteroPositivo } = require('../utils/validation');
 const busquedaSyncService = require('./busquedaSyncService');
+const fraudeSyncService = require('./fraudeSyncService');
 const ofertaDatos = require('./ofertaDatosService');
 
 // Todo el contenido de catálogo, incluido precio/cantidad, vive en el
@@ -141,6 +142,27 @@ function construirImagenes(imagen_url, descripcion) {
   return imagen_url ? [{ url: imagen_url, alt: descripcion, orden: 1, principal: true }] : [];
 }
 
+// Reenvío de mejor esfuerzo al grafo de fraude: la señal de reventa necesita
+// conocer cada producto PUBLICADO (no solo los comprados) y a qué artículo
+// pertenece según su descripción (ver fraudeSyncService.registrarProducto y
+// PLAN-NEO4J-DETECCION-FRAUDE.md §19). Mismo criterio que el índice de búsqueda:
+// que falle no debe romper crear()/actualizar() — y, dentro de crear(), un error
+// que escapara acá dispararía la compensación que borra el producto —; se
+// recupera con `npm run fraude:backfill`.
+async function reenviarAlGrafo(producto) {
+  try {
+    await fraudeSyncService.registrarProducto({
+      productoId: producto.id,
+      productoDescripcion: producto.descripcion,
+      subcategoriaId: producto.subcategoria?.id,
+      vendedorId: producto.vendedor_id,
+      vendedorNombre: producto.vendedor_nombre,
+    });
+  } catch (err) {
+    console.error('No se pudo reenviar el producto a Neo4j:', err.message);
+  }
+}
+
 // vendedor: { id_usuario, rol } — sale del token, nunca del body (ver requireAuth).
 // atributos: [{ nombre, valor }] — valores concretos para los atributos que la
 // subcategoría define (p. ej. Talla: "M").
@@ -202,6 +224,7 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
     // Mejor esfuerzo, no bloquea la creación (ver busquedaSyncService.js /
     // IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §7).
     await busquedaSyncService.indexarProducto(productoCompleto);
+    await reenviarAlGrafo(productoCompleto);
     return productoCompleto;
   } catch (err) {
     await prisma.inventario.deleteMany({ where: { id_producto: productoRelacional.id } });
@@ -356,6 +379,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
 
   const productoCompleto = await obtener(productoId);
   await busquedaSyncService.indexarProducto(productoCompleto);
+  await reenviarAlGrafo(productoCompleto);
   return productoCompleto;
 }
 

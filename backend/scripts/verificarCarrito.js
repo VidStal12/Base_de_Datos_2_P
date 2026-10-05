@@ -119,10 +119,14 @@ async function main() {
   await oferta.actualizar(vendedor, productoId, { activo: true, precio_oferta: 8, stock_oferta: 5, vigente_desde: new Date(Date.now() - 1000), vigente_hasta: new Date(Date.now() + 60000) });
   const infoFlash = await peticion(`/ofertas/${productoId}/stock`);
   assert.equal(infoFlash.producto.descripcion, descripcion);
-  const flash = JSON.parse(await redis.get(`oferta:${productoId}:datos`));
+  // Los datos de la oferta son un hash con la estructura del carrito (un campo cada
+  // uno, los anidados en JSON), no una cadena: ver ofertaDatosService.js.
+  assert.equal(await redis.type(`oferta:${productoId}:datos`), 'hash');
+  const flash = await redis.hgetall(`oferta:${productoId}:datos`);
+  assert.equal(flash._formato, cache.FORMATO);
   assert.equal(flash.descripcion, descripcion);
-  assert.equal(flash.oferta_flash.precio_oferta, 8);
-  assert.equal('inventario' in flash, false);
+  assert.equal(JSON.parse(flash.oferta_flash).precio_oferta, 8);
+  assert.equal(Object.keys(flash).some((campo) => /inventario|cantidad/.test(campo)), false, 'el inventario real no se copia');
   await peticion(`/ofertas/${productoId}/comprar`, { metodo: 'POST', estado: 409, body: { cantidad: 1, direccionId: direccion.id, metodoPagoId: metodo.id, precioEsperado: 7 } });
   assert.equal(await redis.get(`oferta:${productoId}:stock`), null, 'rechazar el precio no consume ni inicializa cupo');
   const respuestas = await Promise.allSettled(Array.from({ length: 15 }, () => peticion(`/ofertas/${productoId}/comprar`, {

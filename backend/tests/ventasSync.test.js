@@ -290,6 +290,9 @@ for (const variante of ['checkout', 'checkoutOferta']) {
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; } },
       './productoService': { verificarNoEsPropio: async () => {} },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
+      // fraudeSyncService ahora lee el correo de MySQL (prisma): sin este doble
+      // el módulo real abriría una conexión en una prueba aislada.
+      './fraudeSyncService': { registrarCompra: async () => {} },
       './ventasOutboxService': { encolarCompra: async (mismoTx) => {
         assert.equal(mismoTx, tx);
         assert.equal(pagoCreado, true);

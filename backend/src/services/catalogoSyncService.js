@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
+const ofertaDatos = require('./ofertaDatosService');
 
 // Reconciliación, no adición: recalcula total_vendido (caché en Mongo, ver
 // Producto.js) desde la fuente de verdad real, compra_detalle en MySQL — y
@@ -42,10 +43,10 @@ async function recalcularInventario() {
   const inventarios = await prisma.inventario.findMany();
   const mapaInventario = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
 
-  const productos = await Producto.find().select('producto_id');
+  const productos = await Producto.find().select('producto_id oferta_flash.activo');
   let actualizados = 0;
   const omitidos = [];
-  for (const { producto_id } of productos) {
+  for (const { producto_id, oferta_flash } of productos) {
     const inv = mapaInventario.get(producto_id);
     if (!inv) {
       omitidos.push(producto_id);
@@ -55,6 +56,12 @@ async function recalcularInventario() {
       { producto_id },
       { $set: { 'inventario.precio': Number(inv.precio), 'inventario.cantidad': inv.cantidad } }
     );
+    // La oferta flash guarda en Redis una copia del producto con este precio
+    // (ofertaDatosService.js): solo existe mientras la oferta está activa, así
+    // que solo ahí hace falta invalidarla para que se regenere con el precio
+    // corregido (en los demás no hay nada que borrar, y se evita dejar una
+    // clave de revisión por cada producto del catálogo).
+    if (oferta_flash?.activo) await ofertaDatos.invalidar(producto_id);
     actualizados += 1;
   }
 

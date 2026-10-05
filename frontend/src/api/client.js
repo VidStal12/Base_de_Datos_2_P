@@ -15,7 +15,13 @@ async function request(path, { method = 'GET', body, token } = {}) {
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
-    throw new Error(data?.error || `Error ${res.status}`);
+    const err = new Error(data?.error || `Error ${res.status}`);
+    err.status = res.status;
+    // Código estable que algunos rechazos del servidor traen además del mensaje
+    // (p. ej. COMPROMISO_NO_REVENTA, ver utils/compromiso.js): la interfaz
+    // reacciona al código, no al texto.
+    if (data?.codigo) err.codigo = data.codigo;
+    throw err;
   }
 
   return data;

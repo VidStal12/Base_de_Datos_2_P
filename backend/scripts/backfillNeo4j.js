@@ -16,16 +16,49 @@ const fraudeSyncService = require('../src/services/fraudeSyncService');
 // completa) es seguro.
 const LOTE = 100;
 
-// Rediseños de 2026-10-04 (ver PLAN-NEO4J-DETECCION-FRAUDE.md §16-§18): el
+// Rediseños de 2026-10-04 (ver PLAN-NEO4J-DETECCION-FRAUDE.md §16-§19): el
 // grafo ya no guarda dirección de envío ni método de pago. Neo4j es una copia
 // derivada (nunca la autoridad de nada), así que purgar lo viejo es seguro y se
 // puede reconstruir con este mismo script. Idempotente: sobre un grafo ya
 // limpio no borra nada. (`Correo` volvió en §18 — ya no es parte de lo que se
-// purga.)
+// purga — y `Articulo`, de la señal de reventa de §19, se reconstruye desde
+// los productos publicados.)
 async function limpiarModeloAnterior() {
   await neo4j.escribir('MATCH (n:Direccion) DETACH DELETE n');
   await neo4j.escribir('MATCH (n:MetodoPago) DETACH DELETE n');
   await neo4j.escribir('MATCH ()-[c:COMPRÓ]->() REMOVE c.direccion_texto, c.metodo_pago_token');
+  // Un Articulo que ya no tiene ningún producto (porque se editó la descripción
+  // de todos los que lo compartían) no sirve para nada: la señal de reventa
+  // necesita DOS productos en el mismo artículo.
+  await neo4j.escribir('MATCH (a:Articulo) WHERE NOT (a)<-[:ES_ARTICULO]-() DELETE a');
+}
+
+// Todos los productos publicados, no solo los comprados: la señal de reventa ve
+// justamente la publicación que un vendedor hace después de comprarle a otro, y
+// esa casi nunca tiene una compra (ver fraudeSyncService.registrarProducto).
+// Va ANTES que las compras para que cada producto ya tenga su Articulo cuando
+// llegue la arista COMPRÓ. Mismo `registrarProducto` que usa el alta/edición en
+// vivo — una sola implementación.
+async function backfillProductos() {
+  let procesados = 0;
+  let omitidos = 0;
+  const productos = Producto.find({}).select('producto_id descripcion subcategoria_id vendedor_id vendedor_nombre').lean().cursor();
+  for await (const producto of productos) {
+    try {
+      await fraudeSyncService.registrarProducto({
+        productoId: producto.producto_id,
+        productoDescripcion: producto.descripcion,
+        subcategoriaId: producto.subcategoria_id,
+        vendedorId: producto.vendedor_id,
+        vendedorNombre: producto.vendedor_nombre,
+      });
+      procesados += 1;
+    } catch (err) {
+      omitidos += 1;
+      console.error(`Producto #${producto.producto_id} omitido: ${err.message}`);
+    }
+  }
+  return { procesados, omitidos };
 }
 
 async function backfillCompras() {
@@ -136,6 +169,8 @@ async function backfillResenas() {
 async function main() {
   await conectarMongo();
   await limpiarModeloAnterior();
+  const productos = await backfillProductos();
+  console.log(`Productos: ${productos.procesados} reenviados, ${productos.omitidos} omitidos.`);
   const compras = await backfillCompras();
   console.log(`Compras: ${compras.procesados} reenviadas, ${compras.omitidos} omitidas (sin usuario/producto resoluble).`);
   const resenas = await backfillResenas();

@@ -274,6 +274,37 @@ function DiagramaAutocompra({ f }) {
   );
 }
 
+// Relación REAL de la reventa:
+//   (vendedor)-[:COMPRÓ]->(original)<-[:VENDE]-(otro vendedor)
+//   (original)-[:ES_ARTICULO]->(artículo)<-[:ES_ARTICULO]-(publicación)<-[:VENDE]-(vendedor)
+// Un nodo compartido — el artículo — une el producto que compró con el que hoy
+// vende; la arista punteada roja es la sospechosa: vende lo que compró. Si
+// compró el mismo artículo a más de un vendedor se dibuja el primero y el resto
+// se cuenta como texto (ver las razones), igual que DiagramaResenas.
+function DiagramaReventa({ h }) {
+  const original = h.originales[0];
+  const extra = h.originales.length - 1;
+  return (
+    <svg viewBox={`0 0 540 ${extra > 0 ? 250 : 230}`} className="mt-2 w-full max-w-xl" role="img" aria-label="Diagrama de un vendedor que revende lo que compró">
+      <AristaSvg x1={75} y1={118} x2={270} y2={42} etiqueta="compró" />
+      <AristaSvg x1={465} y1={42} x2={270} y2={42} etiqueta="vende" />
+      <AristaSvg x1={75} y1={118} x2={270} y2={192} etiqueta="vende" discontinua />
+      <AristaSvg x1={270} y1={42} x2={465} y2={118} etiqueta="es el artículo" discontinua />
+      <AristaSvg x1={270} y1={192} x2={465} y2={118} etiqueta="es el artículo" discontinua />
+      <NodoSvg x={75} y={118} w={130} h={42} titulo={h.vendedor.nombre} subtitulo={`vendedor #${h.vendedor.id}`} tono="usuario" />
+      <NodoSvg x={270} y={42} w={150} h={42} titulo={original.producto.descripcion} subtitulo="lo que compró" tono="dato" />
+      <NodoSvg x={465} y={42} w={130} h={42} titulo={original.vendedor.nombre} subtitulo={`vendedor #${original.vendedor.id}`} tono="otro" />
+      <NodoSvg x={270} y={192} w={150} h={42} titulo={h.publicacion.descripcion} subtitulo="lo que hoy vende" tono="dato" />
+      <NodoSvg x={465} y={118} w={130} h={36} titulo="Mismo artículo" subtitulo="descripción canónica" tono="dato" />
+      {extra > 0 && (
+        <text x={270} y={240} textAnchor="middle" className="fill-neutral-400 text-[10px]">
+          +{extra} compra(s) equivalente(s) más, ver el detalle
+        </text>
+      )}
+    </svg>
+  );
+}
+
 // Barras horizontales simples para comparar magnitudes (monto vs. historial,
 // categoría nueva vs. habituales). Un SVG a mano sería más código para decir
 // lo mismo; divs con ancho proporcional se leen igual y se adaptan al ancho.
@@ -306,6 +337,10 @@ const ETIQUETAS_SENAL = {
   categoriaInusual: 'categoría inusual',
   rafagaGasto: 'ráfaga de gasto',
   fechaNacimiento: 'misma fecha de nacimiento',
+  reventa: 'reventa de lo comprado',
+  publicadaDespuesDeComprar: 'publicó después de comprar',
+  mismosAtributos: 'mismos atributos',
+  reventaRecurrente: 'reventa recurrente',
 };
 
 // Resumen de una línea con lo importante — pensado para escanear el panel
@@ -338,6 +373,14 @@ function resumenAutocompra(f) {
   return f.mismaCuenta
     ? `${f.comprador.nombre}: ${pluralPedidos(f.pedidos)} (${formatoQ(f.total)}) de sus propios productos.`
     : `${f.comprador.nombre} (#${f.comprador.id}) le compró ${pluralPedidos(f.pedidos)} (${formatoQ(f.total)}) a ${f.vendedor.nombre} (#${f.vendedor.id}), otra cuenta con ${vinculoAutocompra(f)}.`;
+}
+
+const pluralUnidades = (n) => `${n} unidad${n === 1 ? '' : 'es'}`;
+
+function resumenReventa(h) {
+  const original = h.originales[0];
+  const otras = h.originales.length > 1 ? ` (+${h.originales.length - 1} compra${h.originales.length === 2 ? '' : 's'} equivalente${h.originales.length === 2 ? '' : 's'})` : '';
+  return `${h.vendedor.nombre} (#${h.vendedor.id}) le compró "${original.producto.descripcion}" a ${original.vendedor.nombre} (#${original.vendedor.id})${otras} y hoy vende "${h.publicacion.descripcion}"${h.publicacion.precio != null ? ` a ${formatoQ(h.publicacion.precio)}` : ''}.`;
 }
 
 function resumenRafaga(r) {
@@ -427,6 +470,28 @@ function razonesAutocompra(f) {
     ],
     f.corroboradores
   );
+}
+
+function razonesReventa(h) {
+  const p = h.publicacion;
+  const razones = [
+    ...h.originales.map(
+      (o) =>
+        `Compró "${o.producto.descripcion}" (producto #${o.producto.id}) a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}): ${pluralUnidades(o.unidades)}${o.precioUnitario != null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}, ${o.pedidos.length === 1 ? 'pedido' : 'pedidos'} ${o.pedidos.map((x) => `#${x.compraId}`).join(', ')} (${formatoFechaHora(o.primera)}).`
+    ),
+    `Hoy vende "${p.descripcion}" (producto #${p.id}, ${p.estado}${p.precio != null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFechaHora(p.creadaEn)}` : ''}).`,
+  ];
+  if (h.variacionPrecio != null) {
+    const porcentaje = Math.round(Math.abs(h.variacionPrecio) * 100);
+    razones.push(porcentaje === 0 ? 'Lo publica al mismo precio que pagó por unidad.' : `Lo publica ${porcentaje}% ${h.variacionPrecio > 0 ? 'por encima de' : 'por debajo de'} lo que pagó por unidad.`);
+  }
+  razones.push(
+    h.compromiso.aceptados > 0
+      ? `Aceptó el compromiso de no reventa en ${h.compromiso.aceptados} de ${h.compromiso.pedidos} pedido${h.compromiso.pedidos === 1 ? '' : 's'} (el primero, el ${formatoFechaHora(h.compromiso.primeraAceptacion)}): lo dejó asentado al comprar.`
+      : 'Esas compras no llevan constancia de un compromiso de no reventa (son anteriores a que se pidiera).',
+    'La coincidencia es de título (mismas palabras significativas, sin importar el orden ni los artículos): no prueba que sea la misma pieza. Por eso parte en "posible" y sube con corroboración.'
+  );
+  return conCorroboradores(razones, h.corroboradores);
 }
 
 function razonesRafaga(r) {
@@ -593,6 +658,24 @@ function HallazgoAutocompra({ f }) {
   );
 }
 
+function HallazgoReventa({ h }) {
+  return (
+    <TarjetaHallazgo nivel={h.nivelConfianza} resumen={resumenReventa(h)} corroboradores={h.corroboradores}>
+      <p className="text-sm text-neutral-800">{h.motivo}</p>
+      <Subtitulo>Por qué se marcó</Subtitulo>
+      <ListaRazones razones={razonesReventa(h)} />
+      <Subtitulo>Relaciones (Neo4j)</Subtitulo>
+      <DiagramaReventa h={h} />
+      <GrillaFichas>
+        <FichaUsuario id={h.vendedor.id} nombre={h.vendedor.nombre} ficha={h.vendedor.ficha} notasExtra={['Revende']} />
+        {[...new Map(h.originales.map((o) => [o.vendedor.id, o.vendedor])).values()].map((v) => (
+          <FichaUsuario key={v.id} id={v.id} nombre={v.nombre} ficha={v.ficha} notasExtra={['Vendedor original']} />
+        ))}
+      </GrillaFichas>
+    </TarjetaHallazgo>
+  );
+}
+
 function HallazgoRafaga({ r }) {
   return (
     <TarjetaHallazgo nivel={r.nivelConfianza} resumen={resumenRafaga(r)} corroboradores={r.corroboradores}>
@@ -693,7 +776,7 @@ function Seccion({ titulo, descripcion, hallazgos, renderizar }) {
 }
 
 // Señales de posible fraude (Neo4j, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md
-// §17-§18) — cada hallazgo se muestra colapsado por defecto (resumen de una línea
+// §17-§19) — cada hallazgo se muestra colapsado por defecto (resumen de una línea
 // + insignia de confianza), con un botón para expandir el motivo completo en
 // prosa, la lista de razones y las relaciones/magnitudes que lo respaldan.
 // Nunca una acusación — candidatos para revisión humana, se dice explícito
@@ -753,6 +836,12 @@ export function AdminFraudePage() {
             descripcion="Una cuenta que le compra a sí misma, o a otra cuenta de la misma persona (mismo nombre o mismo buzón de correo): la forma más directa de mover dinero por el comercio. Hoy el sistema ya impide comprar los propios productos; acá aparecen los pedidos de antes de esa regla y las compras entre cuentas distintas."
             hallazgos={datos.autocompra}
             renderizar={(f) => <HallazgoAutocompra key={`${f.comprador.id}-${f.vendedor.id}`} f={f} />}
+          />
+          <Seccion
+            titulo="Reventa de lo comprado"
+            descripcion="Un vendedor que le compró un producto a otro vendedor y hoy tiene publicado y activo uno equivalente. Las cuentas que pueden vender aceptan, al comprar, un compromiso de no reventa; revender lo comprado incumple los Términos de Servicio. La coincidencia es por título: es un candidato para revisión, no una prueba."
+            hallazgos={datos.reventa ?? []}
+            renderizar={(h) => <HallazgoReventa key={`${h.vendedor.id}-${h.publicacion.id}`} h={h} />}
           />
           <Seccion
             titulo="Cuentas de una misma persona"

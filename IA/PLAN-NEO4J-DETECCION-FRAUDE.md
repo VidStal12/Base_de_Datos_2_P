@@ -2,7 +2,7 @@
 
 > Creado: 2026-09-08. **Actualizado 2026-09-08: implementado y verificado.** Infraestructura, sincronización en vivo (checkout + reseñas), backfill histórico, las dos consultas y el panel en `/admin/fraude` — todo corriendo contra datos reales, no solo diseñado. Detalle de la verificación al final de este documento (§12) y en ESTADO-PROYECTO.md.
 
-> **Rediseños 2026-10-04 (ver §16, §17 y §18):** el grafo ya no guarda dirección de envío ni método de pago. Hoy son **seis señales** — reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona, ráfaga de gasto y autocompra — y la identidad entre cuentas son **dos vínculos**: el **nombre completo normalizado** y el **buzón de correo normalizado** (hash). Además, desde §18 el sistema **impide** que un vendedor compre sus propios productos. Las secciones §4 (Señal B por dirección), §5/§6 (nodos `Direccion`/`MetodoPago`, `ENVIÓ_A`/`PAGÓ_CON`), §12, §14 y §15 describen el modelo original, §16 la etapa intermedia solo por correo y §17 la etapa solo por nombre; se conservan como historial de cómo se llegó acá — **el modelo vigente es el de §18.**
+> **Rediseños 2026-10-04 (ver §16 a §19):** el grafo ya no guarda dirección de envío ni método de pago. Hoy son **siete señales** — reseñas coordinadas, gasto anómalo, categoría inusual, cuentas de una misma persona, ráfaga de gasto, autocompra y **reventa de lo comprado** — y la identidad entre cuentas son **dos vínculos**: el **nombre completo normalizado** y el **buzón de correo normalizado** (hash). Además, desde §18 el sistema **impide** que un vendedor compre sus propios productos y, desde §19, una cuenta que puede vender **acepta un compromiso de no reventa** cada vez que compra. Las secciones §4 (Señal B por dirección), §5/§6 (nodos `Direccion`/`MetodoPago`, `ENVIÓ_A`/`PAGÓ_CON`), §12, §14 y §15 describen el modelo original, §16 la etapa intermedia solo por correo y §17 la etapa solo por nombre; se conservan como historial de cómo se llegó acá — **el modelo vigente es el de §19** (que suma `Articulo`/`ES_ARTICULO` al de §18).
 
 ## 1. Por qué esto y por qué ahora
 
@@ -430,3 +430,70 @@ La sección "Cuentas con el mismo nombre" pasó a **"Cuentas de una misma person
 - Compartir buzón puede tener una explicación inocente (una familia que usa alias `+papa` / `+mama` de una misma bandeja). Por eso el panel lo marca como candidato para revisión humana, con el motivo explicado, no como acusación.
 - La regla de compra propia depende de `producto.id_vendedor`: no impide que una persona abra otra cuenta compradora — para eso están D y F.
 - Los pedidos anteriores a la regla no se alteran: las autocompras históricas siguen apareciendo en el panel (como `posible`) hasta que alguien las revise.
+
+## 19. Compromiso de no reventa y señal de reventa (2026-10-04)
+
+Pedido del equipo, sobre §18: las cuentas que pueden vender **sí** pueden comprar productos de otros vendedores (no los propios, §18), pero **no revenderlos**. Eso exige dos cosas: (1) que la cuenta **se comprometa de forma explícita** cada vez que compra y quede constancia, y (2) detectar en el grafo al vendedor que compró un producto de otro y hoy **vende uno equivalente** — que incumple los Términos de Servicio.
+
+### El compromiso, al comprar
+
+- **Quién acepta:** las cuentas que pueden publicar productos — rol `vendedor` o `administrador`, las mismas que pasan `requireRole('vendedor', 'administrador')` en las rutas de productos. El rol se lee de **MySQL** (`compromisoService.exigirCompromiso`), nunca de lo que mande el cliente. Un comprador no ve ni acepta nada.
+- **Pop-up** (`CompromisoNoReventaModal`) en las **tres** pantallas de compra — carrito, oferta flash y recomendación —, justo al confirmar: *"Tu cuenta puede vender en TiendaYa. Al comprar, te comprometés a no revender los productos de este pedido. Si los revendés, estarás incumpliendo los Términos de Servicio de TiendaYa"*, con una casilla obligatoria ("Entiendo y me comprometo…") que habilita "Aceptar y comprar". Escape, un clic en el fondo y "Cancelar" cierran sin comprar; nada de eso acepta. Es un diálogo accesible (`role="dialog"`, `aria-modal`, foco atrapado y devuelto al botón, desplazable en ventanas bajas) que se desmonta al cerrar, así que la aceptación es **siempre de esa compra** y nunca arrastra la anterior. Los «Términos de Servicio» del texto son un enlace a la página pública `/terminos` (ver más abajo), directo a la sección de no reventa (`/terminos#no-reventa`) y en una **pestaña nueva** — salir de la pantalla perdería la dirección y el método de pago ya elegidos —; el enlace entra en el recorrido de Tab del diálogo (el foco atrapado lo incluye) y no cierra ni acepta nada.
+- **El servidor lo exige**, no solo la interfaz: `aceptaNoReventa` tiene que ser el booleano `true` (un `"true"` como texto, un `1` o la ausencia del campo no cuentan) o responde **400** con `codigo: COMPROMISO_NO_REVENTA`. Se evalúa después de la regla de producto propio y **antes de tocar stock o Redis**: en la oferta flash y la recomendación, antes de gastar cupo. Si la interfaz tenía el rol desactualizado y no mostró el aviso, el código reabre el pop-up en vez de enseñar un error suelto.
+- **Constancia:** `compra.no_reventa_aceptada_en` (migración `20261004000000_compromiso_no_reventa`), guardada **en la misma transacción del pedido** — no es un reenvío, no puede fallar por separado. Es nullable a propósito: los pedidos anteriores, y los de compradores, no tienen compromiso, y **no se rellena con la fecha del pedido** (fabricaría una aceptación que nadie dio). El detalle del pedido le muestra al vendedor lo que aceptó.
+
+### El modelo
+
+```
+(:Articulo {clave})                                  -- clave canónica de la descripción
+(:Producto)-[:ES_ARTICULO]->(:Articulo)
+```
+
+Se suma a lo de §18; `Producto` ahora entra al grafo **al publicarse** (`productoService.crear()`/`actualizar()` → `fraudeSyncService.registrarProducto`, y `fraude:backfill` para los ya existentes), no solo cuando alguien lo compra o lo reseña: la reventa se ve justamente en la publicación que un vendedor hace *después* de comprar, y esa casi nunca tiene una compra. `MERGE_PRODUCTO_Y_VENDEDOR` (compartido por compras, reseñas y productos) enlaza al artículo y **desenlaza del anterior** si la descripción cambió (subconsulta unitaria; el artículo que se queda sin productos se borra), así que el enlace queda al día sin importar por qué camino se tocó el producto.
+
+**La clave del artículo** (`claveArticulo`) son las palabras significativas de la descripción, normalizadas, sin repetir y ordenadas: no distingue mayúsculas, tildes, puntuación, **orden** ni artículos/preposiciones ("Camiseta de algodón orgánico" = "Algodón orgánico, camiseta"), y sí el modelo y las medidas ("Smartphone X100" ≠ "X200"; "Sartén antiadherente" ≠ "Sarten antiadherente 26cm"). Se compara **exacto después de normalizar**, nunca aproximado (mismo criterio que el nombre de una persona). Es una coincidencia de **título**, no una prueba de que sea la misma pieza: el catálogo no tiene un código de producto compartido entre vendedores.
+
+### La señal G — reventa de lo comprado
+
+```
+(vendedor)-[:COMPRÓ]->(original)<-[:VENDE]-(otro vendedor)
+(original)-[:ES_ARTICULO]->(artículo)<-[:ES_ARTICULO]-(publicación)<-[:VENDE]-(vendedor)
+```
+
+Seis saltos que ninguna tabla relacional contesta con un solo JOIN. Una fila por (vendedor, publicación), con **todos** los originales equivalentes que compró. La consulta **no** mira si la publicación está activa ni cuándo se publicó — el grafo no guarda el estado de los productos, y una copia atrasada afirmaría que algo "se vende hoy" cuando ya se pausó. Eso se resuelve **en vivo** (`enriquecerReventa`, Mongo + MySQL):
+
+- **"Hoy lo vende"**: solo cuenta una publicación **activa** (estado actual en Mongo). Pausarla hace desaparecer el hallazgo, que es exactamente lo que debe pasar.
+- **Cuándo se publicó**: el evento de creación del historial (`ProductoEvento`). Publicar **después** de comprar es la secuencia de una reventa.
+- **Atributos** de ambos productos: que coincidan (Talla, Color…) dice que no es solo un título parecido.
+- **Unidades y precio pagado** de cada compra (MySQL), con la variación contra el precio al que lo publica, y si ese pedido lleva la **constancia del compromiso** — con ella, el hallazgo deja de ser solo una sospecha: es un compromiso que el vendedor dejó asentado y rompió.
+
+**Nivel de confianza (solo sube):** parte en `posible` — un competidor legítimo puede comprar algo parecido a lo que vende para compararlo. Sube a `alta` si publicó **después** de comprar, si los atributos **coinciden exactamente**, si la misma cuenta aparece **revendiendo otro producto** más, o si la cuenta aparece en D/F/A o con conducta anómala (B/C/E). A la inversa, que una cuenta revenda corrobora esas señales de la misma cuenta (comprar mucho de golpe para revender es justo una ráfaga de gasto).
+
+### Panel
+
+Sección **"Reventa de lo comprado"**: resumen de una línea, motivo en prosa (cita el pedido, el compromiso y el precio), razones, un diagrama con las relaciones reales (el vendedor, lo que compró, su vendedor original, lo que hoy vende y el nodo compartido "Mismo artículo"; la arista punteada roja es la sospechosa) y las fichas de las cuentas ("Revende", "Vendedor original").
+
+### Los Términos de Servicio (`/terminos`)
+
+El aviso cita unos Términos de Servicio, así que existe la página pública donde están (`frontend/src/pages/TerminosPage.jsx`, sin sesión):
+
+- **Contenido:** ocho secciones — el servicio y la cuenta, comprar, vender, **no reventa**, reseñas, conductas que no se permiten, cómo se revisa la actividad sospechosa y cambios —, con versión y fecha de actualización arriba, un resumen, un índice y un ancla por sección (`#no-reventa`, `#resenas`…). La enlazan el aviso de compra (pestaña nueva), el detalle del pedido y el pie de página.
+- **Solo enuncia lo que el sistema hace de verdad:** la compra propia que se rechaza, el compromiso que se pide y se guarda, las reseñas solo de compradores y la revisión de fraude con una persona en el circuito ("una señal no es una acusación ni una sanción automática"). También dice lo que el sitio es: un proyecto de curso sin pasarela de pago real, donde los pagos se registran como aprobados de forma simulada.
+- **No publica umbrales** de las señales (cuánto gasto o cuántos pedidos en un día disparan una revisión): enseñarlos sería enseñar a esquivarlos. Sí nombra qué datos usa la herramienta (relaciones entre cuentas y productos, nombre normalizado, huella irreversible del correo; nunca pagos ni direcciones) y qué ve el administrador al revisar un caso.
+- **Qué promete y qué no:** una reventa confirmada se describe como un derecho que TiendaYa se reserva (retirar las publicaciones, restringir o suspender la cuenta), no como una sanción automática.
+- **Mantenimiento:** si cambia una regla en el backend, se actualiza el texto y se sube `VERSION`. Mejora posible: el pedido guarda *cuándo* aceptó el vendedor pero no *qué versión* de los términos; guardar la versión junto a `no_reventa_aceptada_en` haría la constancia más precisa si el texto cambia.
+
+### Verificación
+
+- **`/terminos`:** `lint` sin avisos nuevos y `build` aprobado. En el navegador: las ocho secciones y su índice; el ancla funciona en una carga en frío (`/terminos#no-reventa`) y por navegación interna desde el detalle del pedido — la sección queda justo debajo del encabezado fijo —; a 375 px no hay desbordes y el índice pasa a una columna; y el enlace del aviso (`href="/terminos#no-reventa"`, `target="_blank"`, `rel="noopener noreferrer"`) entra en el recorrido de Tab del diálogo y no lo cierra ni acepta nada.
+- `npm run verificar:fraude` (ampliado, idempotente): la clave de artículo (orden, tildes, mayúsculas, "de/la"; el modelo y las medidas distinguen); un vendedor **sin** aceptar recibe 400 `COMPROMISO_NO_REVENTA` y no deja pedido; con aceptación compra y el **pedido guarda la constancia**; publica por el alta real de producto y se comprueba que llegó al grafo enlazado a un solo artículo; el hallazgo sale `alta` (publicó después + mismos atributos, +38% sobre lo que pagó, compromiso citado); un **competidor** cuya publicación ya existía antes de la compra y con atributos distintos sale `posible` sin corroboradores; **pausar** la publicación hace desaparecer el hallazgo, **cambiar el título** (el enlace viejo se borra) también, y al volver reaparece; controles negativos (el vendedor original, un vendedor que compró algo y vende otra cosa y una cuenta que no vende no son reventa); y todo `Producto` del grafo tiene exactamente un `ES_ARTICULO`.
+- `npm run verificar:compromisoReventa`: la matriz de roles contra MySQL (comprador no; vendedor y administrador sí; solo `true` cuenta) y que **cada camino de compra** rechaza sin aceptación **sin dejar rastro** — ni pedido, ni cupo gastado en Redis. Pruebas aisladas: `npm run test:compromiso` y `npm run test:redis`.
+- **Probado de punta a punta**: en el navegador, un vendedor compra por las **tres** pantallas (carrito, oferta flash y recomendación): ve el aviso, Escape/Cancelar no compran, y al aceptar el pedido queda con la constancia (y se muestra en su detalle); un comprador no ve el aviso en ninguna. Por HTTP real: el vendedor publica un producto equivalente a uno que compró y el panel lo marca citando su pedido y su compromiso; al pausarlo, el hallazgo desaparece.
+
+### Límites honestos
+
+- **Es una coincidencia de título.** Quien cambie una palabra o agregue un adjetivo ("Camiseta premium (nueva)") deja de coincidir; sin un código de producto compartido, la señal se queda corta con quien disimula y puede equivocarse con quien vende algo genuinamente parecido — por eso parte en `posible` y es un candidato para revisión humana, no una acusación.
+- No ve la reventa **fuera** de TiendaYa, ni distingue si el stock publicado salió de lo comprado.
+- El compromiso solo existe para compras **desde este cambio**: lo anterior no tiene constancia (y el motivo lo dice).
+- Las consecuencias de una reventa confirmada (retirar las publicaciones, restringir o suspender la cuenta) están en los Términos como un **derecho que TiendaYa se reserva**: no existe un mecanismo automático de sanción ni de suspensión de cuentas; el panel solo señala candidatos para revisión humana.
+- Una persona con **dos cuentas** (una compra, la otra revende) la atrapan las señales D y F, no esta.

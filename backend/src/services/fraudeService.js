@@ -5,10 +5,13 @@ const { conectar: conectarMongo } = require('../config/mongo');
 const Resena = require('../models/mongo/Resena');
 const Subcategoria = require('../models/mongo/Subcategoria');
 const Categoria = require('../models/mongo/Categoria');
+const Producto = require('../models/mongo/Producto');
+const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { fechaGuatemala } = require('../utils/ventas');
+const { normalizarNombre } = require('./fraudeSyncService');
 
-// Seis señales independientes (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §3, §16,
-// §17 y §18), cada una con su propia consulta Cypher:
+// Siete señales independientes (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §3, §16,
+// §17, §18 y §19), cada una con su propia consulta Cypher:
 //   A. Reseñas coordinadas — cuentas distintas reseñando lo mismo, en bloque.
 //   B. Gasto anómalo — un pedido muy por encima de lo que esa misma cuenta
 //      gastó en el pasado (la lógica con que un banco vigila a sus clientes).
@@ -22,6 +25,10 @@ const { fechaGuatemala } = require('../utils/ventas');
 //      cuenta de la misma persona (mismo nombre o buzón): mover dinero por el
 //      comercio. (Desde §18 el sistema además IMPIDE esa compra; esta señal
 //      detecta lo que ya existía antes de la regla, o cuentas distintas.)
+//   G. Reventa — un vendedor que le compró un producto a OTRO vendedor y hoy
+//      tiene publicado y activo uno equivalente (§19). Las cuentas que pueden
+//      vender aceptan, al comprar, un compromiso de no reventa; esta señal ve
+//      cuándo no se cumple.
 // Ninguna es una acusación: son candidatos para revisión humana.
 //
 // Por defecto, la postura ante evidencia real es sospechar hasta que una
@@ -428,6 +435,153 @@ async function buscarAutocompra() {
   });
 }
 
+// ---------- Señal G: reventa de lo comprado ----------
+
+// Un vendedor (una cuenta que PUEDE vender) le compra un producto a OTRO vendedor
+// y tiene publicado un producto del mismo artículo — la misma clave canónica de
+// descripción (fraudeSyncService.claveArticulo):
+//   (vendedor)-[:COMPRÓ]->(original)<-[:VENDE]-(otro vendedor)
+//   (original)-[:ES_ARTICULO]->(artículo)<-[:ES_ARTICULO]-(publicación)<-[:VENDE]-(vendedor)
+// Seis saltos que ninguna tabla relacional contesta con un solo JOIN, y el tipo
+// de patrón que un grafo resuelve de forma natural. Es la regla "no revender lo
+// que compraste", que el aviso de compra les hace aceptar a estas cuentas
+// (compromisoService.js).
+//
+// Una fila por (vendedor, publicación) con TODOS los originales equivalentes que
+// compró: comprarle el mismo artículo a dos vendedores sigue siendo una sola
+// publicación bajo sospecha, no dos. La consulta NO mira si la publicación está
+// activa ni cuándo se publicó: el grafo no guarda el estado de los productos, y
+// una copia atrasada diría que algo "se vende hoy" cuando ya se pausó — eso lo
+// resuelve enriquecerReventa() EN VIVO contra el catálogo.
+const CONSULTA_REVENTA = `
+MATCH (s:Usuario)-[c:COMPRÓ]->(p:Producto)<-[:VENDE]-(v:Usuario)
+WHERE v.id_usuario <> s.id_usuario
+MATCH (p)-[:ES_ARTICULO]->(a:Articulo)<-[:ES_ARTICULO]-(q:Producto)<-[:VENDE]-(s)
+WITH s, q, p, v,
+     count(DISTINCT c.compra_id) AS pedidos,
+     min(c.fecha) AS primera, max(c.fecha) AS ultima,
+     collect(DISTINCT c.detalle_id) AS detalles,
+     collect(DISTINCT c.compra_id) AS compras
+WITH s, q,
+     collect({productoId: p.producto_id, descripcion: p.descripcion, vendedorId: v.id_usuario, vendedorNombre: v.nombre,
+              pedidos: pedidos, primera: primera, ultima: ultima, detalles: detalles, compras: compras}) AS originales
+RETURN s.id_usuario AS vendedorId, s.nombre AS vendedorNombre,
+       q.producto_id AS publicacionId, q.descripcion AS publicacionDescripcion,
+       originales
+ORDER BY vendedorId, publicacionId
+`;
+
+async function buscarReventa() {
+  const registros = await neo4j.leer(CONSULTA_REVENTA, {});
+  return registros.map((r) => {
+    const f = aPlano(r.toObject());
+    return {
+      vendedor: { id: f.vendedorId, nombre: f.vendedorNombre },
+      publicacion: { id: f.publicacionId, descripcion: f.publicacionDescripcion },
+      originales: f.originales.map((o) => ({
+        producto: { id: o.productoId, descripcion: o.descripcion },
+        vendedor: { id: o.vendedorId, nombre: o.vendedorNombre },
+        pedidos: o.pedidos,
+        primera: o.primera,
+        ultima: o.ultima,
+        detalles: o.detalles,
+        compras: o.compras,
+      })),
+    };
+  });
+}
+
+// Lo que el grafo no sabe, resuelto EN VIVO (Mongo + MySQL), y el filtro que
+// convierte "tiene una publicación equivalente" en "HOY lo está vendiendo":
+//   - estado actual de la publicación (Mongo): solo cuenta una ACTIVA. Pausarla
+//     hace desaparecer el hallazgo, que es exactamente lo que debe pasar.
+//   - cuándo se publicó (el evento de creación del historial, ProductoEvento) —
+//     la fecha cierra el círculo: publicar DESPUÉS de comprar es el patrón.
+//   - atributos de ambos productos: que coincidan (Talla, Color…) dice que no es
+//     solo un título parecido.
+//   - unidades y precio pagado de cada compra, y si ese pedido lleva la
+//     constancia del compromiso de no reventa (MySQL): lo que vuelve exigible la
+//     cláusula de los Términos de Servicio.
+async function enriquecerReventa(brutos) {
+  if (brutos.length === 0) return [];
+  await conectarMongo();
+
+  const idsPublicaciones = [...new Set(brutos.map((b) => b.publicacion.id))];
+  const idsOriginales = [...new Set(brutos.flatMap((b) => b.originales.map((o) => o.producto.id)))];
+  const idsDetalles = [...new Set(brutos.flatMap((b) => b.originales.flatMap((o) => o.detalles)))];
+  const idsCompras = [...new Set(brutos.flatMap((b) => b.originales.flatMap((o) => o.compras)))];
+
+  const [docs, creaciones, detalles, compras] = await Promise.all([
+    Producto.find({ producto_id: { $in: [...idsPublicaciones, ...idsOriginales] } }).select('producto_id estado atributos inventario').lean(),
+    ProductoEvento.find({ producto_id: { $in: idsPublicaciones }, tipo: 'creacion' }).select('producto_id fecha').lean(),
+    prisma.compra_detalle.findMany({ where: { id: { in: idsDetalles } }, select: { id: true, cantidad: true, precio_final: true } }),
+    prisma.compra.findMany({ where: { id: { in: idsCompras } }, select: { id: true, fecha: true, no_reventa_aceptada_en: true } }),
+  ]);
+  const docPorId = new Map(docs.map((d) => [d.producto_id, d]));
+  const creadaEn = new Map(creaciones.map((e) => [e.producto_id, e.fecha]));
+  const detallePorId = new Map(detalles.map((d) => [d.id, d]));
+  const compraPorId = new Map(compras.map((c) => [c.id, c]));
+
+  // Atributos iguales = el mismo conjunto de nombre=valor, normalizado, y no
+  // vacío (dos productos SIN atributos no "coinciden" en nada).
+  const firma = (atributos) => new Set((atributos ?? []).map((a) => `${normalizarNombre(a.nombre)}=${normalizarNombre(a.valor)}`));
+  const iguales = (a, b) => a.size > 0 && a.size === b.size && [...a].every((x) => b.has(x));
+
+  const resultado = [];
+  for (const b of brutos) {
+    const doc = docPorId.get(b.publicacion.id);
+    if (doc?.estado !== 'activo') continue;
+
+    const originales = b.originales
+      .map((o) => {
+        const lineas = o.detalles.map((id) => detallePorId.get(id)).filter(Boolean);
+        const unidades = lineas.reduce((n, l) => n + l.cantidad, 0);
+        const pagado = lineas.reduce((n, l) => n + Number(l.precio_final), 0);
+        const original = docPorId.get(o.producto.id);
+        return {
+          producto: { ...o.producto, precioActual: original?.inventario?.precio ?? null, atributos: original?.atributos ?? [] },
+          vendedor: o.vendedor,
+          unidades,
+          precioUnitario: unidades > 0 ? pagado / unidades : null,
+          primera: o.primera,
+          ultima: o.ultima,
+          pedidos: o.compras
+            .map((id) => ({ compraId: id, fecha: compraPorId.get(id)?.fecha ?? null, aceptoCompromisoEn: compraPorId.get(id)?.no_reventa_aceptada_en ?? null }))
+            .sort((x, y) => x.compraId - y.compraId),
+        };
+      })
+      .sort((x, y) => new Date(x.primera) - new Date(y.primera));
+
+    const primeraCompra = originales[0].primera;
+    const publicadaEn = creadaEn.get(b.publicacion.id) ?? null;
+    const pedidos = originales.flatMap((o) => o.pedidos);
+    const aceptaciones = pedidos.map((p) => p.aceptoCompromisoEn).filter(Boolean).sort((x, y) => new Date(x) - new Date(y));
+    const precioPublicado = doc.inventario?.precio ?? null;
+    const precioPagado = originales[0].precioUnitario;
+
+    resultado.push({
+      vendedor: b.vendedor,
+      publicacion: {
+        ...b.publicacion,
+        estado: doc.estado,
+        precio: precioPublicado,
+        cantidad: doc.inventario?.cantidad ?? 0,
+        creadaEn: publicadaEn,
+        atributos: doc.atributos ?? [],
+      },
+      originales,
+      primeraCompra,
+      listadaDespues: publicadaEn !== null && new Date(publicadaEn) > new Date(primeraCompra),
+      mismosAtributos: originales.some((o) => iguales(firma(o.producto.atributos), firma(doc.atributos))),
+      // Cuánto más (o menos) cobra por unidad que lo que él pagó — informativo, no
+      // decide el nivel: revender con pérdida también es revender.
+      variacionPrecio: precioPagado > 0 && precioPublicado !== null ? precioPublicado / precioPagado - 1 : null,
+      compromiso: { pedidos: pedidos.length, aceptados: aceptaciones.length, primeraAceptacion: aceptaciones[0] ?? null },
+    });
+  }
+  return resultado;
+}
+
 // ---------- Enriquecimiento (MySQL + Mongo, en vivo) ----------
 
 const UN_DIA_MS = 86400000;
@@ -658,9 +812,38 @@ function construirMotivoRelacionadas(a, corroboradores) {
   return frases.join(' ');
 }
 
+const pluralUnidades = (n) => `${n} unidad${n === 1 ? '' : 'es'}`;
+
+function construirMotivoReventa(h, corroboradores) {
+  const compras = h.originales
+    .map((o) => `"${o.producto.descripcion}" a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}) el ${formatoFecha(o.primera)}, ${pluralUnidades(o.unidades)}${o.precioUnitario !== null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}`)
+    .join('; y ');
+  const p = h.publicacion;
+  const frases = [
+    `${h.vendedor.nombre} (cuenta #${h.vendedor.id}) compró ${compras}, y hoy tiene publicado y activo un producto equivalente: "${p.descripcion}" (producto #${p.id}${p.precio !== null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFecha(p.creadaEn)}` : ''}).`,
+  ];
+  if (h.variacionPrecio !== null) {
+    const porcentaje = Math.round(Math.abs(h.variacionPrecio) * 100);
+    frases.push(
+      porcentaje === 0
+        ? 'Lo publica al mismo precio que pagó por unidad.'
+        : `Lo publica ${porcentaje}% ${h.variacionPrecio > 0 ? 'por encima de' : 'por debajo de'} lo que pagó por unidad.`
+    );
+  }
+  frases.push(
+    'Una cuenta que puede vender no debe revender lo que le compra a otro vendedor: es lo que aprovecha el comercio de otros sin producir nada y deja al vendedor original fuera de su propia venta. Incumple los Términos de Servicio de TiendaYa.',
+    h.compromiso.aceptados > 0
+      ? `En ${pluralPedidos(h.compromiso.aceptados)} de esas compras aceptó expresamente el compromiso de no reventa (el primero, el ${formatoFecha(h.compromiso.primeraAceptacion)}): no es solo una sospecha, es un compromiso que dejó asentado.`
+      : 'Esas compras no llevan constancia de un compromiso de no reventa (son anteriores a que se pidiera): la sospecha se apoya en la coincidencia, no en un compromiso roto.',
+    'La coincidencia es de TÍTULO (mismas palabras significativas, sin importar el orden ni los artículos): no prueba que sea la misma pieza — puede ser un competidor legítimo que vende algo parecido.',
+    cierreConfianza(corroboradores)
+  );
+  return frases.join(' ');
+}
+
 // ---------- Orquestación ----------
 
-// Corre las seis señales juntas para el panel — cada una es independiente, que
+// Corre las siete señales juntas para el panel — cada una es independiente, que
 // una falle no debe tirar abajo a las otras (mismo criterio que
 // ventasService.js con `advertencias` en vez de un error total). Después las
 // cruza: una señal corroborada por otra, independiente, sube a confianza alta.
@@ -681,6 +864,13 @@ function construirMotivoRelacionadas(a, corroboradores) {
 //   - F entre cuentas distintas de una misma persona (nombre o buzón) ya parte en
 //     "alta"; F de una cuenta consigo misma parte en "posible" (puede ser el
 //     vendedor probando su flujo).
+//   - G (reventa) parte en "posible" — la coincidencia es de título, y un
+//     competidor legítimo puede vender algo parecido a lo que compró para
+//     compararlo — y sube con: haber publicado DESPUÉS de comprar (la secuencia de
+//     una reventa), atributos idénticos, otra reventa de la misma cuenta, o que la
+//     cuenta aparezca en D, F, A o con conducta anómala (B/C/E). A la inversa,
+//     que una cuenta revenda corrobora esas señales (comprar mucho de golpe para
+//     revender es justo una ráfaga de gasto).
 async function consultarFraude(parametros = {}) {
   const advertencias = [];
   const aislar = (nombre, promesa) =>
@@ -689,14 +879,21 @@ async function consultarFraude(parametros = {}) {
       return [];
     });
 
-  const [resenas, relacionadas, gastos, categorias, rafagas, autocompras] = await Promise.all([
+  const [resenas, relacionadas, gastos, categorias, rafagas, autocompras, reventasBrutas] = await Promise.all([
     aislar('reseñas coordinadas', buscarResenasCoordinadas(parametros.resenas)),
     aislar('cuentas de una misma persona', buscarCuentasRelacionadas(parametros.relacionadas)),
     aislar('gasto anómalo', buscarGastoAnomalo(parametros.gasto)),
     aislar('categoría inusual', buscarCategoriaInusual(parametros.categoria)),
     aislar('ráfagas de gasto', buscarRafagaGasto(parametros.rafaga)),
     aislar('autocompras', buscarAutocompra()),
+    aislar('reventa de lo comprado', buscarReventa()),
   ]);
+  // Las publicaciones activas se resuelven ANTES de armar el resto: que una
+  // cuenta esté revendiendo es también un corroborador de sus otras señales.
+  const reventas = await enriquecerReventa(reventasBrutas).catch((err) => {
+    advertencias.push(`No se pudo resolver el estado de las publicaciones en reventa: ${err.message}`);
+    return [];
+  });
 
   const idsUsuarios = [
     ...new Set([
@@ -706,6 +903,7 @@ async function consultarFraude(parametros = {}) {
       ...categorias.map((c) => c.usuario.id),
       ...rafagas.map((r) => r.usuario.id),
       ...autocompras.flatMap((f) => [f.comprador.id, f.vendedor.id]),
+      ...reventas.flatMap((r) => [r.vendedor.id, ...r.originales.map((o) => o.vendedor.id)]),
     ]),
   ];
   const idsCategorias = [
@@ -745,6 +943,7 @@ async function consultarFraude(parametros = {}) {
   const resenasDe = agruparPor(resenas, (r) => [r.usuario1.id, r.usuario2.id]);
   const relacionadaDe = agruparPor(relacionadas, (a) => a.miembros.map((m) => m.id));
   const autocompraDe = agruparPor(autocompras, (f) => [f.comprador.id, f.vendedor.id]);
+  const reventaDe = agruparPor(reventas, (r) => [r.vendedor.id]);
   const gastoDe = agruparPor(gastos, (g) => [g.usuario.id]);
   const categoriaDe = agruparPor(categorias, (c) => [c.usuario.id]);
   const rafagaDe = agruparPor(rafagas, (r) => [r.usuario.id]);
@@ -765,11 +964,15 @@ async function consultarFraude(parametros = {}) {
     nombresPorId.set(r.usuario1.id, r.usuario1.nombre);
     nombresPorId.set(r.usuario2.id, r.usuario2.nombre);
   }
+  for (const r of reventas) {
+    nombresPorId.set(r.vendedor.id, r.vendedor.nombre);
+    for (const o of r.originales) nombresPorId.set(o.vendedor.id, o.vendedor.nombre);
+  }
   const quien = (id) => fichas.get(id)?.nombre ?? nombresPorId.get(id) ?? `la cuenta #${id}`;
 
-  // Señales de IDENTIDAD/coordinación de una cuenta (D, F, A) — corroboran
-  // cualquier momento de la cuenta.
-  function corroboradoresDeIdentidad(usuarioId, { sinAutocompra = false } = {}) {
+  // Señales de IDENTIDAD/coordinación de una cuenta (D, F, A) y de conducta
+  // sostenida (G) — corroboran cualquier momento de la cuenta.
+  function corroboradoresDeIdentidad(usuarioId, { sinAutocompra = false, sinReventa = false } = {}) {
     const lista = [];
     // Una entrada por vínculo de ESTA cuenta (nombre y/o buzón): el que sea
     // por buzón pesa más, y el motivo lo dice.
@@ -787,6 +990,9 @@ async function consultarFraude(parametros = {}) {
     }
     if (resenasDe.has(usuarioId)) {
       lista.push({ tipo: 'resenasCoordinadas', detalle: 'esta cuenta también aparece coordinando reseñas (ver "Reseñas coordinadas")' });
+    }
+    if (!sinReventa && reventaDe.has(usuarioId)) {
+      lista.push({ tipo: 'reventa', detalle: 'esta cuenta aparece vendiendo un producto que le compró a otro vendedor (ver "Reventa de lo comprado")' });
     }
     return lista;
   }
@@ -843,7 +1049,10 @@ async function consultarFraude(parametros = {}) {
         corroboradores.push({ tipo: 'resenasCoordinadas', detalle: `las cuentas #${r.usuario1.id} y #${r.usuario2.id} también coordinan reseñas, ver "Reseñas coordinadas"` });
       }
     }
-    for (const id of idsMiembros) corroboradores.push(...corroboradoresDeConducta(id));
+    for (const id of idsMiembros) {
+      corroboradores.push(...corroboradoresDeConducta(id));
+      if (reventaDe.has(id)) corroboradores.push({ tipo: 'reventa', detalle: `${quien(id)} vende un producto que le compró a otro vendedor, ver "Reventa de lo comprado"` });
+    }
     const miembros = a.miembros.map((m) => ({ ...m, categorias: m.categorias.map(nombreCategoria), ficha: fichas.get(m.id) ?? null }));
     const hallazgo = { ...a, miembros, mismaFechaNacimiento };
     // El buzón compartido ya es evidencia por sí solo (parte en "alta"); el
@@ -868,6 +1077,34 @@ async function consultarFraude(parametros = {}) {
       vendedor: { ...f.vendedor, ficha: fichas.get(f.vendedor.id) ?? null },
       ...conNivel(corroboradores, f.mismaCuenta ? 'posible' : 'alta'),
       motivo: construirMotivoAutocompra(f, corroboradores),
+    };
+  });
+
+  // ----- G: reventa de lo comprado -----
+  const hallazgosReventa = reventas.map((r) => {
+    const corroboradores = [];
+    // La secuencia de una reventa: compra el original y DESPUÉS publica el suyo.
+    if (r.listadaDespues) {
+      corroboradores.push({
+        tipo: 'publicadaDespuesDeComprar',
+        detalle: `publicó su oferta DESPUÉS de comprar el original (compró el ${formatoFecha(r.primeraCompra)} y la publicó el ${formatoFecha(r.publicacion.creadaEn)})`,
+      });
+    }
+    if (r.mismosAtributos) {
+      corroboradores.push({ tipo: 'mismosAtributos', detalle: 'los atributos de su publicación coinciden exactamente con los del producto que compró' });
+    }
+    const otrasReventas = (reventaDe.get(r.vendedor.id)?.length ?? 1) - 1;
+    if (otrasReventas > 0) {
+      corroboradores.push({ tipo: 'reventaRecurrente', detalle: `la misma cuenta aparece revendiendo ${otrasReventas} producto${otrasReventas === 1 ? '' : 's'} más` });
+    }
+    // Sin su propia señal como corroborador (se corroboraría a sí misma).
+    corroboradores.push(...corroboradoresDeIdentidad(r.vendedor.id, { sinReventa: true }), ...corroboradoresDeConducta(r.vendedor.id));
+    return {
+      ...r,
+      vendedor: { ...r.vendedor, ficha: fichas.get(r.vendedor.id) ?? null },
+      originales: r.originales.map((o) => ({ ...o, vendedor: { ...o.vendedor, ficha: fichas.get(o.vendedor.id) ?? null } })),
+      ...conNivel(corroboradores),
+      motivo: construirMotivoReventa(r, corroboradores),
     };
   });
 
@@ -948,6 +1185,7 @@ async function consultarFraude(parametros = {}) {
   return {
     cuentasRelacionadas: hallazgosRelacionadas.sort(porSeveridad),
     autocompra: hallazgosAutocompra.sort(porSeveridad),
+    reventa: hallazgosReventa.sort(porSeveridad),
     resenasCoordinadas: hallazgosResenas,
     rafagaGasto: hallazgosRafaga.sort(porSeveridad),
     gastoAnomalo: hallazgosGasto.sort(porSeveridad),
@@ -964,5 +1202,6 @@ module.exports = {
   buscarCategoriaInusual,
   buscarRafagaGasto,
   buscarAutocompra,
+  buscarReventa,
   PARAMETROS_POR_DEFECTO,
 };

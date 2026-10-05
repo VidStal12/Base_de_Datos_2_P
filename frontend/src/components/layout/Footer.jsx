@@ -41,6 +41,11 @@ export function Footer() {
             <ul className="space-y-1 text-neutral-400">
               <li>Vender en TiendaYa</li>
               <li>Sobre el proyecto</li>
+              <li>
+                <Link to="/terminos" className="hover:text-white hover:underline">
+                  Términos de Servicio
+                </Link>
+              </li>
             </ul>
           </div>
         </div>

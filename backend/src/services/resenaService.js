@@ -3,6 +3,7 @@ const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const Resena = require('../models/mongo/Resena');
 const fraudeSyncService = require('./fraudeSyncService');
+const ofertaDatos = require('./ofertaDatosService');
 
 function formatear(doc) {
   return {
@@ -116,6 +117,10 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   }
 
   await recalcularResumen(productoId);
+  // La copia del producto que la oferta flash guarda en Redis incluye este
+  // resumen: se invalida (best-effort, nunca lanza) para que la próxima lectura
+  // la regenere con el promedio nuevo.
+  await ofertaDatos.invalidar(productoId);
 
   // Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md) —
   // mejor esfuerzo, con su propio try/catch: que esto falle no debe impedir
