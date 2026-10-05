@@ -1,4 +1,10 @@
 require('dotenv/config');
+// Este script pide varios pedidos seguidos con la misma cuenta, y se corre más de una vez por
+// hora: el tope de pedidos por hora y los límites suaves son de las rutas HTTP
+// (middleware/controlPedidos.js) y no forman parte de lo que se verifica acá. Se apagan SOLO en
+// este proceso; la prueba de esos controles es verificar:respuestaEscalonada.
+process.env.LIMITE_PEDIDOS_HORA = '0';
+process.env.RESTRICCION_ENABLED = 'false';
 const assert = require('node:assert/strict');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');

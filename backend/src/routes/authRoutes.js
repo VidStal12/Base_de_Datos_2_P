@@ -18,7 +18,9 @@ router.post('/login', async (req, res) => {
     const resultado = await login(req.body);
     res.json(resultado);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    // 401 para credenciales inválidas; 403 con `codigo` si la cuenta está
+    // suspendida (la interfaz reacciona al código, no al texto).
+    res.status(err.status ?? 401).json({ error: err.message, ...(err.codigo && { codigo: err.codigo, hasta: err.hasta }) });
   }
 });
 

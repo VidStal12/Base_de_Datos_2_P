@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 const { esCorreoValido, validarPassword } = require('../utils/validation');
+const { exigirCuentaActiva } = require('./suspensionService');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -74,6 +75,11 @@ async function login({ correo, contrasena }) {
 
   const valido = await bcrypt.compare(contrasena, usuario.contrasena);
   if (!valido) throw new Error('Credenciales inválidas');
+
+  // Una cuenta suspendida (ver suspensionService.js) no recibe token nuevo. Se
+  // revisa DESPUÉS de la contraseña: quien no la sabe no se entera de que la
+  // cuenta existe ni de que está suspendida.
+  await exigirCuentaActiva(usuario.id_usuario, usuario.rol.tipo_rol);
 
   const token = jwt.sign(
     { id_usuario: usuario.id_usuario, rol_id: usuario.rol_id, rol: usuario.rol.tipo_rol },

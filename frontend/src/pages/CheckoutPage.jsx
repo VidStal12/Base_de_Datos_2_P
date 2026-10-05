@@ -9,7 +9,9 @@ import { Spinner } from '../components/common/Spinner';
 import { NuevaDireccionForm } from '../components/account/NuevaDireccionForm';
 import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
 import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoReventaModal';
+import { ConfirmarContrasenaModal } from '../components/checkout/ConfirmarContrasenaModal';
 import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
+import { errorDeContrasena, esRechazoDeContrasena } from '../utils/restriccion';
 
 export function CheckoutPage() {
   const { token, usuario } = useAuth();
@@ -26,6 +28,10 @@ export function CheckoutPage() {
   const [error, setError] = useState('');
   const [confirmando, setConfirmando] = useState(false);
   const [pidiendoCompromiso, setPidiendoCompromiso] = useState(false);
+  // Una cuenta bajo revisión confirma cada pedido con su contraseña (ver utils/restriccion.js):
+  // el servidor lo pide al confirmar y esto guarda a qué pedido se refiere — con lo que ya
+  // aceptó del compromiso — mientras el diálogo está abierto. null = no se está pidiendo.
+  const [pidiendoContrasena, setPidiendoContrasena] = useState(null);
 
   useEffect(() => {
     let vigente = true;
@@ -66,7 +72,7 @@ export function CheckoutPage() {
     else confirmarPedido(false);
   }
 
-  async function confirmarPedido(aceptaNoReventa) {
+  async function confirmarPedido(aceptaNoReventa, contrasena) {
     setError('');
     setPidiendoCompromiso(false);
     setConfirmando(true);
@@ -77,6 +83,7 @@ export function CheckoutPage() {
           metodoPagoId,
           items: items.map(({ producto, cantidad }) => ({ productoId: producto.id, cantidad, precioEsperado: Number(producto.precio) })),
           ...(aceptaNoReventa && { aceptaNoReventa: true }),
+          ...(contrasena && { contrasena }),
         },
         token
       );
@@ -86,8 +93,17 @@ export function CheckoutPage() {
     } catch (err) {
       // Si el servidor pide el compromiso (la interfaz tenía el rol desactualizado),
       // se vuelve a mostrar el aviso en vez de un error suelto.
-      if (err.codigo === CODIGO_COMPROMISO) setPidiendoCompromiso(true);
-      else setError(err.message);
+      if (err.codigo === CODIGO_COMPROMISO) {
+        setPidiendoContrasena(null);
+        setPidiendoCompromiso(true);
+      } else if (esRechazoDeContrasena(err)) {
+        // La contraseña falta o es incorrecta: el carrito no cambió, así que no se refresca.
+        setPidiendoContrasena({ aceptaNoReventa, error: errorDeContrasena(err) });
+        return;
+      } else {
+        setPidiendoContrasena(null);
+        setError(err.message);
+      }
       await refrescar(true).catch(() => {});
     } finally {
       setConfirmando(false);
@@ -196,6 +212,13 @@ export function CheckoutPage() {
         procesando={confirmando}
         onCancelar={() => setPidiendoCompromiso(false)}
         onAceptar={() => confirmarPedido(true)}
+      />
+      <ConfirmarContrasenaModal
+        abierto={pidiendoContrasena !== null}
+        error={pidiendoContrasena?.error}
+        procesando={confirmando}
+        onCancelar={() => setPidiendoContrasena(null)}
+        onConfirmar={(contrasena) => confirmarPedido(pidiendoContrasena.aceptaNoReventa, contrasena)}
       />
     </div>
   );

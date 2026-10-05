@@ -1196,6 +1196,9 @@ async function consultarFraude(parametros = {}) {
 
 module.exports = {
   consultarFraude,
+  // Las fichas de usuario también las usa la pantalla de cuentas bloqueadas
+  // (bloqueoService.js), con el mismo formato que el panel de fraude.
+  enriquecerUsuarios,
   buscarResenasCoordinadas,
   buscarCuentasRelacionadas,
   buscarGastoAnomalo,

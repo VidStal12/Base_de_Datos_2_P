@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
+const { controlPedidos } = require('../middleware/controlPedidos');
 const tendenciaService = require('../services/tendenciaService');
 const { cuerpoDeError } = require('../utils/http');
 
@@ -16,7 +17,8 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:productoId/comprar', requireAuth, async (req, res) => {
+// controlPedidos: tope de pedidos por hora y límites suaves de una cuenta bajo revisión.
+router.post('/:productoId/comprar', requireAuth, controlPedidos, async (req, res) => {
   try {
     const { cantidad, direccionId, metodoPagoId, aceptaNoReventa } = req.body;
     const resultado = await tendenciaService.comprar(req.usuario.id_usuario, Number(req.params.productoId), {
@@ -24,6 +26,7 @@ router.post('/:productoId/comprar', requireAuth, async (req, res) => {
       direccionId,
       metodoPagoId,
       aceptaNoReventa: aceptaNoReventa === true,
+      montoMaximo: req.limitesPedido?.montoMaximo ?? undefined,
     });
     res.status(201).json(resultado);
   } catch (err) {

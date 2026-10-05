@@ -52,6 +52,14 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
    | `NEO4J_URI` | `bolt://localhost:7687` en desarrollo local |
    | `NEO4J_USER` | `neo4j` |
    | `NEO4J_PASSWORD` | Debe coincidir con `NEO4J_PASSWORD` (o el default `tiendaya_dev`) de `docker-compose.yml` |
+   | `FRAUDE_BLOQUEO_ENABLED` | Habilita el barrido que suspende cuentas con un hallazgo de fraude de confianza alta; `true` por defecto (ver «Suspensión temporal de cuentas») |
+   | `FRAUDE_BLOQUEO_HORAS` | Duración de la suspensión, que es el TTL del bloqueo en Redis; `24` por defecto, admite decimales (`0.5` = 30 min) |
+   | `FRAUDE_BLOQUEO_INTERVALO_MS` | Cada cuánto corre el barrido; `60000` ms por defecto |
+   | `RESTRICCION_ENABLED` | Habilita los límites suaves de una cuenta con un hallazgo «posible»; `true` por defecto (ver «Respuesta escalonada…») |
+   | `FRAUDE_RESTRICCION_HORAS` | Cuánto dura la vigilancia, que es el TTL de `restriccion:{id}` en Redis; `24` por defecto, admite decimales |
+   | `RESTRICCION_MONTO_MAXIMO` | Tope de monto por pedido de una cuenta bajo vigilancia, en quetzales; `500` por defecto, `0` = sin tope |
+   | `RESTRICCION_PEDIDOS_HORA` | Tope propio de pedidos por hora de una cuenta bajo vigilancia; `2` por defecto, `0` = sin tope propio |
+   | `LIMITE_PEDIDOS_HORA` | Tope general de pedidos por hora de cualquier cuenta (contador en Redis); `5` por defecto, `0` = sin tope |
 
 4. **Aplicar el esquema**:
 
@@ -116,7 +124,7 @@ Las compras sintéticas conservadas por `flash-sale-tests/` forman parte de la b
 
 ## Detección de fraude con Neo4j (Entrega 2)
 
-La pantalla `/admin/fraude` y `GET /api/admin/fraude` requieren rol **administrador**. Siete señales, ninguna una acusación por sí sola: **reseñas coordinadas** (cuentas distintas reseñando los mismos productos, calificación alta, ventana de tiempo corta); **gasto anómalo** (un pedido muy por encima de lo que esa misma cuenta gastó antes, como un banco vigila a sus clientes); **categoría inusual** (la primera compra en una categoría ajena, tras un historial largo); **cuentas de una misma persona** (varias cuentas que se llaman igual o usan el mismo buzón de correo — sin contar alias `+` ni los puntos de Gmail —, todas comprando; compartir buzón pesa más que compartir nombre, y el grafo guarda solo un hash del buzón, nunca el correo); **ráfaga de gasto** (muchos pedidos o mucho gasto en un solo día, aunque cada pedido parezca normal) **autocompra** (una cuenta que le compra a sí misma o a otra de su misma persona) y **reventa de lo comprado** (un vendedor que le compró un producto a otro vendedor y hoy tiene publicado y activo uno equivalente). Una señal corroborada por otra sube a confianza alta; nunca baja. Diseño completo, incluidas las correcciones reales al modelo encontradas al implementar, en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
+La pantalla `/admin/fraude` y `GET /api/admin/fraude` requieren rol **administrador**. Siete señales, ninguna una acusación por sí sola: **reseñas coordinadas** (cuentas distintas reseñando los mismos productos, calificación alta, ventana de tiempo corta); **gasto anómalo** (un pedido muy por encima de lo que esa misma cuenta gastó antes, como un banco vigila a sus clientes); **categoría inusual** (la primera compra en una categoría ajena, tras un historial largo); **cuentas de una misma persona** (varias cuentas que se llaman igual o usan el mismo buzón de correo — sin contar alias `+` ni los puntos de Gmail —, todas comprando; compartir buzón pesa más que compartir nombre, y el grafo guarda solo un hash del buzón, nunca el correo); **ráfaga de gasto** (muchos pedidos o mucho gasto en un solo día, aunque cada pedido parezca normal) **autocompra** (una cuenta que le compra a sí misma o a otra de su misma persona) y **reventa de lo comprado** (un vendedor que le compró un producto a otro vendedor y hoy tiene publicado y activo uno equivalente). Una señal corroborada por otra sube a confianza alta; nunca baja — y una de confianza alta **suspende la cuenta de forma temporal** hasta que un administrador la revise (ver «Suspensión temporal de cuentas por fraude», más abajo). Diseño completo, incluidas las correcciones reales al modelo encontradas al implementar, en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
 
 **Nadie compra lo que vende:** el sistema rechaza con `403` que un vendedor compre sus propios productos, en todos los caminos (checkout, carrito, oferta flash y recomendaciones), y el frontend oculta los botones de compra de un producto propio. La autocompra entre dos cuentas distintas de una misma persona sigue siendo justo lo que detectan las señales de arriba.
 
@@ -147,6 +155,44 @@ npm run verificar:compromisoReventa
 ```
 
 Prueba la matriz de roles contra MySQL (un comprador no tiene que aceptar nada; un vendedor y un administrador sí; solo el booleano `true` cuenta) y que cada camino de compra (checkout, oferta flash y recomendación) rechaza con `400 COMPROMISO_NO_REVENTA` a una cuenta que puede vender y no aceptó, sin dejar pedido ni gastar cupo en Redis. Solo hay rechazos, así que se puede correr las veces que se quiera; que la aceptación queda guardada en el pedido lo prueba `verificar:fraude`. Pruebas aisladas: `npm run test:compromiso`.
+
+## Suspensión temporal de cuentas por fraude (Redis + MySQL, Entrega 2)
+
+Una cuenta con un hallazgo de fraude de **confianza alta** queda **suspendida de forma temporal y automática**, y un administrador revisa cada caso en `/admin/bloqueos` para decidir si lo levanta (era un falso positivo) o lo extiende. Los hallazgos «posible» no suspenden: dejan a la cuenta bajo vigilancia (ver «Respuesta escalonada…», más abajo). Mientras un **vendedor** está suspendido, sus productos no se muestran ni se pueden comprar, y vuelven solos al levantarse la suspensión.
+
+- **Cómo se suspende:** cada `FRAUDE_BLOQUEO_INTERVALO_MS` el backend corre las mismas siete señales que el panel de fraude (`consultarFraude`) y abre un **caso** por cada (cuenta, hallazgo) de nivel «alta». En *cuentas de una misma persona* se suspende a todas las del grupo; en *autocompra*, a las dos cuentas si son distintas; en *reventa*, solo a quien revende (el vendedor original es la víctima); en *ráfaga*, *gasto anómalo* y *categoría inusual*, a la cuenta que gastó. Las *reseñas coordinadas* no traen nivel de confianza, así que no suspenden por sí solas. **Los administradores nunca se suspenden**: un automatismo no puede dejar sin acceso a quienes pueden deshacerlo. El botón «Revisar ahora» corre el barrido al instante.
+- **El candado vive en Redis:** `bloqueo:{id_usuario}` existe mientras la cuenta está suspendida y su **TTL** (`FRAUDE_BLOQUEO_HORAS`, 24 h por defecto) es lo que falta para que se levante **sola** — Redis hace vencer el bloqueo, nadie tiene que acordarse de desbloquear. Lo escribe un script Lua atómico (`bloquearCuenta`) que solo **alarga**: un segundo hallazgo, o la reconstrucción desde MySQL, nunca acortan una suspensión vigente.
+- **Se hace cumplir en cada petición:** `requireAuth` consulta ese candado (un `PTTL`) y responde `403` con `codigo: CUENTA_SUSPENDIDA` y la hora en que se levanta; un token emitido antes de la suspensión deja de servir en la petición siguiente. El **login** también la rechaza, después de verificar la contraseña (quien no la sabe no se entera de que la cuenta existe). El catálogo público sigue abierto: una cuenta suspendida se trata como visitante. El mensaje no dice qué señal la disparó. La interfaz cierra la sesión y muestra un aviso.
+- **MySQL guarda el caso** (`bloqueo_cuenta`): qué hallazgo, la evidencia con la que se abrió, cuándo, quién lo revisó y qué decidió. Es **único por (cuenta, hallazgo)**: un hallazgo suspende a una cuenta una sola vez — el grafo no olvida, y sin eso el barrido volvería a bloquear cada minuto a quien ya cumplió su suspensión o a quien un administrador ya liberó —; un hallazgo *distinto* de la misma cuenta sí abre un caso nuevo. Si Redis se pierde, `reconciliar()` reconstruye los candados desde los casos activos (con lo que falta de su vencimiento, no con 24 h nuevas), marca como vencidos los casos que pasaron y quita un candado que ya no tiene ningún caso activo.
+- **La sección de administrador** (`/admin/bloqueos`, `GET /api/admin/bloqueos`, solo `administrador`): las cuentas suspendidas con **lo pendiente de revisión primero**, el motivo en prosa, la evidencia, la ficha de la cuenta y el tiempo que falta; **Levantar bloqueo** (con confirmación y nota: cierra el caso, borra el candado y la cuenta entra de inmediato) y **Extender 24 h / 7 días**; y un historial de lo cerrado (quién, cuándo, con qué nota, y lo que venció solo). `/admin/fraude` marca con «Suspendida hasta…» las fichas de las cuentas que ya lo están.
+- **Fallar abierto:** si Redis no responde, una cuenta se trata como no suspendida (una caída de Redis no debe impedir entrar a todo el sitio); en cuanto vuelve, la reconciliación restablece los candados desde MySQL.
+
+**Al actualizar una instalación anterior:** `npm run prisma:deploy`, `npm run prisma:generate` (tabla `bloqueo_cuenta`) y reiniciar el backend. **El primer barrido suspende a todas las cuentas que ya tengan un hallazgo de nivel «alta»** — en una base de desarrollo, las cuentas sintéticas `fraude.*` que siembra `verificar:fraude` —; se revisan y se liberan en `/admin/bloqueos`. `FRAUDE_BLOQUEO_ENABLED=false` apaga el barrido: los candados ya abiertos se siguen respetando y se pueden liberar.
+
+```bash
+npm run test:bloqueo
+npm run verificar:bloqueo
+```
+
+`test:bloqueo` incluye **16 pruebas aisladas** de la suspensión (con un Redis y un Prisma en memoria): quién es responsable de cada señal, que un administrador nunca se suspende, que un hallazgo no suspende dos veces, liberar/extender/validar, la reconciliación (Redis perdido, candado de más, casos vencidos) y el middleware. `verificar:bloqueo` lo prueba contra **Redis, MySQL y Neo4j reales** con un patrón sintético propio (dos cuentas que comparten buzón, cada una con una compra real): el barrido las suspende, el login y el token se rechazan con `403 CUENTA_SUSPENDIDA` sin revelar la señal, el administrador las lista, extiende y libera, lo liberado no vuelve a suspenderse, el TTL de Redis levanta el bloqueo solo, Redis pierde un candado y se reconstruye desde MySQL, y el Lua real solo alarga. Es idempotente y deja esas cuentas libres; ojo: el barrido que corre también abre los casos de *cualquier otra* cuenta con un hallazgo alto en esa base. Diseño, límites y otras alternativas: [IA/PLAN-NEO4J-DETECCION-FRAUDE.md §20](IA/PLAN-NEO4J-DETECCION-FRAUDE.md).
+
+## Respuesta escalonada, prevención de pedidos y vendedores ocultos (Redis + MySQL, Entrega 2)
+
+Tres cosas sobre la suspensión de arriba (diseño en [IA/PLAN-NEO4J-DETECCION-FRAUDE.md §21](IA/PLAN-NEO4J-DETECCION-FRAUDE.md)); la suspensión sigue durando 24 h:
+
+- **Respuesta escalonada.** Un hallazgo de confianza **«posible»** ya no es «nada» ni una suspensión: deja a la cuenta **bajo vigilancia** `FRAUDE_RESTRICCION_HORAS` (24 h). Sigue entrando y comprando, pero cada pedido pide **su contraseña**, tiene un **tope de monto** (`RESTRICCION_MONTO_MAXIMO`, Q500) y se admiten **menos pedidos por hora** (`RESTRICCION_PEDIDOS_HORA`, 2). Es el mismo mecanismo que la suspensión — un candado en Redis (`restriccion:{id}`) que vence solo y un caso en MySQL (`bloqueo_cuenta.tipo = 'restriccion'`) que lo reconstruye —, y un hallazgo que sube de «posible» a «alta» suspende a la cuenta sin quitarle la vigilancia. Los administradores nunca se limitan. En `/admin/bloqueos`, la sección **«Bajo vigilancia»** lista esas cuentas y permite **«Quitar límites»** (era un falso positivo; ese hallazgo no vuelve a limitarlas). `RESTRICCION_ENABLED=false` los apaga todos.
+- **Prevención: tope de pedidos por hora.** Un contador por cuenta en Redis (`limite:pedidos:{id}`, `INCR` + `EXPIRE` en un solo script Lua atómico) rechaza con `429` y `Retry-After` el pedido que pasa del tope (`LIMITE_PEDIDOS_HORA`, 5; `0` = sin tope) **antes** de completarlo, en vez de detectar la ráfaga después en el grafo. Con pedidos simultáneos pasan exactamente los que caben, y un pedido que falla devuelve su cupo. Vale en checkout, oferta flash y recomendación (`middleware/controlPedidos.js`, en las rutas: los servicios y scripts no lo sienten). La contraseña de una cuenta bajo vigilancia tiene su propio tope de 5 intentos por 15 min: el endpoint no sirve para adivinarla.
+- **Un vendedor suspendido se oculta.** Mientras dura la suspensión, sus productos y ofertas flash no se muestran (catálogo, buscador y sus facetas, sugerencias, detalle, recomendaciones) ni se pueden comprar (el carrito los marca no disponibles; el pedido da `409`), y **vuelven solos** cuando un administrador levanta la suspensión (al instante) o vence (a lo sumo 3 s después). La visibilidad se **deriva** del candado, no se guarda en cada producto. Un administrador los sigue viendo, marcados «Oculto: vendedor suspendido».
+
+**Al actualizar una instalación anterior:** `npm run prisma:deploy` (migración `bloqueo_tipo_restriccion`), `npm run prisma:generate` y **reiniciar el backend** (nodemon no recarga el cliente de Prisma regenerado). **El primer barrido también actúa sobre lo «posible» y es retroactivo:** en la base de desarrollo puso bajo vigilancia a 9 cuentas — 7 sintéticas y, ojo, **Ana Gómez y Luis Ramírez** del seed —, que desde entonces piden su contraseña (`Password123!`) en cada pedido; se les quita en `/admin/bloqueos` o con `RESTRICCION_ENABLED=false`.
+
+```bash
+npm run test:bloqueo
+npm run test:redis
+npm run verificar:respuestaEscalonada
+```
+
+`test:bloqueo` son **43 pruebas aisladas** (las 16 de la suspensión más las de la respuesta escalonada, el control de pedidos y ocultar al vendedor); `test:redis` suma las de carrito y oferta flash con un vendedor suspendido. `verificar:respuestaEscalonada` hace **17 comprobaciones** contra **Redis, MySQL, Mongo, Elasticsearch y Neo4j reales** y un Express real, con cuentas y un producto sintéticos propios: el producto de un vendedor suspendido desaparece de todas partes y vuelve al liberarlo o al vencer; el tope por hora rechaza el pedido de más (también con pedidos simultáneos); una cuenta bajo vigilancia necesita su contraseña y cae en sus topes; el barrido deja a dos homónimos reales de Neo4j bajo vigilancia y los suspende cuando el hallazgo sube a «alta». Es idempotente y deja las cuentas libres y el producto inactivo; cada corrida compra unos pocos pedidos sintéticos de Q30. `verificar:carrito` apaga esos controles **solo en su proceso**.
 
 ## Verificar el checkout transaccional
 
@@ -362,7 +408,7 @@ Corre en `http://localhost:5173`. Necesita el backend (`npm run dev` desde `back
 
 **Mi cuenta** (`/cuenta`, requiere sesión): listar, agregar y borrar direcciones y métodos de pago — los mismos formularios que aparecen embebidos en Checkout, ahora también accesibles fuera del flujo de compra. Borrar algo que ya se usó en un pedido se rechaza con un mensaje claro (`409 No se puede eliminar: ... tiene pedidos/pagos asociados`) en vez de un error de base de datos.
 
-**Términos de Servicio** (`/terminos`, pública): las reglas para comprar, vender y opinar, con la versión y la fecha de actualización arriba. Describe lo que el sistema aplica o vigila de verdad — compra propia, compromiso de no reventa, reseñas solo de compradores y revisión de fraude con personas en el circuito — y no publica umbrales de las señales. Cada sección tiene su ancla (`/terminos#no-reventa`, `#resenas`…) y el texto vive en `frontend/src/pages/TerminosPage.jsx`: si cambia una regla en el backend, ahí se actualiza el texto y se sube `VERSION`.
+**Términos de Servicio** (`/terminos`, pública): las reglas para comprar, vender y opinar, con la versión y la fecha de actualización arriba. Describe lo que el sistema aplica o vigila de verdad — compra propia, compromiso de no reventa, tope de pedidos por hora, reseñas solo de compradores y revisión de fraude con personas en el circuito (suspensión temporal, vigilancia con límites suaves, productos de un vendedor suspendido ocultos) — y no publica umbrales ni cifras de los topes (versión 1.2). Cada sección tiene su ancla (`/terminos#no-reventa`, `#resenas`…) y el texto vive en `frontend/src/pages/TerminosPage.jsx`: si cambia una regla en el backend, ahí se actualiza el texto y se sube `VERSION`.
 
 Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.com` (comprador) y `luis.ramirez@example.com` (vendedor), ambos con contraseña `Password123!`. No hay forma de crear una cuenta `vendedor`/`administrador` desde el registro público — es intencional, ver la sección Catálogo arriba.
 
@@ -385,6 +431,8 @@ backend/
     verificarFraudeNeo4j.js   Evidencia de las siete señales de fraude, con datos sembrados (Entrega 2)
     verificarCompraPropia.js   Evidencia de que nadie compra lo que vende, en todos los caminos de compra
     verificarCompromisoReventa.js  Evidencia del compromiso de no reventa de las cuentas que pueden vender
+    verificarBloqueoCuentas.js  Evidencia de la suspensión temporal por fraude: Redis (TTL) + MySQL + Neo4j reales (Entrega 2)
+    verificarRespuestaEscalonada.js  Evidencia de la respuesta escalonada, el tope de pedidos por hora y el vendedor suspendido que se oculta: Redis, MySQL, Mongo, Elasticsearch y Neo4j reales
     lib/datosPrueba.js        Cuentas, direcciones, métodos de pago y productos sintéticos compartidos por los scripts de verificación
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
@@ -393,7 +441,7 @@ backend/
     config/cassandra.js      Cliente de cassandra-driver (analítica de ventas, Entrega 2)
     config/neo4j.js           Cliente de neo4j-driver (detección de fraude, Entrega 2)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento, Resena)
-    services/              Lógica de negocio (auth, checkout + checkoutOferta, compromiso de no reventa, catálogo, carrito, ofertas y su caché en Redis, recomendaciones, reseñas, historial, outbox y analítica de ventas, sincronización y consultas de fraude)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, compromiso de no reventa, catálogo, carrito, ofertas y su caché en Redis, recomendaciones, reseñas, historial, outbox y analítica de ventas, sincronización y consultas de fraude, suspensión temporal de cuentas: `candadoRedis` es el candado genérico, `suspensionService` el de la suspensión y `restriccionService` el de los límites suaves, `bloqueoService` los casos y el barrido; `limitePedidosService` y `reautenticacionService` son el tope de pedidos por hora y la contraseña de una cuenta bajo vigilancia)
     routes/                 Endpoints Express (incluye adminRoutes.js — ventas y fraude —, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
 flash-sale-tests/
@@ -410,10 +458,12 @@ frontend/
     context/               Auth (token/sesión) y Cart (carrito en Redis, Entrega 2)
     components/            Layout (Header/Footer), tarjetas de producto, UI común
     components/account/     Formularios de dirección/método de pago (compartidos: Checkout y /cuenta)
-    components/checkout/     Ventana del compromiso de no reventa, que piden las tres pantallas de compra a las cuentas que pueden vender
+    components/checkout/     Ventanas de las tres pantallas de compra: el compromiso de no reventa (cuentas que pueden vender) y la contraseña de una cuenta bajo vigilancia
+    components/common/       UI común (botón, campos, spinner…) y `Modal`, el armazón accesible de las ventanas de compra
+    components/admin/        Ficha de usuario compartida por los paneles de fraude y de cuentas bloqueadas
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash, recomendaciones, términos de servicio...)
     pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
-    pages/admin/             Panel de administrador (catálogo de todos los vendedores, ventas por intervalos, señales de fraude)
+    pages/admin/             Panel de administrador (catálogo de todos los vendedores, ventas por intervalos, señales de fraude, cuentas bloqueadas)
     index.css              Paleta de colores (tokens de Tailwind) y estilos base
 docker/
   mysql-init/            Scripts que corren solo al inicializar el volumen de MySQL

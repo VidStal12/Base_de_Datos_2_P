@@ -1,5 +1,6 @@
 require('dotenv').config();
 const elasticsearch = require('../src/config/elasticsearch');
+const redisConfig = require('../src/config/redis');
 const busquedaService = require('../src/services/busquedaService');
 
 // Verifica contra el catálogo REAL ya indexado (correr npm run
@@ -73,4 +74,7 @@ main()
   })
   .finally(async () => {
     await elasticsearch.cerrar();
+    // buscar()/sugerir() preguntan a Redis qué vendedores están suspendidos (y no se
+    // muestran): esa conexión mantendría vivo el proceso después de terminar.
+    redisConfig.cerrar();
   });

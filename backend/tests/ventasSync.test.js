@@ -249,7 +249,7 @@ for (const variante of ['checkout', 'checkoutOferta']) {
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
       // checkoutService también valida "nadie compra lo suyo" y el compromiso de
       // no reventa; estas pruebas son de la captura del outbox, no de esas reglas.
-      './productoService': { verificarNoEsPropio: async () => {} },
+      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       './fraudeSyncService': { registrarCompra: async () => {} },
       './ventasOutboxService': capturaPausada,
@@ -288,7 +288,7 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         updateOne: async () => { cacheEscrita = true; },
       },
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; } },
-      './productoService': { verificarNoEsPropio: async () => {} },
+      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       // fraudeSyncService ahora lee el correo de MySQL (prisma): sin este doble
       // el módulo real abriría una conexión en una prueba aislada.

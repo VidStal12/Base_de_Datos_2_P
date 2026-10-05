@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { controlPedidos } = require('../middleware/controlPedidos');
 const ofertaFlashService = require('../services/ofertaFlashService');
 const { cuerpoDeError } = require('../utils/http');
 
@@ -34,8 +35,9 @@ router.patch('/:productoId', requireAuth, requireRole('vendedor', 'administrador
 // rol tampoco — salvo que nadie compra lo que él mismo vende
 // (productoService.verificarNoEsPropio, responde 403) y que una cuenta que puede
 // vender acepte el compromiso de no reventa (compromisoService, responde 400
-// con codigo COMPROMISO_NO_REVENTA).
-router.post('/:productoId/comprar', requireAuth, async (req, res) => {
+// con codigo COMPROMISO_NO_REVENTA). Y controlPedidos: tope de pedidos por hora y los
+// límites suaves de una cuenta bajo revisión (ver middleware/controlPedidos.js).
+router.post('/:productoId/comprar', requireAuth, controlPedidos, async (req, res) => {
   try {
     const { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa } = req.body;
     const resultado = await ofertaFlashService.comprar(req.usuario.id_usuario, Number(req.params.productoId), {
@@ -44,6 +46,7 @@ router.post('/:productoId/comprar', requireAuth, async (req, res) => {
       metodoPagoId,
       precioEsperado,
       aceptaNoReventa: aceptaNoReventa === true,
+      montoMaximo: req.limitesPedido?.montoMaximo ?? undefined,
     });
     res.status(201).json(resultado);
   } catch (err) {

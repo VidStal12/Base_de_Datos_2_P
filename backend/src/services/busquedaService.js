@@ -1,4 +1,5 @@
 const { conectar, indice } = require('../config/elasticsearch');
+const { vendedoresSuspendidos } = require('./suspensionService');
 
 // Mismo formato que ya manda el frontend a productoService.listar() — JSON
 // de {nombre: valor}, ver condicionesAtributos() ahí — un valor exacto por
@@ -76,9 +77,16 @@ async function buscar({ q, categoriaId, subcategoriaId, atributos, precioMin, pr
   }
   filter.push(...filtrosAtributos(atributos));
 
+  // Los productos de un vendedor suspendido no se muestran mientras dure la suspensión
+  // (ver productoService.listar): el índice no sabe de suspensiones, así que se excluyen
+  // al consultar — y las facetas y los conteos, que salen de esta misma consulta, los
+  // dejan fuera también. Vuelven solos al levantarse.
+  const suspendidos = await vendedoresSuspendidos();
+  const must_not = suspendidos.size > 0 ? [{ terms: { vendedor_id: [...suspendidos] } }] : undefined;
+
   const respuesta = await cliente.search({
     index: indice(),
-    query: { bool: { must, filter } },
+    query: { bool: { must, filter, must_not } },
     sort: ordenarPor === 'masVendidos' ? [{ total_vendido: 'desc' }] : undefined,
     size: 60,
     // Agregaciones (requerimiento técnico de Entrega 3): categoría/
@@ -125,14 +133,19 @@ async function buscar({ q, categoriaId, subcategoriaId, atributos, precioMin, pr
 async function sugerir(q) {
   if (!q || !q.trim()) return [];
   const cliente = await conectar();
+  // El suggester no filtra por vendedor: si hay vendedores suspendidos se piden más
+  // opciones (con su vendedor_id) y se descartan las suyas, para no sugerir un título
+  // que la búsqueda ya no va a mostrar.
+  const suspendidos = await vendedoresSuspendidos();
   const respuesta = await cliente.search({
     index: indice(),
+    _source: ['vendedor_id'],
     suggest: {
       sugerencias: {
         prefix: q,
         completion: {
           field: 'sugerencia',
-          size: 8,
+          size: suspendidos.size > 0 ? 24 : 8,
           skip_duplicates: true,
           fuzzy: { fuzziness: 'AUTO' },
           contexts: { estado: ['activo'] },
@@ -141,7 +154,10 @@ async function sugerir(q) {
     },
   });
   const opciones = respuesta.suggest?.sugerencias?.[0]?.options ?? [];
-  return opciones.map((o) => o.text);
+  return opciones
+    .filter((o) => !suspendidos.has(o._source?.vendedor_id))
+    .slice(0, 8)
+    .map((o) => o.text);
 }
 
 module.exports = { buscar, sugerir };

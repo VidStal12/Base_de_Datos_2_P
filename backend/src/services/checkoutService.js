@@ -8,6 +8,15 @@ const compromisoService = require('./compromisoService');
 const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
 
+// El tope por pedido de una cuenta con límites suaves: 403 con `codigo: LIMITE_MONTO`.
+function verificarTopeDeMonto(total, montoMaximo) {
+  if (!montoMaximo || total <= montoMaximo) return;
+  const err = new Error(`Mientras tu cuenta está en revisión, cada pedido puede ser de hasta Q${Number(montoMaximo).toFixed(2)}. Este pedido suma Q${Number(total).toFixed(2)}.`);
+  err.status = 403;
+  err.codigo = 'LIMITE_MONTO';
+  throw err;
+}
+
 // Checkout atómico: pedido + líneas + pago + descuento de inventario.
 // Toda la función corre dentro de una única transacción de Prisma — si cualquier
 // paso falla (p. ej. falta de stock), TODO se revierte, incluyendo los descuentos
@@ -16,7 +25,12 @@ const fraudeSyncService = require('./fraudeSyncService');
 // aceptaNoReventa: lo manda el aviso del frontend a las cuentas que pueden
 // vender (ver compromisoService.js); se exige acá y queda registrado en el
 // pedido.
-async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoReventa }) {
+//
+// montoMaximo: el tope por pedido de una cuenta con límites suaves (ver
+// restriccionService.js y middleware/controlPedidos.js, que lo decide por la ruta). Se
+// hace cumplir ACÁ, dentro de la transacción, porque solo acá se conoce el total: si lo
+// supera, se rechaza y TODO se revierte. Sin él (undefined/null) no hay tope.
+async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoReventa, montoMaximo }) {
   if (!items || items.length === 0) {
     throw new Error('El carrito no puede estar vacío');
   }
@@ -38,6 +52,10 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
   // Una cuenta que puede vender tiene que haber aceptado el compromiso de no
   // reventa en el aviso de ESTA compra — se rechaza antes de tocar nada.
   const compromiso = await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
+
+  // Los productos de un vendedor suspendido no se pueden comprar mientras dure la
+  // suspensión (ver productoService.verificarVendedoresActivos).
+  await productoService.verificarVendedoresActivos(items.map((item) => item.productoId));
 
   await conectar();
   const docs = await Producto.find({ producto_id: { $in: items.map((item) => item.productoId) } }).select('producto_id estado').lean();
@@ -106,6 +124,8 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
         throw err;
       }
     }
+
+    verificarTopeDeMonto(total, montoMaximo);
 
     const compra = await tx.compra.create({
       data: {
@@ -210,7 +230,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
 // dicho que sí — ver §4.2, "dos guardas, no una"), y reenvía a Mongo después
 // de confirmar. `descuento` en compra_detalle, que en el checkout normal
 // siempre queda en 0, acá sí lleva el ahorro real.
-async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId, aceptaNoReventa }) {
+async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId, aceptaNoReventa, montoMaximo }) {
   if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
     throw new Error('productoId y cantidad deben ser enteros positivos');
   }
@@ -224,6 +244,9 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
   // recomendaciones (las dos pasan por acá) — ofertaFlashService/
   // tendenciaService la chequean antes también, para no gastar cupo en Redis.
   await productoService.verificarNoEsPropio(usuarioId, [productoId]);
+  // Y que el vendedor no esté suspendido (autoridad final; oferta flash y
+  // recomendaciones ya lo filtran antes).
+  await productoService.verificarVendedoresActivos([productoId]);
   // Mismo compromiso de no reventa que checkout(), también acá como autoridad
   // final: ofertaFlashService/tendenciaService lo exigen antes de Redis.
   const compromiso = await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
@@ -259,6 +282,8 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
     if (descontado.count !== 1) throw new Error(`Stock insuficiente para el producto ${productoId}`);
 
     const precioFinal = precioUnitario * cantidad;
+    // Mismo tope por pedido que checkout() (ver arriba): rechaza y revierte la reserva.
+    verificarTopeDeMonto(precioFinal, montoMaximo);
     const descuentoUnitario = Math.max(Number(inventario.precio) - precioUnitario, 0);
 
     const compra = await tx.compra.create({

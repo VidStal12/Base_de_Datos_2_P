@@ -1,92 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { fraudeApi } from '../../api/fraude';
 import { Spinner } from '../../components/common/Spinner';
+import { FichaUsuario } from '../../components/admin/FichaUsuario';
+import { BloqueadasContext } from '../../components/admin/bloqueadasContext';
+import { diasATexto, formatoQ } from '../../utils/format';
 
-function diasATexto(dias) {
-  if (dias < 1) return 'hoy';
-  if (dias === 1) return 'hace 1 día';
-  return `hace ${dias} días`;
-}
-
-const formatoQ = (n) => `Q${Number(n).toLocaleString('es-GT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatoFechaHora = (f) => (f ? new Date(f).toLocaleString('es-GT') : 'fecha desconocida');
 // "dia" llega como AAAA-MM-DD ya en día de Guatemala; se fija al mediodía UTC
 // para que ninguna zona horaria del navegador lo corra al día anterior.
 const formatoDia = (dia) => new Date(`${dia}T12:00:00Z`).toLocaleDateString('es-GT', { dateStyle: 'medium', timeZone: 'UTC' });
 const pluralCompras = (n) => `${n} compra${n === 1 ? '' : 's'}`;
 const pluralPedidos = (n) => `${n} pedido${n === 1 ? '' : 's'}`;
-
-// Ficha de usuario — toda la información identificadora que el backend
-// resolvió en vivo contra MySQL/Mongo (ver enriquecerUsuarios en
-// fraudeService.js). `ficha` puede venir null si el usuario ya no existe
-// (poco probable, pero Neo4j no borra en cascada — ver PLAN-NEO4J-
-// DETECCION-FRAUDE.md §6); en ese caso solo se muestra lo que ya traía el
-// hallazgo (nombre/id cacheados en el grafo).
-function FichaUsuario({ id, nombre, ficha, notasExtra = [] }) {
-  if (!ficha) {
-    return (
-      <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-500">
-        {nombre} <span className="text-neutral-400">#{id}</span>
-        <p className="mt-1 text-xs">Cuenta no encontrada en la base actual — puede haber sido eliminada.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-semibold text-neutral-900">
-          {ficha.nombre} <span className="font-normal text-neutral-400">#{ficha.id}</span>
-        </p>
-        <div className="flex flex-wrap gap-1">
-          {ficha.cuentaReciente && (
-            <span className="rounded-full bg-warning-500/10 px-2 py-0.5 text-xs font-medium text-warning-500">
-              Cuenta reciente
-            </span>
-          )}
-          {notasExtra.map((nota) => (
-            <span key={nota} className="rounded-full bg-danger-500/10 px-2 py-0.5 text-xs font-medium text-danger-600">
-              {nota}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-neutral-600">
-        <div className="col-span-2">
-          <dt className="text-neutral-400">Correo</dt>
-          <dd className="truncate">{ficha.correo}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Rol</dt>
-          <dd className="capitalize">{ficha.rol}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Cuenta creada</dt>
-          <dd>
-            {new Date(ficha.creadoEn).toLocaleDateString('es-GT', { dateStyle: 'medium' })} · {diasATexto(ficha.diasDesdeCreacion)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Compras</dt>
-          <dd>
-            {ficha.totalCompras} ({formatoQ(ficha.totalGastado)})
-          </dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Compra promedio</dt>
-          <dd>{ficha.totalCompras > 0 ? formatoQ(ficha.promedioCompra) : '—'}</dd>
-        </div>
-        <div>
-          <dt className="text-neutral-400">Reseñas</dt>
-          <dd>{ficha.totalResenas}</dd>
-        </div>
-      </dl>
-    </div>
-  );
-}
 
 function truncar(texto, n = 20) {
   return texto.length > n ? `${texto.slice(0, n - 1)}…` : texto;
@@ -799,6 +725,9 @@ export function AdminFraudePage() {
 
   useEffect(cargar, [token]);
 
+  // Un solo objeto por carga, no uno nuevo en cada render: lo leen todas las fichas.
+  const cuentasMarcadas = useMemo(() => ({ bloqueadas: datos?.bloqueadas ?? {}, restringidas: datos?.restringidas ?? {} }), [datos]);
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -822,7 +751,10 @@ export function AdminFraudePage() {
       {error && <p className="rounded-lg bg-danger-500/10 p-4 text-sm text-danger-600">{error}</p>}
 
       {datos && (
-        <>
+        // `bloqueadas` y `restringidas` ({ id → hasta cuándo }) dejan que cada ficha marque
+        // a la cuenta si ya está suspendida o bajo vigilancia (ver Cuentas bloqueadas,
+        // /admin/bloqueos).
+        <BloqueadasContext.Provider value={cuentasMarcadas}>
           {datos.advertencias?.length > 0 && (
             <div className="rounded-lg bg-warning-500/10 p-3 text-sm text-warning-500">
               {datos.advertencias.map((a, i) => (
@@ -873,7 +805,7 @@ export function AdminFraudePage() {
             hallazgos={datos.categoriaInusual}
             renderizar={(c) => <HallazgoCategoria key={`${c.usuario.id}-${c.categoria}`} c={c} />}
           />
-        </>
+        </BloqueadasContext.Provider>
       )}
     </div>
   );

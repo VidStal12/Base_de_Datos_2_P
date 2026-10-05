@@ -50,6 +50,9 @@ model usuarios {
   compras      compra[]
   carritos     carrito[]
   productos    producto[]
+  // Suspensiones de esta cuenta, y las que esta cuenta (un administrador) revisó.
+  bloqueos           bloqueo_cuenta[] @relation("bloqueo_de_usuario")
+  bloqueos_revisados bloqueo_cuenta[] @relation("bloqueo_revisado_por")
 }
 
 model direcciones {
@@ -185,4 +188,51 @@ model venta_outbox {
   ultimo_error    String?   @db.Text
 
   @@index([procesado_en, proximo_intento, detalle_id])
+}
+
+// Caso de suspensión temporal de una cuenta por un hallazgo de fraude de
+// confianza ALTA (ver bloqueoService.js e IA/PLAN-NEO4J-DETECCION-FRAUDE.md §20).
+// Esta tabla es el REGISTRO durable — qué hallazgo, cuándo, quién lo revisó y qué
+// decidió —; el bloqueo que se hace cumplir en cada petición vive en Redis
+// (`bloqueo:{id_usuario}`, con un TTL igual a lo que falta para `expira_en`, que
+// es lo que lo hace vencer solo). Redis es volátil: si se pierde,
+// bloqueoService.reconciliar() lo reconstruye desde acá.
+//
+// (id_usuario, huella) es único: un hallazgo suspende a una cuenta UNA vez. Sin
+// eso el barrido volvería a bloquear cada minuto a quien ya cumplió su suspensión
+// o a quien un administrador ya liberó, porque el grafo no olvida el hallazgo.
+// `huella` identifica el hallazgo (señal + cuentas + lo que lo hace único); un
+// hallazgo distinto de la misma cuenta sí abre un caso nuevo.
+//
+// estado: 'activo' (suspendida), 'liberado' (un administrador lo levantó antes de
+// tiempo) o 'expirado' (venció sin que nadie lo levantara). La revisión
+// (revisado_*) se anota con cualquier decisión humana, incluida extender.
+//
+// tipo (respuesta escalonada, PLAN §21): 'suspension' = hallazgo de confianza ALTA,
+// la cuenta no puede entrar (candado `bloqueo:{id}` en Redis); 'restriccion' =
+// hallazgo «posible», la cuenta sigue comprando pero con límites suaves (candado
+// `restriccion:{id}`: tope por pedido, menos pedidos por hora y contraseña en cada
+// pedido). Un mismo hallazgo puede tener un caso de cada tipo: primero «posible» y,
+// si más tarde lo corrobora otra señal, «alta» — por eso el único incluye el tipo.
+model bloqueo_cuenta {
+  id            Int       @id @default(autoincrement())
+  id_usuario    Int
+  huella        String    @db.VarChar(160)
+  senal         String    @db.VarChar(40)
+  tipo          String    @default("suspension") @db.VarChar(12)
+  origen        String    @default("automatico") @db.VarChar(12)
+  motivo        String    @db.Text
+  evidencia     Json?
+  estado        String    @default("activo") @db.VarChar(12)
+  creado_en     DateTime  @default(now())
+  expira_en     DateTime
+  revisado_por  Int?
+  revisado_en   DateTime?
+  nota_revision String?   @db.VarChar(500)
+
+  usuario usuarios  @relation("bloqueo_de_usuario", fields: [id_usuario], references: [id_usuario])
+  revisor usuarios? @relation("bloqueo_revisado_por", fields: [revisado_por], references: [id_usuario])
+
+  @@unique([id_usuario, huella, tipo])
+  @@index([estado, expira_en])
 }

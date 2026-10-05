@@ -1,6 +1,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
+const redisConfig = require('../src/config/redis');
 const { checkout } = require('../src/services/checkoutService');
 
 // Evidencia de funcionamiento del checkout transaccional (PRD, Fase Inicial):
@@ -66,4 +67,7 @@ main()
     // haya terminado su trabajo.
     await prisma.$disconnect();
     await mongoose.disconnect();
+    // Y checkout() invalida la caché del carrito en Redis: sin cerrarlo, esa conexión
+    // mantiene vivo el proceso después de terminar.
+    redisConfig.cerrar();
   });

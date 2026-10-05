@@ -1,3 +1,5 @@
+import { CODIGO_CUENTA_SUSPENDIDA, EVENTO_CUENTA_SUSPENDIDA } from '../utils/suspension';
+
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
 async function request(path, { method = 'GET', body, token } = {}) {
@@ -21,6 +23,12 @@ async function request(path, { method = 'GET', body, token } = {}) {
     // (p. ej. COMPROMISO_NO_REVENTA, ver utils/compromiso.js): la interfaz
     // reacciona al código, no al texto.
     if (data?.codigo) err.codigo = data.codigo;
+    // Una cuenta con la sesión abierta quedó suspendida: AuthContext cierra la
+    // sesión y muestra el aviso. En el login no hace falta: el propio formulario
+    // ya muestra el mensaje del error.
+    if (data?.codigo === CODIGO_CUENTA_SUSPENDIDA && path !== '/auth/login') {
+      window.dispatchEvent(new CustomEvent(EVENTO_CUENTA_SUSPENDIDA, { detail: { mensaje: data.error, hasta: data.hasta ?? null } }));
+    }
     throw err;
   }
 

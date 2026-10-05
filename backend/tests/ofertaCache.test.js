@@ -5,8 +5,8 @@ const { cargar, productoFalso, compromisoFalso } = require('./redisHelpers');
 // `propios`: ids de producto que pertenecen a quien compra; `vendedores`: las
 // cuentas que pueden vender y por lo tanto deben aceptar el compromiso de no
 // reventa (ver compromisoService.js).
-function escenario({ propios = [], vendedores = [] } = {}) {
-  const producto = { id: 1, estado: 'activo', descripcion: 'Flash', oferta_flash: { activo: true, precio_oferta: 8, stock_oferta: 2, vigente_desde: new Date(Date.now() - 1000), vigente_hasta: new Date(Date.now() + 60000) } };
+function escenario({ propios = [], vendedores = [], suspendidos = [] } = {}) {
+  const producto = { id: 1, vendedor_id: 2, estado: 'activo', descripcion: 'Flash', oferta_flash: { activo: true, precio_oferta: 8, stock_oferta: 2, vigente_desde: new Date(Date.now() - 1000), vigente_hasta: new Date(Date.now() + 60000) } };
   let restante = 2;
   let reintegros = 0;
   let falla = false;
@@ -18,7 +18,7 @@ function escenario({ propios = [], vendedores = [] } = {}) {
       reintegrarOferta: async (k, cantidad) => { reintegros += cantidad; restante += cantidad; },
     }) },
     '../config/mongo': {}, '../models/mongo/Producto': {},
-    './productoService': productoFalso({ propios, obtener: () => assert.fail('el camino caliente no lee el catálogo') }),
+    './productoService': productoFalso({ propios, suspendidos, obtener: () => assert.fail('el camino caliente no lee el catálogo') }),
     './compromisoService': compromisoFalso({ vendedores }),
     './ofertaDatosService': { obtener: async () => producto },
     './checkoutService': { checkoutOferta: async (datos) => { pedidos.push(datos); if (falla) throw new Error('MySQL rechazó'); return { precioUnitario: datos.precioUnitario }; } },
@@ -82,4 +82,30 @@ test('un vendedor sin el compromiso de no reventa no gasta cupo; con él, la com
   const otro = escenario({ vendedores: [7] });
   await otro.servicio.comprar(8, 1, { cantidad: 1 });
   assert.equal(otro.restante(), 1);
+});
+
+test('la oferta de un vendedor suspendido no se muestra ni se puede comprar, sin gastar cupo; vuelve al levantarse', async () => {
+  const suspendidos = new Set();
+  const e = escenario({ suspendidos });
+  assert.equal((await e.servicio.consultarStock(1)).activo, true);
+
+  suspendidos.add(2); // el vendedor del producto (2) se suspende
+  await assert.rejects(e.servicio.consultarStock(1), /no encontrado/, 'para el público la oferta no existe');
+  await assert.rejects(e.servicio.comprar(7, 1, { cantidad: 1 }), (err) => err.status === 409 && /no tiene una oferta flash activa/.test(err.message));
+  assert.equal(e.restante(), 2, 'no se gastó cupo');
+  assert.equal(e.pedidos.length, 0);
+
+  suspendidos.delete(2);
+  assert.equal((await e.servicio.consultarStock(1)).activo, true);
+  await e.servicio.comprar(7, 1, { cantidad: 1 });
+  assert.equal(e.restante(), 1);
+});
+
+test('el tope de monto de una cuenta con límites suaves llega hasta checkoutOferta, y si lo rechaza el cupo se devuelve', async () => {
+  const e = escenario();
+  await e.servicio.comprar(7, 1, { cantidad: 1, montoMaximo: 500 });
+  assert.equal(e.pedidos[0].montoMaximo, 500, 'checkoutOferta recibe el tope para hacerlo cumplir dentro de la transacción');
+  e.fallar(); // checkoutOferta rechaza (por el tope o por lo que sea)
+  await assert.rejects(e.servicio.comprar(7, 1, { cantidad: 1, montoMaximo: 5 }), /MySQL/);
+  assert.equal(e.restante(), 1, 'el segundo intento devolvió su cupo');
 });

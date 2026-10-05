@@ -127,6 +127,7 @@ export function AdminDashboardPage() {
         <div className="flex flex-wrap gap-2">
           <Button as={Link} to="/admin/ventas" variant="outline">Ventas y demanda</Button>
           <Button as={Link} to="/admin/fraude" variant="outline">Señales de fraude</Button>
+          <Button as={Link} to="/admin/bloqueos" variant="outline">Cuentas bloqueadas</Button>
           <Button as={Link} to="/admin/productos/nuevo" variant="accent">
             + Nuevo producto
           </Button>
@@ -181,6 +182,18 @@ export function AdminDashboardPage() {
                 <p className="text-sm text-neutral-500">
                   {producto.subcategoria?.subcategoria || 'Sin categoría'} · Vendedor: {producto.vendedor_nombre}
                 </p>
+                {/* Los productos de un vendedor suspendido no se muestran al público ni se pueden comprar
+                    mientras dure la suspensión (ver Cuentas bloqueadas); solo un administrador los ve. */}
+                {producto.vendedor_suspendido && (
+                  <p className="mt-1">
+                    <span
+                      title="El vendedor está suspendido: este producto no se muestra ni se puede comprar hasta que se levante la suspensión."
+                      className="rounded-full bg-warning-500/10 px-2 py-0.5 text-xs font-medium text-warning-500"
+                    >
+                      Oculto: vendedor suspendido
+                    </span>
+                  </p>
+                )}
               </div>
               <div className="hidden text-right sm:block">
                 <p className="font-semibold text-neutral-900">{formatCurrency(producto.inventario?.precio)}</p>

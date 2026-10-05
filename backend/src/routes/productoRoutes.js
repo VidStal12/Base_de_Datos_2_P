@@ -27,10 +27,19 @@ router.get('/estadisticas/ediciones', async (req, res) => {
   res.json(estadisticas);
 });
 
-router.get('/:id', async (req, res) => {
+// Pública, pero el producto de un vendedor suspendido "no existe" para el público
+// mientras dure la suspensión (ver productoService.listar y suspensionService): vuelve
+// solo al levantarse. Un administrador sí lo ve — el panel necesita poder abrirlo —,
+// y por eso la ruta mira el token (optionalAuth) sin exigirlo; igual que en el listado,
+// a él se le marca como oculto para que la pantalla lo diga.
+router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const producto = await productoService.obtener(Number(req.params.id));
-    res.json(producto);
+    const oculto = await productoService.vendedorOculto(producto.vendedor_id);
+    if (oculto && req.usuario?.rol !== 'administrador') {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+    res.json(oculto ? { ...producto, vendedor_suspendido: true } : producto);
   } catch (err) {
     res.status(404).json({ error: err.message });
   }

@@ -102,6 +102,60 @@ redis.call('EXPIRE', KEYS[1], ARGV[2])
 return 1
 `;
 
+// Bloqueo temporal de una cuenta (`bloqueo:{id_usuario}`, ver bloqueoService.js):
+// la clave EXISTE mientras la cuenta está suspendida y su TTL es lo que falta para
+// que se levante sola — Redis es quien hace vencer el bloqueo. Este script lo
+// escribe SOLO si el TTL nuevo es mayor que el que ya tiene (o si no existía), en
+// una sola ejecución atómica: un segundo hallazgo de la misma cuenta, o la
+// reconstrucción desde MySQL, nunca pueden ACORTAR una suspensión que ya corre.
+// KEYS[1] = clave, ARGV[1] = valor, ARGV[2] = TTL en milisegundos.
+// PTTL devuelve -2 si la clave no existe y -1 si existe sin vencimiento; en ambos
+// casos es menor que cualquier TTL pedido, así que se escribe. Devuelve 1 si
+// escribió, 0 si ya había un bloqueo igual o más largo.
+const LUA_BLOQUEAR_CUENTA = `
+local actual = redis.call('PTTL', KEYS[1])
+if actual < tonumber(ARGV[2]) then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 1
+end
+return 0
+`;
+
+// Cupo por ventana de tiempo (INCR + EXPIRE), para frenar ráfagas ANTES de que se
+// completen — hoy, los pedidos por hora de una cuenta (limitePedidosService.js) y
+// los intentos de contraseña (reautenticacionService.js). Todo en una sola
+// ejecución atómica, sin la ventana entre "contar" y "decidir" que tendría un INCR
+// suelto más un chequeo en la aplicación: con N pedidos simultáneos, exactamente
+// `límite` pasan.
+//   - el primer uso abre la ventana (EXPIRE); la ventana es FIJA, no deslizante;
+//   - si ya se llegó al límite, deshace su propio INCR (el contador no sube más
+//     allá del límite) y devuelve -1 con lo que falta para que la ventana cierre;
+//   - un contador que perdió su TTL (no debería) se repara en vez de quedar para
+//     siempre.
+// KEYS[1] = contador, ARGV[1] = límite, ARGV[2] = ventana en segundos.
+// Devuelve { cuenta | -1, segundos que faltan }.
+const LUA_RESERVAR_CUPO = `
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+  ttl = tonumber(ARGV[2])
+end
+if n > tonumber(ARGV[1]) then
+  redis.call('DECR', KEYS[1])
+  return {-1, ttl}
+end
+return {n, ttl}
+`;
+// Devuelve un cupo reservado (el pedido no llegó a completarse). Nunca baja de
+// cero, ni resucita un contador cuya ventana ya cerró.
+const LUA_LIBERAR_CUPO = `
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n > 0 then return redis.call('DECR', KEYS[1]) end
+return 0
+`;
+
 // Conexión perezosa y reutilizada, mismo patrón que config/mongo.js — se abre
 // una sola vez, la primera vez que algún servicio la necesita.
 function conectar() {
@@ -119,6 +173,9 @@ function conectar() {
     // Invalidar es lo mismo para el carrito y la oferta: subir la revisión y
     // borrar los datos, en un solo paso atómico.
     cliente.defineCommand('invalidarOferta', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
+    cliente.defineCommand('bloquearCuenta', { numberOfKeys: 1, lua: LUA_BLOQUEAR_CUENTA });
+    cliente.defineCommand('reservarCupo', { numberOfKeys: 1, lua: LUA_RESERVAR_CUPO });
+    cliente.defineCommand('liberarCupo', { numberOfKeys: 1, lua: LUA_LIBERAR_CUPO });
   }
   return cliente;
 }

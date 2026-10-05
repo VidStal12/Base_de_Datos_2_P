@@ -115,7 +115,10 @@ async function analizarTendencia(usuarioId) {
 // verificarNoEsPropio), así que recomendárselo sería ofrecerle algo que el
 // checkout va a rechazar.
 async function buscarCoincidencias(subcategoriaId, atributosPreferidos, usuarioId) {
-  const candidatos = await Producto.find({ subcategoria_id: subcategoriaId, estado: 'activo', vendedor_id: { $ne: usuarioId } }).lean();
+  // Tampoco los de un vendedor suspendido: no se muestran ni se pueden comprar mientras
+  // dure la suspensión (ver productoService.listar).
+  const ocultos = await productoService.vendedoresOcultos();
+  const candidatos = await Producto.find({ subcategoria_id: subcategoriaId, estado: 'activo', vendedor_id: { $nin: [usuarioId, ...ocultos] } }).lean();
   const clavesPreferidas = new Set(atributosPreferidos.map(({ nombre, valor }) => `${nombre}::${valor}`));
 
   return candidatos
@@ -161,11 +164,21 @@ async function calcularRecomendaciones(usuarioId) {
 async function recomendar(usuarioId) {
   const redis = conectarRedis();
   const cacheado = await redis.get(claveCache(usuarioId));
-  if (cacheado) return JSON.parse(cacheado);
+  if (cacheado) return sinVendedoresOcultos(JSON.parse(cacheado));
 
   const resultado = await calcularRecomendaciones(usuarioId);
   await redis.set(claveCache(usuarioId), JSON.stringify(resultado), 'EX', CACHE_TTL_SEGUNDOS);
-  return resultado;
+  return sinVendedoresOcultos(resultado);
+}
+
+// El caché dura una hora y una suspensión puede empezar dentro de ese rato: se filtra
+// AL LEER, no al guardar, así que un vendedor que se suspende desaparece de las
+// recomendaciones ya cacheadas y reaparece al levantarse — y comprar() (que busca el
+// producto acá) lo rechaza como "no es una recomendación vigente".
+async function sinVendedoresOcultos(resultado) {
+  const ocultos = await productoService.vendedoresOcultos();
+  if (ocultos.size === 0) return resultado;
+  return { ...resultado, productos: resultado.productos.filter((p) => !ocultos.has(p.vendedor_id)) };
 }
 
 // Guardia 1 (Redis, cupo PERSONAL — no un pool compartido) + guardia 2
@@ -176,7 +189,7 @@ async function recomendar(usuarioId) {
 // producto sea de verdad una recomendación vigente para este usuario antes
 // de nada — sin esto, cualquiera podría pedir el descuento en un producto al
 // que no le corresponde con solo adivinar la URL.
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, aceptaNoReventa } = {}) {
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, aceptaNoReventa, montoMaximo } = {}) {
   if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('cantidad debe ser un entero positivo');
   // Antes de tocar el caché o el cupo en Redis — también cubre una
   // recomendación ya cacheada (1 h) de antes de que existiera la regla.
@@ -226,6 +239,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
       direccionId,
       metodoPagoId,
       aceptaNoReventa,
+      montoMaximo,
     });
   } catch (err) {
     try {

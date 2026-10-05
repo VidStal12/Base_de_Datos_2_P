@@ -495,5 +495,202 @@ El aviso cita unos Términos de Servicio, así que existe la página pública do
 - **Es una coincidencia de título.** Quien cambie una palabra o agregue un adjetivo ("Camiseta premium (nueva)") deja de coincidir; sin un código de producto compartido, la señal se queda corta con quien disimula y puede equivocarse con quien vende algo genuinamente parecido — por eso parte en `posible` y es un candidato para revisión humana, no una acusación.
 - No ve la reventa **fuera** de TiendaYa, ni distingue si el stock publicado salió de lo comprado.
 - El compromiso solo existe para compras **desde este cambio**: lo anterior no tiene constancia (y el motivo lo dice).
-- Las consecuencias de una reventa confirmada (retirar las publicaciones, restringir o suspender la cuenta) están en los Términos como un **derecho que TiendaYa se reserva**: no existe un mecanismo automático de sanción ni de suspensión de cuentas; el panel solo señala candidatos para revisión humana.
+- Las consecuencias de una reventa confirmada (retirar las publicaciones, restringir o suspender la cuenta) están en los Términos como un **derecho que TiendaYa se reserva**. Lo único automático es la **suspensión temporal** de §20 (una reventa de confianza alta suspende la cuenta hasta que un administrador la revise o venza el plazo); retirar publicaciones o una suspensión duradera siguen siendo decisión humana, y no existe un mecanismo para ello en el sistema.
 - Una persona con **dos cuentas** (una compra, la otra revende) la atrapan las señales D y F, no esta.
+
+## 20. Suspensión temporal de cuentas por fraude de confianza alta (2026-10-04)
+
+Pedido del equipo, sobre las siete señales: que una cuenta que cometió una acción de fraude de **nivel alto** quede **suspendida temporalmente** con un bloqueo en **Redis que vence solo**, y que una **sección solo de administrador** permita revisar cada caso a mano antes de dar el visto bueno a una cuenta que pudo ser marcada sin serlo. Hasta acá el sistema solo *señalaba* candidatos; esto es lo primero que *actúa* sobre una cuenta.
+
+### Dos almacenes, cada uno con su trabajo
+
+```
+Redis  bloqueo:{id_usuario}   el candado. EXISTE mientras la cuenta está suspendida; su TTL es lo
+                              que falta para que se levante SOLA. Se consulta en cada petición.
+MySQL  bloqueo_cuenta         el CASO: qué hallazgo, con qué evidencia, cuándo, quién lo revisó y qué
+                              decidió. Es el registro durable y lo que reconstruye el candado.
+```
+
+Solo con Redis la suspensión vencería sola, pero se perdería con un reinicio (el Redis del proyecto no persiste a propósito) y no quedaría quién decidió qué ni por qué. Solo con MySQL habría que acordarse de desbloquear y consultar una tabla en cada petición. El reparto es el mismo de siempre en este proyecto: la copia rápida y con vencimiento propio en Redis, el registro en MySQL, y MySQL gana si no coinciden (§ Consistencia).
+
+### Cómo se llega a suspender a alguien
+
+`bloqueoService.evaluar()` corre `consultarFraude()` — **la misma fuente de verdad que el panel**, no una segunda implementación de las señales que se pueda desalinear — y de sus hallazgos de nivel «alta» saca las cuentas **responsables** (los «posible» pasan por la misma tabla, pero dejan a la cuenta bajo vigilancia en vez de suspenderla: §21):
+
+| Señal | A quién suspende | Huella del hallazgo |
+|---|---|---|
+| Cuentas de una misma persona | Todas las del grupo (son la misma persona) | `cuentas_relacionadas:{ids ordenados}` |
+| Autocompra | Comprador y vendedor si son cuentas distintas; la cuenta, si es una sola | `autocompra:{comprador}>{vendedor}` |
+| Reventa | Solo quien revende — el vendedor original es la víctima | `reventa:{vendedor}:{publicación}` |
+| Ráfaga de gasto | La cuenta | `rafaga_gasto:{cuenta}:{día}` |
+| Gasto anómalo | La cuenta | `gasto_anomalo:{cuenta}:{pedido}` |
+| Categoría inusual | La cuenta | `categoria_inusual:{cuenta}:{pedido}` |
+| Reseñas coordinadas | Nadie: no traen nivel de confianza, nunca son «alta» por sí solas | — |
+
+- **Un hallazgo suspende a una cuenta una sola vez.** `(id_usuario, huella)` es único. El grafo no olvida: sin esto, el barrido volvería a bloquear cada minuto a quien ya cumplió su suspensión (el plazo «vence solo» sería mentira) o a quien un administrador ya liberó. Un hallazgo **distinto** de la misma cuenta es evidencia nueva y abre un caso nuevo. La huella es por relación, no por pedido, donde tiene sentido: un administrador que descartó «estas dos cuentas son familia» no ve la suspensión volver con cada compra entre ellas; si se suma una tercera cuenta al grupo, la huella cambia y se vuelve a revisar.
+- **Los administradores nunca se suspenden.** Un automatismo no puede dejar sin acceso a las únicas personas que pueden deshacerlo (si todas las cuentas de administrador cayeran en un hallazgo, nadie podría liberar a nadie). Sus hallazgos se siguen viendo en el panel de fraude para que otro administrador los revise. El rol se lee de MySQL en cada barrido, no de la ficha.
+- **Cuándo corre:** cada `FRAUDE_BLOQUEO_INTERVALO_MS` (60 s) desde el backend — un temporizador que arranca `server.js`, como el worker de ventas, no `app.js` — y al instante con el botón «Revisar ahora». Un solo barrido a la vez: si coinciden el temporizador y el botón, el segundo recibe el resultado del que ya corre.
+- **Duración:** `FRAUDE_BLOQUEO_HORAS` (24 por defecto, admite decimales). Es el TTL que recibe Redis.
+
+### Qué se hace cumplir y cómo
+
+- `requireAuth` (todas las rutas con sesión) consulta el candado con un `PTTL`: `403` con `codigo: CUENTA_SUSPENDIDA` y la hora en que se levanta. Un token emitido **antes** de la suspensión deja de servir en la petición siguiente — no hay que esperar a que venza (2 h). `optionalAuth` trata a una cuenta suspendida como visitante: el catálogo público sigue abierto.
+- `login` la rechaza igual, **después** de verificar la contraseña: quien no la sabe no se entera de que la cuenta existe ni de que está suspendida.
+- El mensaje que ve la persona dice cuándo se levanta y que una persona revisa el caso, pero **no qué señal la disparó**: explicar el criterio enseñaría a esquivarlo. Un administrador no se consulta siquiera.
+- **Fallar abierto:** si Redis no responde, la cuenta se trata como no suspendida (se registra el fallo, a lo sumo cada 30 s). Una caída de Redis no debe impedir entrar a todo el sitio; el costo es que durante la caída una cuenta suspendida podría actuar, y en cuanto Redis vuelve la reconciliación restablece los candados.
+- **Escritura atómica que solo alarga** (`LUA_BLOQUEAR_CUENTA`, `config/redis.js`): escribe `SET … PX` solo si el TTL pedido supera al que ya corre, en una sola ejecución. Un segundo hallazgo, o la reconstrucción desde MySQL, nunca pueden acortar una suspensión vigente.
+- El frontend: `api/client.js` avisa con un evento de ventana cuando cualquier respuesta trae `CUENTA_SUSPENDIDA` (así no hay que tocar cada pantalla), `AuthContext` cierra la sesión y `AvisoSuspension` muestra un banner con el mensaje del servidor. En el login basta el error del propio formulario.
+
+### La sección de administrador (`/admin/bloqueos`)
+
+Solo `administrador` (la ruta con `RequireRole` y los cuatro endpoints con `requireRole`): `GET /api/admin/bloqueos`, `POST /evaluar`, `POST /:id/liberar` y `POST /:id/extender`.
+
+- **Bloqueadas ahora**, con lo **pendiente de revisión primero**: nombre, rol, cuánto falta y cuándo se levanta (el tiempo que cuenta es el de Redis, que es el que de verdad la levanta), el motivo en prosa tal como lo explicó el sistema al abrir el caso, la evidencia desplegable (qué lo corrobora y qué cuentas intervienen) y la ficha de la cuenta (la misma del panel de fraude, ahora un componente compartido).
+- **Levantar bloqueo** («dar el visto bueno»): con confirmación y una nota opcional. Cierra **todos** los casos activos de la cuenta (la suspensión es de la cuenta, no de cada hallazgo), los deja como `liberado` con quién, cuándo y por qué, y borra el candado: la cuenta entra de inmediato. Como las huellas quedan, ese mismo hallazgo no la vuelve a suspender.
+- **Extender 24 h / 7 días:** para cuando la revisión confirma la sospecha. Suma el tiempo al vencimiento de cada caso y alarga el candado; el caso queda «Revisada · se mantiene» y pasa al final de la lista.
+- **Historial** de lo cerrado (los últimos 50): lo que un administrador levantó y lo que venció solo.
+- `/admin/fraude` marca con «Suspendida hasta…» las fichas de las cuentas que ya lo están (`GET /api/admin/fraude` agrega `bloqueadas`).
+- La lista se refresca sola cada 30 s (pueden llegar suspensiones nuevas mientras se mira); «Revisar ahora» muestra además las advertencias del barrido, para no dar por completa una revisión en la que alguna señal no se pudo evaluar.
+
+### Consistencia y fallos
+
+- **Abrir un caso:** primero MySQL (el caso, durable), después Redis (el candado). Si Redis falla, el caso ya quedó y la reconciliación lo repone en el siguiente barrido.
+- **Levantar:** primero MySQL, después Redis. Un reintento tras una liberación a medias (MySQL cerrado, Redis no) quita el candado que quedó y responde bien.
+- **`reconciliar()`** (al arrancar, en cada barrido y antes de listar): (1) los casos activos cuya hora pasó se marcan `expirado` — Redis ya los soltó solo —; (2) un caso activo sin candado lo recupera, **con lo que falta de su vencimiento**, no con 24 h nuevas; (3) un candado sin ningún caso activo se quita. Por la (3), un `SET bloqueo:{id}` hecho a mano en `redis-cli` se limpia solo: los bloqueos se abren por el sistema.
+- **Dentro de un proceso, las operaciones que escriben corren de una en una** (cola de promesas): una liberación no puede cruzarse con una reconstrucción que «arreglaría» lo que acaba de pasar. Hay un solo backend; con varios procesos, el único `(cuenta, huella)` de MySQL sigue evitando casos duplicados.
+
+### Verificación
+
+- `npm run test:bloqueo` — **16 pruebas aisladas** con un Redis y un Prisma en memoria: responsables de cada señal (solo «alta», y a quien corresponde), un administrador nunca se suspende, un hallazgo no suspende dos veces (ni tras liberar ni tras vencer) pero uno distinto sí, barridos simultáneos que comparten resultado, liberar (con reintento tras una liberación a medias), extender y su validación, reconciliación (Redis perdido, candado de más, casos vencidos), un Redis que falla al abrir el caso, el candado que solo se alarga, `listar` y el historial, la configuración, y el middleware (`requireAuth`/`optionalAuth`, incluido que un error inesperado no se confunde con una suspensión).
+- `npm run verificar:bloqueo` — 12 comprobaciones contra **Redis, MySQL, Neo4j y un Express reales**, con un patrón sintético propio (dos cuentas que comparten buzón, cada una con una compra real): el grafo las marca «alta»; el barrido las suspende (caso en MySQL, TTL real de 24 h en Redis); un segundo barrido no repite el caso; login y token dan `403 CUENTA_SUSPENDIDA` sin revelar la señal (y una contraseña incorrecta sigue dando 401); el administrador lista, extiende (el TTL sube una hora) y libera; la cuenta liberada entra de nuevo y otro barrido no la vuelve a suspender; **el TTL de Redis levanta un bloqueo solo** y el caso queda `expirado`; se borra un candado de Redis y `reconciliar()` lo reconstruye desde MySQL; el Lua real no acorta una suspensión vigente; un administrador no queda bloqueado aunque exista la clave. Idempotente: borra los casos de esas cuentas al empezar y las deja libres.
+- **Probado en el navegador**: la sección con las cuentas pendientes, la evidencia, extender (pasa a «Revisada · se mantiene» con la nota y al final de la lista), levantar con confirmación (Cancelar no levanta; confirmar saca la tarjeta y la deja en el historial con quién y por qué); el login de una cuenta suspendida muestra el mensaje con la hora; una cuenta con la sesión abierta que se suspende pierde la sesión en la siguiente petición y ve el banner; y `/admin/fraude` marca las fichas de las cuentas suspendidas.
+- **El primer barrido en la base de desarrollo** suspendió exactamente las 15 cuentas sintéticas `fraude.*` que siembra `verificar:fraude` (18 casos: algunas tienen dos señales) y ninguna cuenta real del seed.
+
+### Límites honestos
+
+- **El primer barrido es retroactivo.** Al activarlo sobre una base con historia, suspende de golpe a todas las cuentas que ya tengan un hallazgo alto, aunque sea de hace meses. Aquí fueron cuentas sintéticas; en una base real convendría una pasada de «solo registrar» o una ventana de tiempo para actuar solo sobre lo reciente.
+- **El nivel «alta» es la confianza de un detector, no una prueba.** Compartir un buzón de correo es «alta» por sí solo: una pareja que comparte bandeja y compra por separado se suspende hasta que alguien la revise. Para eso existen la revisión humana, la nota y que un hallazgo liberado no vuelva.
+- **La suspensión es de toda la cuenta**, no de una sola actividad: no hay forma de suspender solo la compra o solo la venta. (Sus productos y ofertas flash ya no siguen a la venta mientras dura: se ocultan y vuelven al levantarse, §21.)
+- **Fallar abierto** deja una ventana durante una caída de Redis. Y no hay forma de que la persona suspendida **pida una revisión** desde el sitio: el caso lo mira un administrador por su cuenta.
+- **El plazo es el mismo para todo** (24 h, que el equipo dio por bueno), venga de un gasto raro o de una cuenta duplicada; no escala con la reincidencia.
+- **No se avisa** a los administradores de una suspensión nueva más que en la propia sección (no hay correo ni notificaciones).
+
+### Otras alternativas (no implementadas)
+
+- **Ya implementadas (§21):** la respuesta escalonada («posible» → límites suaves; «alta» → suspensión), la prevención con contadores en Redis y ocultar las publicaciones del vendedor suspendido.
+- **Duración que escala:** 24 h → 7 días → solo manual a la tercera, para reincidentes.
+- **Evaluar al ocurrir, no cada minuto:** engancharse tras `checkout()`/`resenaService.crear()` (con un debounce) para que la suspensión llegue segundos después de la acción.
+- **Verificación en vez de suspensión** para gasto/categoría/ráfaga (riesgo de cuenta tomada): pedir de nuevo la contraseña o confirmar por correo antes de dejar pasar el pedido.
+- **Retener el pedido, no la cuenta:** dejar un pedido sospechoso «en revisión» antes de despacharlo.
+- **Apelación:** un formulario para la persona suspendida, cuyo texto aparezca en el caso.
+- **Bloqueo manual** desde una ficha del panel de fraude, para sospechas «posible» que un administrador considere serias.
+
+## 21. Respuesta escalonada, prevención de pedidos y vendedores suspendidos que se ocultan (2026-10-04)
+
+Pedido del equipo, sobre la suspensión de §20 y a partir de las alternativas que ahí se proponían: (1) **respuesta escalonada** — un hallazgo «posible» ya no es «nada»: deja a la cuenta con límites suaves; solo «alta» suspende —; (2) **prevención con contadores en Redis** — rechazar el pedido de más *antes* de que se complete, en vez de detectarlo después en el grafo —; y (3) **ocultar las publicaciones de un vendedor suspendido** mientras dure la suspensión, de modo que si la cuenta se levanta («se le perdona») vuelvan solas. La duración de la suspensión sigue en 24 h: el equipo la dio por buena.
+
+```
+Nivel del hallazgo   Qué pasa con la cuenta                     Candado en Redis        Caso en MySQL (`tipo`)
+«posible»            bajo vigilancia: sigue entrando y          restriccion:{id}        restriccion
+                     comprando, con límites suaves
+«alta»               suspendida (§20); si vende, sus            bloqueo:{id}            suspension
+                     productos dejan de mostrarse
+cualquiera           tope general de pedidos por hora           limite:pedidos:{id}     —  (solo Redis)
+```
+
+### Un candado genérico, dos clases de cuenta bajo medida
+
+`candadoRedis.crearCandado(prefijo)` es el candado de §20 sin el prefijo fijo: `estado`, `bloquear` (el Lua `bloquearCuenta` que solo **alarga**), `levantar`, `usuarios` (`SCAN`) y `restantes` (`PTTL` en lote). `suspensionService` sigue siendo `bloqueo:{id}` — su comportamiento no cambió — y `restriccionService` es `restriccion:{id}`. La misma máquina, dos claves: un TTL que vence solo, y el caso durable en MySQL que lo reconstruye.
+
+`bloqueo_cuenta` gana la columna `tipo` (`suspension` por omisión, `restriccion`) y su único pasa a `(id_usuario, huella, tipo)` (migración `20261004020000_bloqueo_tipo_restriccion`; el índice nuevo se crea **antes** de borrar el viejo porque la FK a `usuarios` necesita un índice que empiece por `id_usuario`). Las reglas del barrido:
+
+- **«alta» → suspensión**, salvo que ya haya una suspensión para ese (cuenta, hallazgo).
+- **«posible» → restricción**, salvo que ya haya un caso **de cualquier tipo** para ese (cuenta, hallazgo): o ya se revisó (un administrador quitó los límites, o vencieron), o ya es «alta». Sin esto, el barrido volvería a limitar cada minuto a quien un administrador acaba de perdonar.
+- **Escalada:** si un «posible» sube a «alta» (otra señal lo corrobora: p. ej. dos homónimos que declaran la misma fecha de nacimiento), el barrido abre la **suspensión** y la restricción **se queda**: son dos casos y dos candados. Liberar la suspensión no quita la vigilancia; quitar la vigilancia no levanta la suspensión.
+- Los administradores nunca se suspenden **ni se limitan**: se omiten (`omitidosAdministrador`) y `limitesDe()` devuelve «sin límites» aunque exista una clave a su nombre.
+- `evaluar()` devuelve además `restriccionesNuevas` y `restringidas`; `listar()` separa `activas` de `restringidas`, y el historial trae el `tipo`.
+
+### Los límites suaves (`restriccionService`, `middleware/controlPedidos`)
+
+Mientras la cuenta tenga `restriccion:{id}` (`FRAUDE_RESTRICCION_HORAS`, 24 h) puede entrar y comprar, **con**:
+
+| Límite | Cómo | Rechazo |
+|---|---|---|
+| Su **contraseña en cada pedido** | campo `contrasena` del pedido; `bcrypt` contra MySQL | `403 REQUIERE_CONTRASENA` (falta), `403 CONTRASENA_INCORRECTA`, `429 DEMASIADOS_INTENTOS` |
+| Un **tope de monto por pedido** (`RESTRICCION_MONTO_MAXIMO`, Q500; `0` = sin tope) | lo hace cumplir `checkout`/`checkoutOferta` **dentro de la transacción**, porque solo ahí se conoce el total | `403 LIMITE_MONTO` («…cada pedido puede ser de hasta Q… Este pedido suma Q…») |
+| **Menos pedidos por hora** (`RESTRICCION_PEDIDOS_HORA`, 2; `0` = sin tope propio) | rige el menor entre el tope general y el suyo | `429 LIMITE_PEDIDOS` («… (tu cuenta está en revisión)») |
+
+- **Está en las rutas y no en los servicios, a propósito.** `controlPedidos` va tras `requireAuth` en las tres rutas que crean pedidos (checkout, oferta flash, recomendación): es una protección del canal HTTP, y así los scripts y las pruebas que llaman a los servicios no la sienten. Lo único que baja a los servicios es el parámetro `montoMaximo`. Quien agregue una ruta nueva que cree pedidos tiene que ponerle el middleware.
+- **La contraseña no es un oráculo.** Cada intento se cuenta en Redis (`reauth:intentos:{id}`, el mismo `INCR`+`EXPIRE` atómico que los pedidos): 5 por ventana de 15 min y, pasados, `429` con `Retry-After` **sin ni siquiera comparar** — hasta la contraseña correcta espera. Uno acertado borra el contador, así que quien la sabe nunca acumula. Se comprueba **antes** de reservar cupo: un intento fallido no gasta un pedido.
+- **Una sesión robada no alcanza:** quien tenga solo el token no puede comprar con una cuenta bajo vigilancia. (No protege de una contraseña robada.)
+- **El frontend** reacciona al código, no sabe de antemano si la cuenta está bajo vigilancia: el servidor rechaza con `REQUIERE_CONTRASENA` y la pantalla abre `ConfirmarContrasenaModal` (en las tres páginas de compra), que **sigue abierto** si la contraseña es incorrecta o hay demasiados intentos (con el motivo del servidor, el campo vacío y el cursor de vuelta) y se cierra ante cualquier otro rechazo (tope de monto, pedidos por hora…), cuyo mensaje ya explica qué pasó en la página. El reintento conserva lo que la persona ya aceptó del compromiso de no reventa. El armazón de los diálogos (foco, Escape, fondo, Tab) es ahora un componente común, `components/common/Modal.jsx`, que usa también el aviso de no reventa.
+- `RESTRICCION_ENABLED=false` apaga todos los límites suaves (los casos abiertos quedan sin efecto).
+
+### Prevención: el tope de pedidos por hora (`limitePedidosService`)
+
+La ráfaga de gasto (señal E) se ve **después**, cuando los pedidos ya se hicieron. Un contador por cuenta (`limite:pedidos:{id}`) rechaza el siguiente **antes** de que se complete:
+
+- `INCR` + `EXPIRE` en **una sola ejecución atómica** (script Lua `reservarCupo`, `config/redis.js`): con N pedidos simultáneos pasan exactamente `límite`, sin la ventana entre «contar» y «decidir» que tendría un `INCR` suelto. Si ya se llegó, deshace su propio `INCR` y responde `-1` con lo que falta.
+- **Un pedido que falla no gasta el cupo.** El middleware reserva antes de llamar al servicio y, si la respuesta termina en error (stock, precio, dirección, tope de monto…), lo devuelve (`liberarCupo`, que nunca baja de cero).
+- Rechazo: `429`, cabecera `Retry-After` y `reintentarEnSegundos` («Llegaste al máximo de N pedidos por hora… Podés volver a intentarlo en M minutos»). `LIMITE_PEDIDOS_HORA` (5 por defecto; `0` = sin tope) vale para **todas** las cuentas, administradores incluidos.
+- **Ventana fija**, no deslizante: se abre con el primer pedido y cierra una hora después. Es lo que da `INCR` + `EXPIRE` y se explica en una frase; el costo conocido es una ráfaga justo en el borde (hasta el doble del tope entre el final de una ventana y el principio de la siguiente).
+- **Falla abierto**, como todo lo demás: sin Redis, o con una variable mal escrita, no se frena a nadie. `server.js` valida las dos configuraciones al arrancar y avisa, en vez de descubrir que no había tope cuando hacía falta.
+
+### Ocultar a un vendedor suspendido
+
+La visibilidad se **deriva** del candado, no se guarda: `suspensionService.vendedoresSuspendidos()` devuelve el conjunto de cuentas con `bloqueo:{id}` (un `SCAN`, con un memo de 3 s que `bloquear`/`levantar` invalidan en el proceso). Por eso un vendedor **vuelve en el mismo instante en que un administrador lo libera** — o, si el TTL vence solo, a lo sumo 3 s después —, sin escribir nada en Mongo, Elasticsearch ni Redis por cada producto, y sin poder quedarse «oculto» por una escritura a medias. Se aplica en cada lugar donde un producto se muestra o se compra:
+
+| Dónde | Qué pasa |
+|---|---|
+| Catálogo (`productoService.listar`) | `vendedor_id: {$nin: [...]}`; filtrando por un vendedor suspendido, `[]` |
+| Detalle (`GET /api/productos/:id`) | `404` para el público; un administrador lo abre, **marcado** `vendedor_suspendido` |
+| Buscador (Elasticsearch) | `must_not` por `vendedor_id` **en la misma consulta** que arma las facetas y el total, así que ni se cuentan |
+| Autocompletado | pide más opciones, descarta las del vendedor y devuelve a lo sumo 8 |
+| Recomendaciones | se filtra **al leer**, no al guardar (el caché dura 1 h y una suspensión puede empezar dentro de ese rato); comprarla da «no es una recomendación vigente» |
+| Carrito | el producto queda **`disponible: false`** (no se borra) y no se puede agregar de nuevo |
+| Pedido y pedido de una oferta | `409` «Hay productos no disponibles», antes de tocar el stock (`verificarVendedoresActivos`, que lee `id_vendedor` de MySQL — la autoridad — y no cuesta ni una consulta si nadie está suspendido) |
+| Oferta flash | `404` para el público y `409` al comprar, sin gastar cupo de Redis |
+
+- **Un administrador sigue viéndolo todo**, marcado: `/admin` muestra «Oculto: vendedor suspendido» y el detalle dice por qué no se puede comprar. `/admin/bloqueos` avisa, al levantar, que los productos vuelven.
+- **Falla abierto:** sin Redis no se oculta a nadie (el catálogo se ve completo, como antes de existir la suspensión).
+- Lo que **no** cambia: los pedidos ya hechos del vendedor, su historial y las reseñas siguen donde están; solo deja de poder venderse.
+
+### Qué se agregó a la interfaz
+
+- `/admin/bloqueos` gana la sección **«Bajo vigilancia»** (una tarjeta por cuenta, con su caso, su evidencia, la ficha, los límites vigentes y «Quitar límites» con confirmación y nota), un renglón de configuración (límites suaves, tope general de pedidos por hora) y el `tipo` en el historial. «Revisar ahora» cuenta lo suspendido y lo puesto bajo vigilancia por separado.
+- `POST /api/admin/bloqueos/:id/quitar-restriccion` (solo administrador): cierra los casos de restricción de la cuenta y borra `restriccion:{id}`; ese hallazgo no la vuelve a limitar (si más adelante sube a «alta», sí podría suspenderla — el aviso lo dice).
+- `/admin/fraude` marca con **«Bajo vigilancia hasta…»** las fichas de esas cuentas (`GET /api/admin/fraude` agrega `restringidas`).
+- Términos de Servicio **v1.2**: el tope de pedidos por hora, la vigilancia con límites suaves y que los productos de un vendedor suspendido se ocultan. Sin cifras: los topes se ajustan por configuración, y publicarlos enseñaría a esquivarlos.
+
+### Consistencia y fallos
+
+- Los casos de restricción siguen el mismo orden que los de §20: primero MySQL (durable), después Redis, y `reconciliar()` repone, vence y limpia **cada candado por su tipo**. Las operaciones que escriben corren de una en una dentro del proceso.
+- Una restricción **no** se extiende: vence sola o se quita. Extender es solo de la suspensión.
+- El contador de pedidos y el de intentos de contraseña **no tienen caso en MySQL**: son prevención efímera, no una decisión sobre una persona. Se pierden con un reinicio de Redis, y está bien: lo que protegen es una hora.
+
+### Verificación
+
+- `npm run test:bloqueo` — **43 pruebas aisladas** (Redis, Prisma y bases en memoria): las 16 de §20 más **7** de la respuesta escalonada (a quién restringe cada nivel, administradores exentos, escalada, sin repetir, quitar), **9** del control de pedidos (el tope atómico y simultáneo, el pedido fallido devuelve el cupo, la contraseña y sus intentos, el tope de monto, el menor de los dos topes, configuración inválida y Redis caído fallan abiertos) y **11** de ocultar al vendedor (catálogo, vuelta al liberar y al vencer —con el memo de 3 s, medido con un reloj inyectado—, administrador, falla abierta, `verificarVendedoresActivos`, buscador, autocompletado y recomendaciones en caché). Cada prueba de ocultar se comprobó **rompiendo** el código a propósito (7 mutaciones, las 7 detectadas). `npm run test:redis` suma 3 (carrito y oferta flash con un vendedor suspendido, y el tope de monto que llega a `checkoutOferta`).
+- `npm run verificar:respuestaEscalonada` — **17 comprobaciones** contra **Redis, MySQL, Mongo, Elasticsearch, Neo4j y un Express reales**, con cuentas y un producto sintéticos propios: con el vendedor suspendido el producto desaparece del catálogo, del buscador (y de su faceta), de las sugerencias, del detalle, de la oferta flash y del pedido (un administrador lo sigue viendo, marcado); al liberarlo vuelve en el mismo instante, y con un TTL de 2,5 s reaparece solo ~3 s después del vencimiento; el tope por hora rechaza con `429`+`Retry-After` el pedido de más, los pedidos fallidos no gastan cupo, y con 5 pedidos **simultáneos** y tope 2 pasan exactamente 2 (y con 20 reservas directas y tope 5, exactamente 5); `0` apaga el tope y un valor inválido falla abierto; una cuenta bajo vigilancia necesita su contraseña, cae en el tope de monto (`LIMITE_MONTO`) y en su tope de pedidos por hora, y tras 5 contraseñas incorrectas hasta la correcta espera; un administrador no se limita; la sección de administrador las lista aparte, quitar los límites cierra el caso y borra la clave; y el barrido, con dos homónimos reales en Neo4j, los deja **bajo vigilancia** («posible») sin suspenderlos, no repite el caso, no vuelve a limitar a quien un administrador perdonó, y cuando comparten fecha de nacimiento (sube a «alta») los **suspende** sin quitarles la vigilancia. Idempotente: borra los casos de esas cuentas y repone el stock al empezar, y al terminar las deja libres y el producto inactivo.
+- **Probado en el navegador:** la sección «Bajo vigilancia» con sus límites y «Quitar límites» (confirmación, aviso, el caso pasa al historial con quién y la nota); el diálogo de contraseña en el pedido de una cuenta restringida (se abre al rechazar el servidor, **sigue abierto** con un error si la contraseña es incorrecta, Escape lo cierra, la contraseña correcta completa el pedido); la cadena compromiso de no reventa → contraseña de un vendedor bajo vigilancia (el reintento conserva la aceptación); el rechazo por pedidos por hora cierra el diálogo y se explica en la página; `/admin` marca los productos de los vendedores suspendidos y su detalle explica por qué no se pueden comprar, mientras que para el público dan «No encontramos este producto»; y `/admin/fraude` marca a las cuentas bajo vigilancia.
+- **El primer barrido en la base de desarrollo** puso bajo vigilancia a **9 cuentas**: 7 sintéticas (`fraude.*` y la cuenta de `verificar:carrito`) y dos **reales del seed — Ana Gómez** (dos «ráfaga de gasto», por pedidos del 22 y 23 de agosto) **y Luis Ramírez** (una autocompra anterior a la regla de «nadie compra lo que vende»). Es lo que el diseño prevé para un «posible», pero conviene saberlo antes de entrar con ellas: piden contraseña en cada pedido. Se quitan en `/admin/bloqueos` («Quitar límites») o apagando `RESTRICCION_ENABLED`.
+
+### Límites honestos
+
+- **El primer barrido es retroactivo también para «posible»**, y se mide con la historia, no con lo reciente: un hallazgo de hace meses (los pedidos sembrados de Ana) limita a la cuenta hoy. Un «posible» es débil de por sí; que el costo sea una contraseña y un tope —no una suspensión— es lo que lo hace tolerable, pero convendría una ventana de tiempo para actuar solo sobre lo reciente.
+- **La vigilancia no impide el fraude: lo encarece.** Una cuenta bajo vigilancia sigue pudiendo comprar hasta el tope; no hay revisión de cada pedido.
+- **El contador de intentos de contraseña es por cuenta.** Quien tenga solo el token de otra persona y se equivoque cinco veces la deja sin poder pedir 15 minutos: una denegación de servicio posible, aunque el costo para el atacante es tener ya la sesión. (Contarlos también por IP lo cerraría.)
+- **Los topes son por cuenta, no por persona ni por tarjeta.** Quien tenga varias cuentas reparte los pedidos entre ellas; esas cuentas las atrapa la señal D *después*, no este contador.
+- **Ventana fija:** una ráfaga en el borde de dos ventanas puede duplicar el tope por un rato.
+- **Está en las rutas HTTP:** una ruta nueva que cree pedidos sin `controlPedidos` queda sin tope ni límites.
+- **Ocultar usa un `SCAN` de `bloqueo:*` cada 3 s por proceso.** Sobra a esta escala; con miles de cuentas suspendidas convendría un conjunto en Redis (`SADD`/`SREM` al abrir y levantar). Y como cada proceso tiene su memo, con varios backends una suspensión abierta en otro tarda hasta 3 s en notarse acá.
+- **Fallar abierto** deja ventanas durante una caída de Redis: sin candados nadie se oculta, se limita ni se suspende.
+
+### Otras alternativas (siguen sin implementarse)
+
+- **Duración que escala:** 24 h → 7 días → solo manual a la tercera, para reincidentes.
+- **Evaluar al ocurrir, no cada minuto** (tras `checkout()`/`resenaService.crear()`, con un debounce).
+- **Retener el pedido, no la cuenta:** dejar un pedido sospechoso «en revisión» antes de despacharlo.
+- **Apelación:** un formulario para la persona suspendida, cuyo texto aparezca en el caso.
+- **Bloqueo manual** desde una ficha del panel de fraude, para sospechas «posible» que un administrador considere serias.
+- **Ventana de recencia** para los hallazgos que actúan (solo lo de los últimos N días), y avisar a los administradores de un caso nuevo (hoy solo se ve en la sección).

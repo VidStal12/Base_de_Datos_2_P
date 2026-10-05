@@ -1,6 +1,11 @@
 const jwt = require('jsonwebtoken');
+const { CODIGO_CUENTA_SUSPENDIDA, exigirCuentaActiva } = require('../services/suspensionService');
 
-function requireAuth(req, res, next) {
+// Valida el token Y que la cuenta no esté suspendida (bloqueo temporal por fraude
+// de confianza alta, ver suspensionService.js): una sola consulta a Redis por
+// petición. Un token emitido antes de la suspensión deja de servir en la misma
+// petición siguiente, sin esperar a que venza.
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
 
@@ -8,12 +13,24 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Token no proporcionado' });
   }
 
+  let usuario;
   try {
-    req.usuario = jwt.verify(token, process.env.JWT_SECRET);
-    next();
+    usuario = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
-    res.status(401).json({ error: 'Token inválido o expirado' });
+    return res.status(401).json({ error: 'Token inválido o expirado' });
   }
+
+  try {
+    await exigirCuentaActiva(usuario.id_usuario, usuario.rol);
+  } catch (err) {
+    if (err.codigo === CODIGO_CUENTA_SUSPENDIDA) {
+      return res.status(403).json({ error: err.message, codigo: err.codigo, hasta: err.hasta });
+    }
+    return next(err);
+  }
+
+  req.usuario = usuario;
+  next();
 }
 
 // Requiere requireAuth antes en la cadena (usa req.usuario.rol, que viene del token).
@@ -31,14 +48,19 @@ function requireRole(...rolesPermitidos) {
 // respuesta. Para rutas públicas que igual quieren saber quién pregunta
 // CUANDO hay sesión (p. ej. mostrarle a un vendedor sus propios productos
 // inactivos en el catálogo, sin exigirle login a todo el mundo que navega).
-function optionalAuth(req, res, next) {
+// Una cuenta suspendida se trata como si no hubiera sesión: sigue viendo el
+// catálogo público, pero no lo que solo ve su dueño.
+async function optionalAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
   if (scheme === 'Bearer' && token) {
     try {
-      req.usuario = jwt.verify(token, process.env.JWT_SECRET);
+      const usuario = jwt.verify(token, process.env.JWT_SECRET);
+      await exigirCuentaActiva(usuario.id_usuario, usuario.rol);
+      req.usuario = usuario;
     } catch {
-      // Token inválido/expirado en una ruta pública: se ignora, no se rechaza.
+      // Token inválido/expirado, o cuenta suspendida, en una ruta pública: se
+      // ignora, no se rechaza.
     }
   }
   next();

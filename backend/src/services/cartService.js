@@ -50,9 +50,12 @@ async function cargarActual(usuarioId) {
   if (!filas.length) return [];
   const ids = filas.map((fila) => fila.id_producto);
   await conectarMongo();
-  const [docs, inventarios] = await Promise.all([
-    Producto.find({ producto_id: { $in: ids } }).select('producto_id descripcion estado imagenes').lean(),
+  const [docs, inventarios, ocultos] = await Promise.all([
+    Producto.find({ producto_id: { $in: ids } }).select('producto_id descripcion estado imagenes vendedor_id').lean(),
     prisma.inventario.findMany({ where: { id_producto: { in: ids } } }),
+    // Un producto de un vendedor suspendido sigue en el carrito, pero como no
+    // disponible (ver productoService.listar): vuelve a estarlo si se levanta.
+    productoService.vendedoresOcultos(),
   ]);
   const productos = new Map(docs.map((doc) => [doc.producto_id, doc]));
   const stock = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
@@ -63,7 +66,7 @@ async function cargarActual(usuarioId) {
     return {
       producto: { id: fila.id_producto, descripcion: doc?.descripcion || 'Producto no disponible', imagen_url: imagen?.url || '', estado: doc?.estado || 'inactivo', precio: inv ? Number(inv.precio) : null },
       cantidad: fila.cantidad,
-      disponible: doc?.estado === 'activo' && !!inv && inv.cantidad >= fila.cantidad,
+      disponible: doc?.estado === 'activo' && !ocultos.has(doc.vendedor_id) && !!inv && inv.cantidad >= fila.cantidad,
     };
   });
 }
@@ -102,8 +105,8 @@ async function guardar(usuarioId, productoId, cantidad, sumar) {
   // llamadas directas a la API).
   await productoService.verificarNoEsPropio(usuarioId, [productoId]);
   await conectarMongo();
-  const producto = await Producto.findOne({ producto_id: productoId }).select('estado').lean();
-  if (producto?.estado !== 'activo') throw new Error('El producto no está disponible');
+  const producto = await Producto.findOne({ producto_id: productoId }).select('estado vendedor_id').lean();
+  if (producto?.estado !== 'activo' || (await productoService.vendedorOculto(producto.vendedor_id))) throw new Error('El producto no está disponible');
   await prisma.$transaction(async (tx) => {
     await bloquearUsuario(tx, usuarioId);
     const inventario = await tx.inventario.findUnique({ where: { id_producto: productoId } });

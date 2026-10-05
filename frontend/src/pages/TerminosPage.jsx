@@ -10,8 +10,9 @@ import { Link, useLocation } from 'react-router-dom';
 // (el aviso de compra y el detalle del pedido abren /terminos#no-reventa), así que
 // renombrar uno obliga a actualizar esos enlaces. No se publican umbrales ni
 // parámetros de las señales de fraude: decirle a alguien cuánto puede gastar sin
-// que lo revisen sería enseñarle a esquivarlo.
-const VERSION = '1.0';
+// que lo revisen sería enseñarle a esquivarlo; por eso tampoco se escriben acá las cifras
+// de los topes (monto, pedidos por hora), que además se ajustan sin tocar este texto.
+const VERSION = '1.2';
 const ACTUALIZADO = '4 de octubre de 2026';
 
 // Enlace a otra sección de esta misma página. Es un <a> nativo a propósito: el
@@ -66,6 +67,10 @@ const SECCIONES = [
           cupo es personal, por producto.
         </p>
         <p>Cada pedido queda registrado en «Mis pedidos», con su detalle y la referencia del pago.</p>
+        <p>
+          Cada cuenta puede hacer un máximo de pedidos por hora, para frenar el abuso. Si lo alcanzás, el sitio te dice cuánto falta para poder pedir de nuevo; un
+          pedido que no llega a completarse no cuenta.
+        </p>
       </>
     ),
   },
@@ -84,6 +89,10 @@ const SECCIONES = [
           </li>
           <li>
             Sí podés comprarle a otros vendedores, con la condición de no revender lo que comprás: ver <Ancla a="no-reventa">No reventa</Ancla>.
+          </li>
+          <li>
+            Si tu cuenta se suspende (ver <Ancla a="revision">Cómo revisamos la actividad sospechosa</Ancla>), tus productos dejan de mostrarse y de poder comprarse
+            mientras dure la suspensión; vuelven solos cuando se levanta o vence.
           </li>
         </ul>
       </>
@@ -155,8 +164,21 @@ const SECCIONES = [
           cuentas de una misma persona, compras entre cuentas relacionadas, reventa de lo comprado y gastos fuera de lo habitual de una cuenta.
         </p>
         <p>
-          Una señal <strong>no es una acusación ni una sanción automática</strong>: es un motivo para que una persona del equipo administrador revise el caso. Un gasto
-          alto o una compra grande, por sí solos, no son una infracción.
+          Una señal <strong>no es una acusación</strong>: es un motivo para que una persona del equipo administrador revise el caso. Un gasto alto o una compra grande,
+          por sí solos, no son una infracción.
+        </p>
+        <p>
+          Cuando una señal es de <strong>confianza alta</strong>, la cuenta se <strong>suspende de forma temporal y automática</strong> (por defecto, 24 horas) mientras una
+          persona revisa el caso. Durante la suspensión no se puede iniciar sesión ni hacer compras, cambios o reseñas con esa cuenta, aunque el catálogo se puede seguir
+          viendo sin iniciar sesión; las cuentas de administrador no se suspenden. Si la cuenta es de vendedor, sus productos tampoco se muestran ni se pueden comprar
+          mientras dure la suspensión. La suspensión <strong>no es una sanción definitiva</strong>: vence sola al cumplirse su tiempo, y quien revisa el caso puede
+          levantarla antes si fue un error — ese mismo hallazgo no vuelve a suspender la cuenta, y los productos vuelven a mostrarse — o extenderla si se confirma.
+        </p>
+        <p>
+          Cuando la señal es de confianza <strong>«posible»</strong>, la cuenta no se suspende: queda <strong>bajo vigilancia</strong> de forma temporal y automática (por
+          defecto, 24 horas). Podés seguir comprando, pero cada pedido se confirma con tu contraseña, tiene un tope de monto y se admiten menos pedidos por hora que de
+          costumbre. Es una medida suave: también vence sola, y quien revisa el caso puede quitarla antes si fue un error. Las cuentas de administrador no quedan bajo
+          vigilancia.
         </p>
         <p>
           Esas herramientas trabajan con las relaciones entre cuentas y productos (quién compró, reseñó o vende qué), el nombre normalizado y una huella irreversible
@@ -220,7 +242,11 @@ export function TerminosPage() {
             compra y queda constancia en el pedido. <Ancla a="no-reventa">Más abajo</Ancla>.
           </li>
           <li>Solo reseña quien compró el producto, una vez por producto.</li>
-          <li>Revisamos señales de fraude con herramientas automáticas y con personas: una señal es un motivo para revisar, no una sanción.</li>
+          <li>
+            Revisamos señales de fraude con herramientas automáticas y con personas: una señal de confianza alta suspende la cuenta de forma temporal hasta que una
+            persona la revise (y, si vende, sus productos dejan de mostrarse mientras tanto); una señal «posible» solo deja la cuenta bajo vigilancia, comprando con
+            límites suaves.
+          </li>
         </ul>
       </section>
 

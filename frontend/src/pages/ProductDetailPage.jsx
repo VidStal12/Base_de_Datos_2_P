@@ -30,8 +30,10 @@ export function ProductDetailPage() {
     setAgregado(false);
     setCantidad(1);
     setOfertaStock(null);
+    // Con el token, un administrador puede abrir también el producto de un vendedor
+    // suspendido (para el resto de la gente no existe mientras dure la suspensión).
     productosApi
-      .obtener(id)
+      .obtener(id, token)
       .then((p) => {
         setProducto(p);
         // Aparte, no bloquea el render del producto — una oferta flash es la
@@ -41,7 +43,7 @@ export function ProductDetailPage() {
       })
       .catch(() => setError('No encontramos este producto.'))
       .finally(() => setCargando(false));
-  }, [id]);
+  }, [id, token]);
 
   if (cargando) return <Spinner />;
   if (error || !producto) {
@@ -54,6 +56,9 @@ export function ProductDetailPage() {
   // Nadie compra lo que él mismo vende (el servidor lo rechaza con 403, ver
   // productoService.verificarNoEsPropio): no se ofrece ninguna forma de comprarlo.
   const esPropio = usuario?.id_usuario != null && usuario.id_usuario === producto.vendedor_id;
+  // Solo un administrador llega a ver un producto oculto (ver productoRoutes.js): su
+  // vendedor está suspendido y nadie puede comprarlo hasta que se levante.
+  const oculto = producto.vendedor_suspendido === true;
 
   async function handleAgregar() {
     const ok = await agregar(producto, cantidad);
@@ -133,7 +138,7 @@ export function ProductDetailPage() {
             </dl>
           )}
 
-          {!sinStock && !esPropio && (
+          {!sinStock && !esPropio && !oculto && (
             <div className="flex items-center gap-3">
               <label htmlFor="cantidad" className="text-sm font-medium text-neutral-700">
                 Cantidad
@@ -153,7 +158,15 @@ export function ProductDetailPage() {
             </div>
           )}
 
-          {esPropio ? (
+          {oculto ? (
+            <p role="note" className="rounded-lg bg-warning-500/10 p-4 text-sm text-neutral-800">
+              Este producto está oculto al público: la cuenta de su vendedor está suspendida, así que no se muestra ni se puede comprar. Vuelve solo cuando se levante la suspensión (ver{' '}
+              <Link to="/admin/bloqueos" className="font-medium text-brand-700 hover:underline">
+                Cuentas bloqueadas
+              </Link>
+              ).
+            </p>
+          ) : esPropio ? (
             <p role="note" className="rounded-lg bg-neutral-100 p-4 text-sm text-neutral-600">
               Este producto es tuyo: no podés comprarlo. Para cambiar su precio, stock u oferta, editalo desde tu panel.
             </p>

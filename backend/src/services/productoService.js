@@ -7,6 +7,7 @@ const { esEnteroPositivo } = require('../utils/validation');
 const busquedaSyncService = require('./busquedaSyncService');
 const fraudeSyncService = require('./fraudeSyncService');
 const ofertaDatos = require('./ofertaDatosService');
+const suspension = require('./suspensionService');
 
 // Todo el contenido de catálogo, incluido precio/cantidad, vive en el
 // documento de Mongo — ver Producto.js. MySQL (`inventario`) sigue siendo la
@@ -82,6 +83,13 @@ function condicionesAtributos(atributos) {
 // inactivos vive en productoRoutes.js, no acá: este parámetro llega ya
 // decidido contra el token de quien pregunta, nunca se confía en un valor
 // que mande el cliente directo.
+//
+// Los productos de un vendedor SUSPENDIDO tampoco se muestran (ver
+// suspensionService.vendedoresSuspendidos): se ocultan para el público mientras dura la
+// suspensión y vuelven solos cuando se levanta, porque la visibilidad se deriva del
+// candado de Redis y no se guarda en el producto. Quien ve los inactivos
+// (mostrarInactivos: un administrador, o un vendedor sus propios productos) tampoco
+// los pierde de vista; a un administrador se le marca cuáles están ocultos así.
 async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor, mostrarInactivos, soloOfertas } = {}) {
   await conectar();
   const filtro = {};
@@ -108,8 +116,12 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
   if (q) {
     filtro.descripcion = { $regex: q, $options: 'i' };
   }
+  const suspendidos = await suspension.vendedoresSuspendidos();
   if (vendedorId) {
     filtro.vendedor_id = Number(vendedorId);
+    if (!mostrarInactivos && suspendidos.has(Number(vendedorId))) return [];
+  } else if (!mostrarInactivos && suspendidos.size > 0) {
+    filtro.vendedor_id = { $nin: [...suspendidos] };
   }
   const condiciones = condicionesAtributos(atributos);
   if (condiciones.length) {
@@ -126,7 +138,10 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
     consulta = consulta.sort({ total_vendido: -1 });
   }
   const documentos = await consulta.lean();
-  return documentos.map(formatear);
+  return documentos.map((doc) => ({
+    ...formatear(doc),
+    ...(mostrarInactivos && suspendidos.has(doc.vendedor_id) && { vendedor_suspendido: true }),
+  }));
 }
 
 async function obtener(id) {
@@ -270,6 +285,37 @@ async function verificarNoEsPropio(usuarioId, productoIds, db = prisma) {
     err.status = 403;
     throw err;
   }
+}
+
+// Los productos de un vendedor suspendido no se pueden comprar (ver listar()): el
+// catálogo, el buscador y las recomendaciones ya no los muestran, y esto es la
+// autoridad en los caminos de compra — carrito, checkout, oferta flash —, para que un
+// enlace directo o un carrito armado antes de la suspensión tampoco sirvan. Pregunta
+// primero por el conjunto de suspendidos (casi siempre vacío), así que en el caso
+// normal no cuesta ni una consulta a MySQL; `id_vendedor` se lee de MySQL, la
+// autoridad, igual que verificarNoEsPropio.
+async function verificarVendedoresActivos(productoIds, db = prisma) {
+  const suspendidos = await suspension.vendedoresSuspendidos();
+  if (suspendidos.size === 0) return;
+  const ocultos = await db.producto.findMany({
+    where: { id: { in: productoIds }, id_vendedor: { in: [...suspendidos] } },
+    select: { id: true },
+  });
+  if (ocultos.length > 0) {
+    const err = new Error('Hay productos no disponibles. Revisá el carrito.');
+    err.status = 409;
+    throw err;
+  }
+}
+
+// ¿Está suspendido este vendedor? (para quien ya tiene su `vendedor_id` a mano)
+async function vendedorOculto(vendedorId) {
+  return (await suspension.vendedoresSuspendidos()).has(Number(vendedorId));
+}
+
+// El conjunto completo, para quien filtra una lista (el carrito, las recomendaciones).
+function vendedoresOcultos() {
+  return suspension.vendedoresSuspendidos();
 }
 
 // Edición: cualquier campo que cambie (descriptivo O precio/cantidad) genera
@@ -440,4 +486,7 @@ module.exports = {
   estadisticasEdiciones,
   verificarPermiso,
   verificarNoEsPropio,
+  verificarVendedoresActivos,
+  vendedorOculto,
+  vendedoresOcultos,
 };

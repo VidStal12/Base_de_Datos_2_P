@@ -3,13 +3,17 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function cargar(archivo, dependencias) {
+// `entorno`: las variables de entorno que ve el módulo (process.env), para los que
+// leen secretos o configuración al cargarse o al usarse. `globales`: lo que se quiera
+// reemplazar del sandbox (p. ej. un `Date` con reloj propio, para los módulos que miden
+// un memo con Date.now()).
+function cargar(archivo, dependencias, entorno = {}, globales = {}) {
   const ruta = path.resolve(__dirname, archivo);
   const requireLocal = createRequire(ruta);
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(ruta, 'utf8'), {
     module, require: (nombre) => Object.hasOwn(dependencias, nombre) ? dependencias[nombre] : requireLocal(nombre),
-    Date, Map, Set, Promise, Number, JSON, console: { error() {} }, process: { env: {} },
+    Date, Map, Set, Promise, Number, JSON, console: { error() {}, log() {} }, process: { env: entorno }, ...globales,
   }, { filename: ruta });
   return module.exports;
 }
@@ -85,9 +89,16 @@ function redisFalso() {
 // Doble de productoService para los servicios de compra: `propios` son los ids
 // de producto que pertenecen a quien compra (la regla "nadie compra lo que él
 // mismo vende"). Rechaza igual que el real: 403, antes de cualquier otra cosa.
-function productoFalso({ propios = [], ...resto } = {}) {
+// `suspendidos` son los vendedores suspendidos (sus productos no se muestran ni se
+// pueden comprar): por omisión nadie.
+function productoFalso({ propios = [], suspendidos = [], ...resto } = {}) {
   const ids = new Set(propios);
+  // Un Set compartido por referencia deja suspender y levantar a un vendedor a mitad de una prueba.
+  const ocultos = suspendidos instanceof Set ? suspendidos : new Set(suspendidos);
   return {
+    vendedoresOcultos: async () => ocultos,
+    vendedorOculto: async (vendedorId) => ocultos.has(Number(vendedorId)),
+    verificarVendedoresActivos: async () => {},
     ...resto,
     verificarNoEsPropio: async (usuarioId, productoIds) => {
       if (productoIds.some((id) => ids.has(id))) {

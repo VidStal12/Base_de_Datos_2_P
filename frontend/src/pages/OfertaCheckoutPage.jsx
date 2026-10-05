@@ -9,7 +9,9 @@ import { Spinner } from '../components/common/Spinner';
 import { NuevaDireccionForm } from '../components/account/NuevaDireccionForm';
 import { NuevoMetodoPagoForm } from '../components/account/NuevoMetodoPagoForm';
 import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoReventaModal';
+import { ConfirmarContrasenaModal } from '../components/checkout/ConfirmarContrasenaModal';
 import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
+import { errorDeContrasena, esRechazoDeContrasena } from '../utils/restriccion';
 
 // Compra directa de una oferta flash — deliberadamente separada de
 // CheckoutPage/CartContext (ver IA/ENTREGA-2-PLAN.md §4.2, "no reemplaza el
@@ -33,6 +35,9 @@ export function OfertaCheckoutPage() {
   const [error, setError] = useState('');
   const [confirmando, setConfirmando] = useState(false);
   const [pidiendoCompromiso, setPidiendoCompromiso] = useState(false);
+  // Una cuenta bajo revisión confirma cada pedido con su contraseña (ver utils/restriccion.js);
+  // null = no se está pidiendo.
+  const [pidiendoContrasena, setPidiendoContrasena] = useState(null);
 
   useEffect(() => {
     Promise.all([ofertasApi.consultarStock(id), direccionesApi.listar(token), metodosPagoApi.listar(token)])
@@ -71,22 +76,38 @@ export function OfertaCheckoutPage() {
     else confirmar(false);
   }
 
-  async function confirmar(aceptaNoReventa) {
+  async function confirmar(aceptaNoReventa, contrasena) {
     setError('');
     setPidiendoCompromiso(false);
     setConfirmando(true);
     try {
       const { compra } = await ofertasApi.comprar(
         id,
-        { cantidad: 1, direccionId, metodoPagoId, precioEsperado: ofertaStock.precio_oferta, ...(aceptaNoReventa && { aceptaNoReventa: true }) },
+        {
+          cantidad: 1,
+          direccionId,
+          metodoPagoId,
+          precioEsperado: ofertaStock.precio_oferta,
+          ...(aceptaNoReventa && { aceptaNoReventa: true }),
+          ...(contrasena && { contrasena }),
+        },
         token
       );
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
       // El servidor pide el compromiso (rol desactualizado en la interfaz): se
       // vuelve a mostrar el aviso en vez de un error suelto.
-      if (err.codigo === CODIGO_COMPROMISO) setPidiendoCompromiso(true);
-      else setError(err.message);
+      if (err.codigo === CODIGO_COMPROMISO) {
+        setPidiendoContrasena(null);
+        setPidiendoCompromiso(true);
+      } else if (esRechazoDeContrasena(err)) {
+        // La contraseña falta o es incorrecta: la oferta no cambió, no hace falta releerla.
+        setPidiendoContrasena({ aceptaNoReventa, error: errorDeContrasena(err) });
+        return;
+      } else {
+        setPidiendoContrasena(null);
+        setError(err.message);
+      }
       // Alguien más pudo haberse quedado con la última unidad mientras esta
       // persona elegía dirección/pago — refrescar el remanente para que no
       // quede una pantalla ofreciendo algo que ya no existe.
@@ -215,6 +236,13 @@ export function OfertaCheckoutPage() {
         procesando={confirmando}
         onCancelar={() => setPidiendoCompromiso(false)}
         onAceptar={() => confirmar(true)}
+      />
+      <ConfirmarContrasenaModal
+        abierto={pidiendoContrasena !== null}
+        error={pidiendoContrasena?.error}
+        procesando={confirmando}
+        onCancelar={() => setPidiendoContrasena(null)}
+        onConfirmar={(contrasena) => confirmar(pidiendoContrasena.aceptaNoReventa, contrasena)}
       />
     </div>
   );

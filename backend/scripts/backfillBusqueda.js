@@ -2,6 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const elasticsearch = require('../src/config/elasticsearch');
+const redisConfig = require('../src/config/redis');
 const productoService = require('../src/services/productoService');
 const busquedaSyncService = require('../src/services/busquedaSyncService');
 // Nunca se usa directo acá — pero productoService.listar() hace populate()
@@ -40,4 +41,7 @@ main()
     await prisma.$disconnect();
     await mongoose.disconnect();
     await elasticsearch.cerrar();
+    // productoService.listar() pregunta a Redis qué vendedores están suspendidos: esa
+    // conexión mantendría vivo el proceso después de terminar.
+    redisConfig.cerrar();
   });

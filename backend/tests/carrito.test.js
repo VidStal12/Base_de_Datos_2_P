@@ -5,7 +5,7 @@ const { cargar, redisFalso, productoFalso, compromisoFalso, ACEPTADO_EN } = requ
 // `propios`: ids de producto que pertenecen a quien compra (usuario 7) — la
 // regla "nadie compra lo que él mismo vende", que cartService exige con
 // productoService.verificarNoEsPropio.
-function escenario({ propios = [] } = {}) {
+function escenario({ propios = [], suspendidos = [] } = {}) {
   const redis = redisFalso();
   const filas = new Map();
   const inv = { precio: 10, cantidad: 10 };
@@ -30,7 +30,7 @@ function escenario({ propios = [] } = {}) {
       async deleteMany({ where }) { if (where.id_producto) filas.delete(where.id_producto); else filas.clear(); },
     },
   };
-  const productos = new Map([1, 2].map((id) => [id, { producto_id: id, descripcion: `Producto ${id}`, estado: 'activo', imagenes: [{ principal: true, url: `imagen-${id}` }] }]));
+  const productos = new Map([1, 2].map((id) => [id, { producto_id: id, vendedor_id: id + 10, descripcion: `Producto ${id}`, estado: 'activo', imagenes: [{ principal: true, url: `imagen-${id}` }] }]));
   let consultasMongo = 0;
   const modelo = {
     find: ({ producto_id }) => ({ select: () => ({ lean: async () => { consultasMongo += 1; return producto_id.$in.map((id) => productos.get(id)).filter(Boolean); } }) }),
@@ -39,7 +39,7 @@ function escenario({ propios = [] } = {}) {
   const servicio = cargar('../src/services/cartService.js', {
     '../config/prisma': db, '../config/redis': { conectar: () => redis },
     '../config/mongo': { conectar: async () => {} }, '../models/mongo/Producto': modelo,
-    './productoService': productoFalso({ propios }),
+    './productoService': productoFalso({ propios, suspendidos }),
   });
   return { servicio, filas, inv, redis, productos, consultas: () => consultas, consultasMongo: () => consultasMongo };
 }
@@ -260,4 +260,23 @@ test('el pedido de un vendedor guarda la constancia de su compromiso; el de un c
   const comprador = escenarioCompra({ vendedores: [] });
   await comprador.servicio.checkout(pedido);
   assert.equal(comprador.guardado.compra.no_reventa_aceptada_en, null);
+});
+
+test('el producto de un vendedor suspendido sale como no disponible en el carrito y no se puede agregar; vuelve al levantarse', async () => {
+  const suspendidos = new Set();
+  const e = escenario({ suspendidos });
+  await e.servicio.agregar(7, 1, 1);
+  await e.servicio.agregar(7, 2, 1);
+  assert.ok((await e.servicio.revisar(7)).items.every((item) => item.disponible), 'sin suspensión, todo disponible');
+
+  suspendidos.add(11); // el vendedor del producto 1 se suspende
+  const durante = (await e.servicio.revisar(7)).items;
+  assert.equal(durante.find((item) => item.producto.id === 1).disponible, false, 'su producto sigue en el carrito, pero no disponible: el checkout lo rechazaría');
+  assert.equal(durante.find((item) => item.producto.id === 2).disponible, true, 'el de otro vendedor no se toca');
+  await assert.rejects(e.servicio.agregar(7, 1, 1), /no está disponible/);
+  await e.servicio.agregar(7, 2, 1);
+
+  suspendidos.delete(11); // se levanta la suspensión: vuelve solo
+  assert.ok((await e.servicio.revisar(7)).items.every((item) => item.disponible));
+  await e.servicio.agregar(7, 1, 1);
 });

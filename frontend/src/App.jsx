@@ -21,6 +21,7 @@ import { SellerProductFormPage } from './pages/seller/SellerProductFormPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminVentasPage } from './pages/admin/AdminVentasPage';
 import { AdminFraudePage } from './pages/admin/AdminFraudePage';
+import { AdminBloqueosPage } from './pages/admin/AdminBloqueosPage';
 import { TerminosPage } from './pages/TerminosPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
@@ -141,6 +142,14 @@ export default function App() {
                 element={
                   <RequireRole roles={ROLES_ADMIN}>
                     <AdminFraudePage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="admin/bloqueos"
+                element={
+                  <RequireRole roles={ROLES_ADMIN}>
+                    <AdminBloqueosPage />
                   </RequireRole>
                 }
               />

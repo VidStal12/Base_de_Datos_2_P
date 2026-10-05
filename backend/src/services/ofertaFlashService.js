@@ -76,6 +76,9 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
 // todavía. Pública, sin auth — mismo criterio que ver el precio normal.
 async function consultarStock(productoId) {
   const producto = await ofertaDatos.obtener(productoId);
+  // Un vendedor suspendido deja de mostrarse (ver productoService.listar): su oferta
+  // "no existe" mientras dure la suspensión, y vuelve sola al levantarse.
+  if (await productoService.vendedorOculto(producto.vendedor_id)) throw new Error('Producto no encontrado');
   const oferta = producto.oferta_flash;
   const ahora = new Date();
 
@@ -109,7 +112,9 @@ async function intentarComprar(productoId, cantidad, precioEsperado) {
   const oferta = producto.oferta_flash;
   const ahora = new Date();
 
-  if (producto.estado !== 'activo' || !oferta?.activo) {
+  // Como un producto inactivo o una oferta pausada: no se puede comprar mientras su
+  // vendedor esté suspendido (la oferta y su cupo siguen ahí; vuelven al levantarse).
+  if (producto.estado !== 'activo' || !oferta?.activo || (await productoService.vendedorOculto(producto.vendedor_id))) {
     const err = new Error('Este producto no tiene una oferta flash activa');
     err.status = 409;
     throw err;
@@ -169,7 +174,7 @@ async function refundStock(productoId, cantidad) {
 // Deliberadamente separado de checkoutService.checkout() (el carrito normal)
 // — no pasa por Redis del carrito ni por CartContext, siempre es este único
 // producto. Ver ENTREGA-2-PLAN.md §4.2, "no reemplaza el checkout normal".
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa } = {}) {
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa, montoMaximo } = {}) {
   // Antes de tocar Redis: si el dueño intenta comprar su propia oferta, que se
   // rechace sin gastar (ni tener que devolver) una unidad del pool.
   // checkoutOferta() lo vuelve a verificar como autoridad final.
@@ -189,6 +194,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
       direccionId,
       metodoPagoId,
       aceptaNoReventa,
+      montoMaximo,
     });
   } catch (err) {
     try {
