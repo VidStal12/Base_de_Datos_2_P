@@ -10,16 +10,23 @@ const ofertaDatos = require('./ofertaDatosService');
 // recalcula la suma real en vez de incrementar a ciegas; corrige cualquier
 // desvío que haya dejado un fallo silencioso del paso de reenvío en
 // checkoutService.js.
-async function recalcularVentas() {
+//
+// productoIds (opcional): reconcilia SOLO esos productos. Sin él (el botón del
+// administrador) reescribe el de TODOS, incluido el desvío de cualquier otro
+// producto — que es lo que se quiere al reparar el catálogo entero, pero no
+// cuando se sabe cuál falló (la demo de consistencia, una futura reparación
+// dirigida).
+async function recalcularVentas({ productoIds } = {}) {
   await conectar();
 
   const sumas = await prisma.compra_detalle.groupBy({
     by: ['id_producto'],
     _sum: { cantidad: true },
+    ...(productoIds && { where: { id_producto: { in: productoIds } } }),
   });
   const mapaVentas = new Map(sumas.map((s) => [s.id_producto, s._sum.cantidad || 0]));
 
-  const productos = await Producto.find().select('producto_id');
+  const productos = await Producto.find(productoIds ? { producto_id: { $in: productoIds } } : {}).select('producto_id');
   let actualizados = 0;
   for (const { producto_id } of productos) {
     const total = mapaVentas.get(producto_id) || 0;
@@ -37,13 +44,15 @@ async function recalcularVentas() {
 // de que precio/cantidad se agregaran ahí (2026-08-29), y (2) corregir
 // cualquier desvío si el reenvío de productoService.js/checkoutService.js
 // falla silenciosamente.
-async function recalcularInventario() {
+//
+// productoIds (opcional): igual que en recalcularVentas, reconcilia solo esos.
+async function recalcularInventario({ productoIds } = {}) {
   await conectar();
 
-  const inventarios = await prisma.inventario.findMany();
+  const inventarios = await prisma.inventario.findMany(productoIds ? { where: { id_producto: { in: productoIds } } } : undefined);
   const mapaInventario = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
 
-  const productos = await Producto.find().select('producto_id oferta_flash.activo');
+  const productos = await Producto.find(productoIds ? { producto_id: { $in: productoIds } } : {}).select('producto_id oferta_flash.activo');
   let actualizados = 0;
   const omitidos = [];
   for (const { producto_id, oferta_flash } of productos) {

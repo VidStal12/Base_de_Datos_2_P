@@ -204,6 +204,21 @@ npm run verificar:checkout
 
 El script corre un checkout válido y luego uno que pide más unidades de las que hay en stock, confirmando que este segundo caso se rechaza por completo **sin** dejar el inventario parcialmente descontado.
 
+## Consistencia del checkout entre bases: demo y fallas simuladas (Entrega 3)
+
+El checkout es una transacción atómica de MySQL; lo que viaja **después** del commit (Mongo, Redis, Neo4j y la cola hacia Cassandra) puede fallar por separado. `demo_consistencia_compra.js` es la evidencia: corre el `checkout()` real contra las bases reales, lee las cinco antes y después, y para cada falla simulada muestra el **componente**, el **punto de falla**, lo **observado** y la **mitigación** (reintento idempotente, reparación, o ventana eventual aceptada). Desde `backend/`, con el `docker-compose` arriba:
+
+```bash
+npm run demo:consistencia                         # camino normal, todo arriba
+node scripts/demo_consistencia_compra.js --falla=mongo-despues
+npm run demo:consistencia:fallas                  # los seis escenarios y la tabla final
+npm run test:consistencia                         # pruebas aisladas de la reparación del catálogo
+```
+
+Escenarios (`--falla=`): `mysql-dentro` (rollback atómico), `mongo-antes` (falla cerrada), `mongo-despues` (copia desfasada que no se autorepara; se repara con `recalcular-*`), `redis` (copia del carrito vieja hasta su TTL), `neo4j` (compra ausente del grafo; reenvío idempotente) y `cassandra` (outbox con *backoff*; reenviar la misma venta no la duplica). La falla se inyecta **en el proceso del script**, solo durante la llamada que fallaría, y sus efectos se leen de las bases reales: no se detiene ningún contenedor ni se toca el backend en marcha. Son 33 verificaciones; si una no coincide con lo documentado el script sale con código 1. Es idempotente y deja su producto («PRODUCTO DEMO - consistencia entre bases») **inactivo**; crea `demo.vendedor@tiendaya.com` y `demo.comprador@tiendaya.com` y compra unas pocas unidades de Q100 por corrida. Resultados y análisis: [IA/ENTREGA-3-CONSISTENCIA.md §5](IA/ENTREGA-3-CONSISTENCIA.md).
+
+`recalcularInventario()`/`recalcularVentas()` (los botones del administrador) aceptan ahora una lista opcional `productoIds` para reparar solo esos productos; sin ella siguen reescribiendo todo el catálogo.
+
 ## Verificar el carrito en Redis (Entrega 2)
 
 ```bash
@@ -423,6 +438,7 @@ backend/
     seed.js               Datos de prueba representativos (MySQL + Mongo, un solo paso)
   scripts/
     verificarCheckout.js    Evidencia de atomicidad del checkout
+    demo_consistencia_compra.js  Demo del checkout contra las 5 bases y fallas simuladas (--falla=…): componente, punto de falla, observado y mitigación (Entrega 3)
     verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
     verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
     verificarOfertaCache.js    Evidencia, contra un Redis real, de los datos de la oferta flash: hash con la estructura del carrito y regeneración (Entrega 2)
