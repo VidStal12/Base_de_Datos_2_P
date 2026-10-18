@@ -32,7 +32,7 @@ function normalizePurchases(details, buyerRefsByEmail) {
 
 // MySQL se lee en un único snapshot. La lista de IDs anterior a la ráfaga
 // excluye el historial sin depender del reloj ni del orden de los commits.
-function createSnapshotReader({ prisma, redis, productId, baselineDetailIds, buyerRefsByEmail }) {
+function createSnapshotReader({ prisma, redis, productId, baselineDetailIds, buyerRefsByEmail, stockKey = `oferta:${productId}:stock` }) {
   return async () => {
     const [inventory, details] = await prisma.$transaction([
       prisma.inventario.findUnique({ where: { id_producto: productId }, select: { cantidad: true } }),
@@ -49,7 +49,7 @@ function createSnapshotReader({ prisma, redis, productId, baselineDetailIds, buy
       }),
     ], { isolationLevel: 'RepeatableRead' });
     if (!inventory) throw new Error(`No existe inventario para el producto ${productId}`);
-    const redisRaw = await redis.get(`oferta:${productId}:stock`);
+    const redisRaw = await redis.get(stockKey);
     return {
       mysqlAfter: inventory.cantidad,
       redisRaw,

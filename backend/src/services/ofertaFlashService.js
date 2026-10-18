@@ -5,6 +5,8 @@ const productoService = require('./productoService');
 const compromisoService = require('./compromisoService');
 const checkoutService = require('./checkoutService');
 const ofertaDatos = require('./ofertaDatosService');
+const { randomUUID, createHash } = require('node:crypto');
+const intentos = require('./checkoutIntentoService');
 
 // Oferta flash (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.2): cupo limitado a
 // precio rebajado, con dos guardas independientes — Redis (acá, admisión
@@ -13,8 +15,14 @@ const ofertaDatos = require('./ofertaDatosService');
 // oferta.
 const RECHAZADO = -1;
 
-function clave(productoId) {
-  return `oferta:${productoId}:stock`;
+function clave(productoId, oferta) {
+  return `oferta:${productoId}:stock${oferta?.revision ? `:${oferta.revision}` : ''}`;
+}
+
+function versionOferta(oferta) {
+  return oferta?.revision || createHash('sha256').update(JSON.stringify([
+    oferta?.precio_oferta, oferta?.stock_oferta, oferta?.vigente_desde, oferta?.vigente_hasta,
+  ])).digest('hex');
 }
 
 // Configura (o pausa) la oferta flash de un producto — solo el vendedor dueño
@@ -52,7 +60,7 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
     if (desde >= hasta) throw new Error('vigente_hasta debe ser posterior a vigente_desde');
   }
 
-  doc.oferta_flash = { activo: nuevoActivo, precio_oferta: precioFinal, stock_oferta: stockFinal, vigente_desde: desde, vigente_hasta: hasta };
+  doc.oferta_flash = { activo: nuevoActivo, precio_oferta: precioFinal, stock_oferta: stockFinal, vigente_desde: desde, vigente_hasta: hasta, revision: randomUUID() };
   await doc.save();
   await ofertaDatos.actualizar(doc);
 
@@ -63,7 +71,7 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
   // siquiera tocar Redis, así que una clave vieja ahí no molesta a nadie.
   if (nuevoActivo) {
     const redis = conectar();
-    await redis.del(clave(productoId));
+    await redis.del(clave(productoId, doc.oferta_flash));
   }
 
   return productoService.obtener(productoId);
@@ -93,7 +101,7 @@ async function consultarStock(productoId) {
   }
 
   const redis = conectar();
-  const crudo = await redis.get(clave(productoId));
+  const crudo = await redis.get(clave(productoId, oferta));
   const restante = crudo === null ? oferta.stock_oferta : Number(crudo);
 
   return { activo: true, producto, precio_oferta: oferta.precio_oferta, restante: Math.max(restante, 0), vigente_hasta: oferta.vigente_hasta };
@@ -105,7 +113,7 @@ async function consultarStock(productoId) {
 // ACÁ, antes de tocar Redis para nada — más barato que un round-trip, y dos
 // de los tres motivos de rechazo (todavía no empieza / ya venció) no son algo
 // que Redis pueda decidir por sí solo.
-async function intentarComprar(productoId, cantidad, precioEsperado) {
+async function intentarComprar(productoId, cantidad, precioEsperado, soloValidar = false) {
   if (!Number.isInteger(cantidad) || cantidad <= 0) throw new Error('cantidad debe ser un entero positivo');
 
   const producto = await ofertaDatos.obtener(productoId);
@@ -144,8 +152,10 @@ async function intentarComprar(productoId, cantidad, precioEsperado) {
     throw err;
   }
 
+  if (soloValidar) return { producto, ttlSegundos };
+
   const redis = conectar();
-  const restante = await redis.decrementarOferta(clave(productoId), oferta.stock_oferta, ttlSegundos, cantidad);
+  const restante = await redis.decrementarOferta(clave(productoId, oferta), oferta.stock_oferta, ttlSegundos, cantidad);
 
   if (Number(restante) === RECHAZADO) {
     const err = new Error('No quedan unidades en oferta');
@@ -163,10 +173,10 @@ async function intentarComprar(productoId, cantidad, precioEsperado) {
 // Mejor esfuerzo, mismo criterio que el resto de los reenvíos del proyecto
 // (ver ADR-002 §5): si esto también falla, queda un desajuste menor a favor
 // de la oferta (un cupo de menos disponible), no un dato incorrecto.
-async function refundStock(productoId, cantidad) {
+async function refundStock(productoId, cantidad, oferta) {
   const redis = conectar();
   // Si el pool ya venció, no recrear un contador sin TTL.
-  await redis.reintegrarOferta(clave(productoId), cantidad);
+  await redis.reintegrarOferta(clave(productoId, oferta), cantidad);
 }
 
 // Punto de entrada único: guardia 1 (Redis) → guardia 2 (MySQL, autoridad
@@ -174,7 +184,8 @@ async function refundStock(productoId, cantidad) {
 // Deliberadamente separado de checkoutService.checkout() (el carrito normal)
 // — no pasa por Redis del carrito ni por CartContext, siempre es este único
 // producto. Ver ENTREGA-2-PLAN.md §4.2, "no reemplaza el checkout normal".
-async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa, montoMaximo } = {}) {
+async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa, montoMaximo, intentoId } = {}) {
+  if (intentoId) return comprarConIntento(usuarioId, productoId, { cantidad, direccionId, metodoPagoId, precioEsperado, aceptaNoReventa, montoMaximo, intentoId });
   // Antes de tocar Redis: si el dueño intenta comprar su propia oferta, que se
   // rechace sin gastar (ni tener que devolver) una unidad del pool.
   // checkoutOferta() lo vuelve a verificar como autoridad final.
@@ -198,7 +209,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
     });
   } catch (err) {
     try {
-      await refundStock(productoId, cantidad);
+      await refundStock(productoId, cantidad, admision.producto.oferta_flash);
     } catch (refundErr) {
       console.error('No se pudo revertir el contador de Redis tras un fallo en MySQL:', refundErr.message);
     }
@@ -206,4 +217,52 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
   }
 }
 
-module.exports = { actualizar, consultarStock, intentarComprar, comprar };
+async function prepararIntento(usuarioId, productoId, anteriorIntentoId) {
+  // Preparar no reserva ni exige cupo: permite recuperar una compra que consumió
+  // la última unidad, incluso si la oferta acaba de vencer.
+  const producto = await ofertaDatos.obtener(productoId);
+  if (!producto.oferta_flash) throw intentos.error('Este producto no tiene oferta flash.');
+  return intentos.preparar(usuarioId, { productoId, ofertaVersion: versionOferta(producto.oferta_flash), anteriorIntentoId });
+}
+
+async function comprarConIntento(usuarioId, productoId, datos) {
+  const { intentoId, cantidad, precioEsperado } = datos;
+  const anterior = await intentos.recuperar(usuarioId, intentoId, { ...datos, productoId });
+  if (anterior) return anterior;
+  await productoService.verificarNoEsPropio(usuarioId, [productoId]);
+  await compromisoService.exigirCompromiso(usuarioId, datos.aceptaNoReventa);
+  const admision = await intentarComprar(productoId, cantidad, precioEsperado, true);
+  const oferta = admision.producto.oferta_flash;
+  const solicitud = { ...datos, productoId };
+  const intento = await intentos.registrarReserva(usuarioId, intentoId, solicitud, {
+    version: versionOferta(oferta), claveStock: clave(productoId, oferta), cantidad,
+    stockInicial: oferta.stock_oferta, vence: Math.floor(new Date(oferta.vigente_hasta).getTime() / 1000),
+    precioUnitario: oferta.precio_oferta,
+  });
+  const recuperada = await intentos.recuperar(usuarioId, intentoId, solicitud);
+  if (recuperada) return recuperada;
+  try {
+    return await checkoutService.checkoutOferta({ ...datos, usuarioId, productoId,
+      precioUnitario: intento.reserva.precioUnitario,
+      ejecutarTransaccion: (operacion) => intentos.transaccion({ usuarioId, intentoId, datos: solicitud,
+        reservar: async (actual) => {
+          const r = actual.reserva;
+          const admitido = await conectar().reservarOfertaIdempotente(r.claveStock, `checkout:reserva:${intentoId}`, r.stockInicial, r.vence, r.cantidad);
+          if (Number(admitido) !== 1) throw intentos.error('No quedan unidades en oferta', 'OFERTA_AGOTADA');
+        },
+      }, operacion),
+    });
+  } catch (err) {
+    try {
+      const confirmada = await intentos.resolverFallo(usuarioId, intentoId, err);
+      if (confirmada) return confirmada;
+    } catch (recuperacion) {
+      // Sin MySQL no se sabe si hubo COMMIT: conservar la reserva, nunca
+      // devolverla a ciegas. El cliente conserva el intento y puede consultarlo.
+      throw intentos.error('No pudimos verificar tu compra. Volvé a intentarlo para consultar su resultado.', 'CHECKOUT_INCIERTO', 503);
+    }
+    throw err;
+  }
+}
+
+module.exports = { actualizar, consultarStock, intentarComprar, comprar, prepararIntento };

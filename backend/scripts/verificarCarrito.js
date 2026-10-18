@@ -46,7 +46,7 @@ async function main() {
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     const datos = await res.json();
-    assert.equal(res.status, estado, datos.error || ruta);
+    assert.ok((Array.isArray(estado) ? estado : [estado]).includes(res.status), datos.error || `${ruta}: ${res.status}`);
     return datos;
   }
   const direccion = usuario.direcciones[0] || await prisma.direcciones.create({ data: { id_usuario: usuarioId, pais: 'Guatemala', direccion: 'Dirección sintética carrito', codigo_postal: '00000' } });
@@ -133,18 +133,21 @@ async function main() {
   assert.equal(flash.descripcion, descripcion);
   assert.equal(JSON.parse(flash.oferta_flash).precio_oferta, 8);
   assert.equal(Object.keys(flash).some((campo) => /inventario|cantidad/.test(campo)), false, 'el inventario real no se copia');
-  await peticion(`/ofertas/${productoId}/comprar`, { metodo: 'POST', estado: 409, body: { cantidad: 1, direccionId: direccion.id, metodoPagoId: metodo.id, precioEsperado: 7 } });
-  assert.equal(await redis.get(`oferta:${productoId}:stock`), null, 'rechazar el precio no consume ni inicializa cupo');
+  const intentoFlash = await peticion(`/ofertas/${productoId}/intentos`, { metodo: 'POST', body: {} });
+  const claveFlash = `oferta:${productoId}:stock:${infoFlash.producto.oferta_flash.revision}`;
+  await peticion(`/ofertas/${productoId}/comprar`, { metodo: 'POST', estado: 409, body: { intentoId: intentoFlash.intentoId, cantidad: 1, direccionId: direccion.id, metodoPagoId: metodo.id, precioEsperado: 7 } });
+  assert.equal(await redis.get(claveFlash), null, 'rechazar el precio no consume ni inicializa cupo');
   const respuestas = await Promise.allSettled(Array.from({ length: 15 }, () => peticion(`/ofertas/${productoId}/comprar`, {
-    metodo: 'POST', estado: 201, body: { cantidad: 1, direccionId: direccion.id, metodoPagoId: metodo.id, precioEsperado: 8 },
+    metodo: 'POST', estado: [200, 201], body: { intentoId: intentoFlash.intentoId, cantidad: 1, direccionId: direccion.id, metodoPagoId: metodo.id, precioEsperado: 8 },
   })));
-  assert.equal(respuestas.filter((r) => r.status === 'fulfilled').length, 5);
-  assert.equal(await redis.get(`oferta:${productoId}:stock`), '0');
-  assert.equal((await prisma.inventario.findUnique({ where: { id_producto: productoId } })).cantidad, 14);
+  assert.equal(respuestas.filter((r) => r.status === 'fulfilled').length, 15);
+  assert.equal(new Set(respuestas.map((r) => r.value.compra.id)).size, 1);
+  assert.equal(await redis.get(claveFlash), '4');
+  assert.equal((await prisma.inventario.findUnique({ where: { id_producto: productoId } })).cantidad, 18);
   await oferta.actualizar(vendedor, productoId, { activo: false });
   assert.equal((await peticion(`/ofertas/${productoId}/stock`)).activo, false);
-  assert.equal(await redis.get(`oferta:${productoId}:stock`), '0', 'pausar no repone el contador');
-  console.log('OK: flash caliente, 5 compras / 15 intentos, Redis=0 y SQL=14.');
+  assert.equal(await redis.get(claveFlash), '4', 'pausar no repone el contador anterior');
+  console.log('OK: 15 confirmaciones flash del mismo intento crean 1 pedido; Redis=4 y SQL=18.');
   console.log('Todas las verificaciones pasaron. Los pedidos sintéticos se conservan.');
 }
 

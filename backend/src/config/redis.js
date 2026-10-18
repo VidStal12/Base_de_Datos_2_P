@@ -37,6 +37,41 @@ end
 return 0
 `;
 
+// La reserva identificada permanece hasta después del fin de la oferta. Una
+// respuesta perdida se puede repetir sin volver a descontar. El pool tiene una
+// clave por revisión, así una devolución vieja nunca toca una oferta nueva.
+const LUA_RESERVAR_OFERTA = `
+local estado = redis.call('HGET', KEYS[2], 'estado')
+if estado == 'reservada' then return 1 end
+if estado == 'devuelta' then return -2 end
+local ahora = tonumber(redis.call('TIME')[1])
+local ttl = tonumber(ARGV[2]) - ahora
+if ttl <= 0 then return -1 end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)
+end
+local pedido = tonumber(ARGV[3])
+local actual = tonumber(redis.call('GET', KEYS[1]))
+if actual < pedido then return -1 end
+redis.call('DECRBY', KEYS[1], pedido)
+redis.call('HSET', KEYS[2], 'estado', 'reservada', 'cantidad', pedido)
+redis.call('EXPIRE', KEYS[2], ttl + 86400)
+return 1
+`;
+const LUA_DEVOLVER_RESERVA = `
+local estado = redis.call('HGET', KEYS[2], 'estado')
+if estado == 'devuelta' then return 0 end
+if estado == 'reservada' and redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('INCRBY', KEYS[1], redis.call('HGET', KEYS[2], 'cantidad'))
+end
+-- También deja una tumba si la reserva nunca llegó: una llamada retrasada no
+-- puede reservar después de que MySQL canceló el intento.
+redis.call('HSET', KEYS[2], 'estado', 'devuelta')
+local ahora = tonumber(redis.call('TIME')[1])
+redis.call('EXPIRE', KEYS[2], math.max(86400, tonumber(ARGV[1]) - ahora + 86400))
+return 1
+`;
+
 // La revisión evita que una lectura iniciada antes de una escritura/checkout
 // vuelva a publicar cantidades anteriores. La marca permite cachear carritos vacíos.
 const LUA_LEER_CARRITO = `
@@ -165,6 +200,8 @@ function conectar() {
     // después como cliente.decrementarOferta(key, ...argv), un comando más.
     cliente.defineCommand('decrementarOferta', { numberOfKeys: 1, lua: LUA_DECREMENTAR_OFERTA });
     cliente.defineCommand('reintegrarOferta', { numberOfKeys: 1, lua: LUA_REINTEGRAR_OFERTA });
+    cliente.defineCommand('reservarOfertaIdempotente', { numberOfKeys: 2, lua: LUA_RESERVAR_OFERTA });
+    cliente.defineCommand('devolverReservaOferta', { numberOfKeys: 2, lua: LUA_DEVOLVER_RESERVA });
     cliente.defineCommand('leerCarrito', { numberOfKeys: 2, lua: LUA_LEER_CARRITO });
     cliente.defineCommand('publicarCarrito', { numberOfKeys: 2, lua: LUA_PUBLICAR_CARRITO });
     cliente.defineCommand('invalidarCarrito', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });

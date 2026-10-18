@@ -99,7 +99,7 @@ async function controlPedidos(req, res, next) {
         // El pedido que termina en error no gasta el cupo (best-effort: si Redis
         // falla acá, a lo sumo la ventana queda con un pedido de más).
         res.on('finish', () => {
-          if (res.statusCode >= 400) limitePedidos.liberar(usuarioId).catch(() => {});
+          if (res.statusCode >= 400 || res.locals?.checkoutReutilizado) limitePedidos.liberar(usuarioId).catch(() => {});
         });
       }
     }

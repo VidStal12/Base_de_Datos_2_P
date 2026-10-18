@@ -17,6 +17,10 @@ async function bloquearUsuario(tx, usuarioId) {
   await tx.$queryRaw`SELECT id_usuario FROM usuarios WHERE id_usuario = ${usuarioId} FOR UPDATE`;
 }
 
+async function avanzarVersion(tx, usuarioId) {
+  await tx.$executeRaw`UPDATE usuarios SET carrito_version = carrito_version + 1 WHERE id_usuario = ${usuarioId}`;
+}
+
 async function invalidarCache(usuarioId) {
   await cacheSeguro((redis) => redis.invalidarCarrito(clave(usuarioId), revisionClave(usuarioId)));
 }
@@ -121,6 +125,7 @@ async function guardar(usuarioId, productoId, cantidad, sumar) {
         update: { cantidad: nueva, estado: 'activo' },
       });
     }
+    await avanzarVersion(tx, usuarioId);
   });
   await invalidarCache(usuarioId);
   return obtener(usuarioId);
@@ -142,6 +147,7 @@ async function quitar(usuarioId, productoId) {
   await prisma.$transaction(async (tx) => {
     await bloquearUsuario(tx, usuarioId);
     await tx.carrito.deleteMany({ where: { id_usuario: usuarioId, id_producto: productoId } });
+    await avanzarVersion(tx, usuarioId);
   });
   await invalidarCache(usuarioId);
   return obtener(usuarioId);
@@ -151,8 +157,9 @@ async function vaciar(usuarioId) {
   await prisma.$transaction(async (tx) => {
     await bloquearUsuario(tx, usuarioId);
     await tx.carrito.deleteMany({ where: { id_usuario: usuarioId } });
+    await avanzarVersion(tx, usuarioId);
   });
   await invalidarCache(usuarioId);
 }
 
-module.exports = { obtener, revisar: (usuarioId) => obtener(usuarioId, true), agregar, actualizarCantidad, quitar, vaciar, invalidarCache, bloquearUsuario, TTL_SEGUNDOS };
+module.exports = { obtener, revisar: (usuarioId) => obtener(usuarioId, true), agregar, actualizarCantidad, quitar, vaciar, invalidarCache, bloquearUsuario, avanzarVersion, TTL_SEGUNDOS };

@@ -17,6 +17,8 @@
     "test:compromiso": "node --test tests/compromiso*.test.js",
     "test:bloqueo": "node --test tests/bloqueo*.test.js",
     "test:consistencia": "node --test tests/consistencia*.test.js",
+    "test:checkout": "node --test tests/checkoutIntento.test.js tests/checkoutFrontend.test.js tests/checkoutHttp.test.js",
+    "verificar:idempotencia": "node scripts/verificarIdempotenciaCheckout.js",
     "demo:consistencia": "node scripts/demo_consistencia_compra.js",
     "demo:consistencia:fallas": "node scripts/demo_consistencia_compra.js --falla=todas",
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",

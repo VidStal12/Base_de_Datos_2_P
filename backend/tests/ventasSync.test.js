@@ -246,7 +246,8 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         find: () => ({ select: () => ({ lean: async () => [{ producto_id: 3, estado: 'activo' }] }) }),
         findOne: () => ({ select: () => ({ lean: async () => null }) }),
       },
-      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
+      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {}, avanzarVersion: async () => {} },
+      './checkoutIntentoService': { reutilizado: () => false },
       // checkoutService también valida "nadie compra lo suyo" y el compromiso de
       // no reventa; estas pruebas son de la captura del outbox, no de esas reglas.
       './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
@@ -287,7 +288,8 @@ for (const variante of ['checkout', 'checkoutOferta']) {
         find: () => ({ select: () => ({ lean: async () => [{ producto_id: 3, estado: 'activo' }] }) }),
         updateOne: async () => { cacheEscrita = true; },
       },
-      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; } },
+      './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; }, avanzarVersion: async () => {} },
+      './checkoutIntentoService': { reutilizado: () => false },
       './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       // fraudeSyncService ahora lee el correo de MySQL (prisma): sin este doble

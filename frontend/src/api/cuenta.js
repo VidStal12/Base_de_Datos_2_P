@@ -13,6 +13,9 @@ export const metodosPagoApi = {
 };
 
 export const checkoutApi = {
+  preparar: (datos, token) => api.post('/checkout/intentos', datos, token),
+  intento: (id, token) => api.get(`/checkout/intentos/${id}`, token),
+  cancelar: (id, token) => api.post(`/checkout/intentos/${id}/cancelar`, {}, token),
   confirmar: (datos, token) => api.post('/checkout', datos, token),
 };
 

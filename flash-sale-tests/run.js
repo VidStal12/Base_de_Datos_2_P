@@ -266,6 +266,7 @@ async function prepareScenario(baseUrl, scenario, sellerToken, timeoutMs) {
 
 function classifyAttempt(result) {
   if (result.status === 201) return 'success';
+  if (result.status === 200 && result.body?.compra?.id) return 'replayed';
   if (result.status === 409 && /no quedan unidades en oferta/i.test(result.body?.error || '')) return 'sold_out';
   if (result.error?.startsWith('timeout')) return 'timeout';
   return 'unexpected_error';
@@ -282,12 +283,14 @@ async function executeAttempt(baseUrl, scenario, attempt, buyer, commonStart) {
     ? {
         direccionId: buyer.addressId,
         metodoPagoId: buyer.paymentMethodId,
-        items: [{ productoId: scenario.productId, cantidad: attempt.quantity }],
+        intentoId: attempt.checkoutIntent.intentoId,
+        items: attempt.checkoutIntent.items,
       }
     : {
         cantidad: attempt.quantity,
         direccionId: buyer.addressId,
         metodoPagoId: buyer.paymentMethodId,
+        intentoId: attempt.checkoutIntent.intentoId,
       };
 
   const result = await httpJson(baseUrl, pathname, {
@@ -432,13 +435,34 @@ async function main() {
     }
 
     redis = conectarRedis();
-    const redisKey = `oferta:${scenario.productId}:stock`;
+    const revision = initialOffer.producto?.oferta_flash?.revision;
+    const redisKey = `oferta:${scenario.productId}:stock${revision ? `:${revision}` : ''}`;
     const initialRedisMissing = await redis.get(redisKey) === null;
 
     fs.writeFileSync(
       preparedStatePath,
       JSON.stringify({ ...preparedState, ready: false, executionStartedAt: new Date().toISOString() }, null, 2) + '\n'
     );
+    // Preparar antes del instante medido; confirmar ya no acepta compras sin
+    // intento. Las cuentas de estos escenarios son exclusivamente sintéticas.
+    const preparados = new Map();
+    for (const attempt of scenario.attempts) {
+      const buyer = buyers.get(attempt.userRef);
+      const normal = attempt.channel === 'checkout';
+      const clave = `${attempt.userRef}:${normal ? 'normal' : 'flash'}`;
+      if (!preparados.has(clave)) {
+        if (normal) {
+          requireHttp(await httpJson(baseUrl, `/carrito/items/${scenario.productId}`, {
+            method: 'PATCH', token: buyer.token, body: { cantidad: attempt.quantity }, timeoutMs: scenario.requestTimeoutMs,
+          }), 'No se pudo preparar el carrito sintético', [200]);
+        }
+        const ruta = normal ? '/checkout/intentos' : `/ofertas/${scenario.productId}/intentos`;
+        preparados.set(clave, requireHttp(await httpJson(baseUrl, ruta, {
+          method: 'POST', token: buyer.token, body: {}, timeoutMs: scenario.requestTimeoutMs,
+        }), 'No se pudo preparar el intento de compra', [200]));
+      }
+      attempt.checkoutIntent = preparados.get(clave);
+    }
     const commonStart = Date.now() + scenario.startDelayMs;
     console.log(`Lanzando ${scenario.attempts.length} intentos a las ${new Date(commonStart).toISOString()}...`);
 
@@ -465,6 +489,7 @@ async function main() {
       ...scenario.reconciliation,
       readSnapshot: createSnapshotReader({
         prisma, redis, productId: scenario.productId,
+        stockKey: redisKey,
         baselineDetailIds: baselineDetails.map((detail) => detail.id),
         buyerRefsByEmail: new Map(selectedBuyers.map((buyer) => [buyer.email, buyer.ref])),
       }),

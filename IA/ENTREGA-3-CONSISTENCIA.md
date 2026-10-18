@@ -1,5 +1,7 @@
 # Estrategia de consistencia — checkout distribuido (Entrega 3)
 
+> **Actualización 2026-10-17:** el checkout HTTP normal y flash ahora exige un intento durable e idempotente. El pedido y el resultado del intento se confirman juntos en MySQL. La reserva/devolución flash tiene identificador, Lua idempotente y recuperación de compensaciones pendientes; esto reemplaza la compensación flash de un solo intento descrita en el punto 5 y en las pruebas históricas de este documento. La compra por recomendaciones conserva su mecanismo anterior. Ver [CHECKOUT-IDEMPOTENCIA.md](CHECKOUT-IDEMPOTENCIA.md) para el flujo vigente, resumen del escenario de duplicación y evidencia de integración real.
+
 > Creado: 2026-09-08/09; §5 rehecho el 2026-10-06 con `backend/scripts/demo_consistencia_compra.js --falla=…` (seis escenarios con aserciones, ver §5). Responde al requerimiento del PRD, Entrega 3: identificar cada componente involucrado en el checkout, mapear puntos de falla posibles, documentar el mecanismo de mitigación de cada uno, y probar al menos una falla simulada con evidencia real. No inventa arquitectura nueva — el sistema ya tenía varios mecanismos de consistencia distintos, construidos en momentos distintos por razones distintas; este documento es la primera vez que se juntan, se comparan, y se prueban de verdad contra una base caída, no contra un doble/mock.
 
 ---

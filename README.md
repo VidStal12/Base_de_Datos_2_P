@@ -331,17 +331,36 @@ TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
 curl -s http://localhost:3000/api/direcciones -H "Authorization: Bearer $TOKEN"
 curl -s http://localhost:3000/api/metodos-pago -H "Authorization: Bearer $TOKEN"
 
-# 3. Checkout usando esos IDs (deben pertenecer al usuario del token, si no se rechaza)
+# 3. Agregar productos al carrito y preparar un intento compartido entre ventanas
+curl -s -X POST http://localhost:3000/api/carrito/items \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"productoId":1,"cantidad":2}'
+INTENTO=$(curl -s -X POST http://localhost:3000/api/checkout/intentos \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}')
+# Conservar BODY sin modificarlo si hay que reintentar por una respuesta perdida.
+BODY=$(printf '%s' "$INTENTO" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const i=JSON.parse(d);console.log(JSON.stringify({intentoId:i.intentoId,direccionId:1,metodoPagoId:1,items:i.items}))})")
+
+# 4. Confirmar usando los IDs propios y el intento preparado
 curl -X POST http://localhost:3000/api/checkout \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"direccionId":1,"metodoPagoId":1,"items":[{"productoId":1,"cantidad":2}]}'
+  -d "$BODY"
 
-# 4. Ver el historial de pedidos propio (nunca el de otro usuario, aunque se adivine el ID)
+# 5. Ver el historial de pedidos propio (nunca el de otro usuario, aunque se adivine el ID)
 curl -s http://localhost:3000/api/compras -H "Authorization: Bearer $TOKEN"
 curl -s http://localhost:3000/api/compras/1 -H "Authorization: Bearer $TOKEN"
 ```
 
 (Los IDs asumen una base recién sembrada — ajustar según lo que devuelvan los listados. Si preferís `jq`, `-r .token` funciona igual de bien.)
+
+### Compras idempotentes (2026-10-17)
+
+Las rutas de compra normal y flash requieren `intentoId`. La interfaz lo prepara antes de confirmar y lo conserva ante respuestas perdidas. Dos ventanas comparten el intento del mismo carrito o de la misma promoción; reenviarlo devuelve el pedido ya creado (200), sin otra compra ni descuento. Agregar, quitar o cambiar cantidades invalida los intentos de versiones anteriores del carrito. Una compra flash adicional requiere preparar explícitamente un nuevo intento.
+
+Después de actualizar el proyecto, ejecutar desde `backend/` `npm run prisma:generate` y `npm run prisma:deploy`, y reiniciar el backend. Se agregan la versión del carrito y las tablas de intentos/sesiones sin borrar datos existentes.
+
+La reserva y la devolución flash son idempotentes. Las promociones reconfiguradas usan `oferta:{productoId}:stock:{revision}`; los reenvíos y compensaciones no consumen ni devuelven dos veces el mismo cupo. Un worker recupera compensaciones pendientes cada 30 segundos y cierra intentos abandonados tras 15 minutos, comprobando su estado bajo bloqueo de MySQL.
+
+Pruebas: `npm run test:checkout` y `npm run verificar:idempotencia` (esta última requiere las bases locales, crea datos sintéticos propios y los limpia al terminar). Detalles, límites y evidencia: [IA/CHECKOUT-IDEMPOTENCIA.md](IA/CHECKOUT-IDEMPOTENCIA.md).
 
 ## Catálogo
 

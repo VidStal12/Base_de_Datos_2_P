@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
@@ -12,6 +12,8 @@ import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoRev
 import { ConfirmarContrasenaModal } from '../components/checkout/ConfirmarContrasenaModal';
 import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
 import { errorDeContrasena, esRechazoDeContrasena } from '../utils/restriccion';
+import { cargarIntento, renovarIntento, claveIntento } from '../utils/checkoutIntento';
+import { EstadoIntento } from '../components/checkout/EstadoIntento';
 
 export function CheckoutPage() {
   const { token, usuario } = useAuth();
@@ -32,11 +34,26 @@ export function CheckoutPage() {
   // el servidor lo pide al confirmar y esto guarda a qué pedido se refiere — con lo que ya
   // aceptó del compromiso — mientras el diálogo está abierto. null = no se está pidiendo.
   const [pidiendoContrasena, setPidiendoContrasena] = useState(null);
+  const [intento, setIntento] = useState(null);
+  const enCurso = useRef(false);
+  const clave = claveIntento(usuario.id_usuario);
 
   useEffect(() => {
     let vigente = true;
-    Promise.all([direccionesApi.listar(token), metodosPagoApi.listar(token), refrescar(true)])
-      .then(([dirs, metodos]) => {
+    cargarIntento(clave, (datos) => checkoutApi.preparar(datos, token), token)
+      .then(async (actual) => {
+        if (!vigente) return null;
+        setIntento(actual);
+        if (actual.estado === 'completado') {
+          sessionStorage.removeItem(clave);
+          navigate(`/pedidos/${actual.compraId}`, { replace: true });
+          return null;
+        }
+        return Promise.all([direccionesApi.listar(token), metodosPagoApi.listar(token), refrescar(true)]);
+      })
+      .then((datos) => {
+        if (!datos) return;
+        const [dirs, metodos] = datos;
         if (!vigente) return;
         setDirecciones(dirs);
         setMetodosPago(metodos);
@@ -48,7 +65,24 @@ export function CheckoutPage() {
       .catch((err) => { if (vigente) setError(err.message); })
       .finally(() => { if (vigente) setCargando(false); });
     return () => { vigente = false; };
-  }, [token, refrescar]);
+  }, [token, refrescar, clave, navigate]);
+
+  async function revisarCompra() {
+    if (enCurso.current || !intento) return;
+    enCurso.current = true;
+    setConfirmando(true);
+    setError('');
+    try {
+      const actual = await renovarIntento(clave, intento, (datos) => checkoutApi.preparar(datos, token), token);
+      setIntento(actual);
+      if (actual.estado === 'completado') {
+        navigate(`/pedidos/${actual.compraId}`);
+        return;
+      }
+      await refrescar(true);
+    } catch (err) { setError(err.message); }
+    finally { enCurso.current = false; setConfirmando(false); }
+  }
 
   async function crearDireccion(datos) {
     const nueva = await direccionesApi.crear(datos, token);
@@ -73,6 +107,8 @@ export function CheckoutPage() {
   }
 
   async function confirmarPedido(aceptaNoReventa, contrasena) {
+    if (enCurso.current || !intento || intento.estado !== 'pendiente') return;
+    enCurso.current = true;
     setError('');
     setPidiendoCompromiso(false);
     setConfirmando(true);
@@ -81,7 +117,8 @@ export function CheckoutPage() {
         {
           direccionId,
           metodoPagoId,
-          items: items.map(({ producto, cantidad }) => ({ productoId: producto.id, cantidad, precioEsperado: Number(producto.precio) })),
+          intentoId: intento.intentoId,
+          items: intento.items,
           ...(aceptaNoReventa && { aceptaNoReventa: true }),
           ...(contrasena && { contrasena }),
         },
@@ -89,6 +126,7 @@ export function CheckoutPage() {
       );
       // El servidor ya vació SQL en la transacción. No borrar artículos añadidos después.
       limpiarLocal();
+      sessionStorage.removeItem(clave);
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
       // Si el servidor pide el compromiso (la interfaz tenía el rol desactualizado),
@@ -104,18 +142,31 @@ export function CheckoutPage() {
         setPidiendoContrasena(null);
         setError(err.message);
       }
-      await refrescar(true).catch(() => {});
+      // El carrito vacío puede significar que la compra sí se confirmó y se
+      // perdió la respuesta. Consultar el intento antes de cambiar de compra.
+      try {
+        const actual = await checkoutApi.intento(intento.intentoId, token);
+        setIntento(actual);
+        if (actual.estado === 'completado') {
+          limpiarLocal();
+          sessionStorage.removeItem(clave);
+          navigate(`/pedidos/${actual.compraId}`);
+        }
+      } catch { /* Conservar el intento cuando tampoco responde la consulta. */ }
     } finally {
+      enCurso.current = false;
       setConfirmando(false);
     }
   }
 
   if (cargando || cargandoCarrito) return <Spinner />;
+  if (intento && intento.estado !== 'pendiente') return <EstadoIntento intento={intento} procesando={confirmando} onNuevo={revisarCompra} error={error} />;
+  if (!intento) return <p role="alert" className="py-8 text-danger-600">{error || 'No pudimos preparar la compra. Volvé a cargar la página para reintentar.'}</p>;
   if (errorCarrito) return <p role="alert" className="py-8 text-danger-600">{errorCarrito}</p>;
   if (items.length === 0) {
     return <p className="py-16 text-center text-neutral-600">Tu carrito está vacío.</p>;
   }
-  const listoParaConfirmar = direccionId && metodoPagoId && !confirmando && !items.some((item) => item.disponible === false);
+  const listoParaConfirmar = intento.estado === 'pendiente' && direccionId && metodoPagoId && !confirmando && !items.some((item) => item.disponible === false);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
@@ -207,6 +258,7 @@ export function CheckoutPage() {
         </Button>
       </aside>
 
+      {error && <Button variant="outline" disabled={confirmando} onClick={revisarCompra}>Revisar datos de compra</Button>}
       <CompromisoNoReventaModal
         abierto={pidiendoCompromiso}
         procesando={confirmando}

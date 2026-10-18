@@ -8,11 +8,13 @@ const ventasSync = require('./services/ventasSyncService');
 const bloqueo = require('./services/bloqueoService');
 const limitePedidos = require('./services/limitePedidosService');
 const restriccion = require('./services/restriccionService');
+const checkoutIntentos = require('./services/checkoutIntentoService');
 
 const PORT = process.env.PORT || 3000;
 
 const servidor = app.listen(PORT, () => {
   console.log(`TiendaYa backend escuchando en http://localhost:${PORT}`);
+  checkoutIntentos.iniciar();
   // El worker no pertenece a app.js: importar Express en pruebas no inicia
   // temporizadores. Un fallo de configuración/analítica no detiene el checkout.
   try {
@@ -56,6 +58,7 @@ async function apagar() {
       new Promise((resolve, reject) => servidor.close((error) => error ? reject(error) : resolve())),
       ventasSync.detener(),
       bloqueo.detener(),
+      checkoutIntentos.detener(),
     ]);
     const resultados = await Promise.allSettled([
       cassandra.cerrar(), prisma.$disconnect(), mongoose.disconnect(), redis.cerrar(),

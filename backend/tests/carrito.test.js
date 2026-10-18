@@ -12,6 +12,7 @@ function escenario({ propios = [], suspendidos = [] } = {}) {
   let consultas = 0;
   let bloqueo = Promise.resolve();
   const db = {
+    async $executeRaw() {},
     async $queryRaw() { consultas += 1; return [...filas].map(([id_producto, cantidad]) => ({ id_producto, cantidad, precio: inv.precio, stock: inv.cantidad })); },
     async $transaction(fn) {
       // Simula el lock SQL compartido por todas las mutaciones de este usuario.
@@ -50,7 +51,8 @@ function dependenciasCheckout(extra = {}) {
     '../config/mongo': { conectar: async () => {} },
     './productoService': productoFalso(),
     './compromisoService': compromisoFalso(),
-    './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {} },
+    './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {}, avanzarVersion: async () => {} },
+    './checkoutIntentoService': { reutilizado: () => false },
     './ventasOutboxService': { encolarCompra: async () => {} },
     './fraudeSyncService': {},
     ...extra,

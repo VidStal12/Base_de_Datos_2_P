@@ -72,7 +72,7 @@ function datos(doc) {
     resenas_resumen: { promedio: doc.resenas_resumen?.promedio ?? 0, cantidad: doc.resenas_resumen?.cantidad ?? 0 },
     version: doc.version ?? 1,
     oferta_flash: oferta
-      ? { activo: oferta.activo, precio_oferta: oferta.precio_oferta, stock_oferta: oferta.stock_oferta, vigente_desde: oferta.vigente_desde, vigente_hasta: oferta.vigente_hasta }
+      ? { activo: oferta.activo, precio_oferta: oferta.precio_oferta, stock_oferta: oferta.stock_oferta, vigente_desde: oferta.vigente_desde, vigente_hasta: oferta.vigente_hasta, revision: oferta.revision }
       : null,
   };
 }

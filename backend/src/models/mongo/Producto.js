@@ -27,6 +27,7 @@ const ofertaFlashSchema = new Schema(
     activo: { type: Boolean, default: false },
     precio_oferta: Number,
     stock_oferta: Number,
+    revision: String,
     vigente_desde: Date,
     vigente_hasta: Date,
   },

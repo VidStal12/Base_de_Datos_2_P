@@ -43,6 +43,8 @@ model usuarios {
   // ese dato porque nunca se guardó. Solo es confiable desde acá en
   // adelante, ver comentario en fraudeService.js.
   creado_en        DateTime @default(now())
+  // Se incrementa bajo el lock del usuario con cada modificación del carrito.
+  carrito_version  Int      @default(0)
 
   rol          rol_usuario   @relation(fields: [rol_id], references: [id])
   direcciones  direcciones[]
@@ -188,6 +190,38 @@ model venta_outbox {
   ultimo_error    String?   @db.Text
 
   @@index([procesado_en, proximo_intento, detalle_id])
+}
+
+// Un intento sobrevive a respuestas perdidas. Pedido y respuesta se confirman
+// en la misma transacción. Nunca se borran al vaciar el carrito.
+model checkout_intento {
+  id              String    @id @db.VarChar(36)
+  id_usuario      Int
+  ambito          String    @db.VarChar(160)
+  version_carrito Int?
+  items           Json?
+  datos_hash      String?   @db.VarChar(64)
+  reserva         Json?
+  estado          String    @default("pendiente") @db.VarChar(16)
+  compra_id       Int?      @unique
+  respuesta       Json?
+  error           Json?
+  compensado      Boolean   @default(false)
+  creado_en       DateTime  @default(now())
+  actualizado_en  DateTime  @updatedAt
+
+  @@index([id_usuario, ambito])
+  @@index([estado, actualizado_en])
+}
+
+// Dos ventanas preparan la misma sesión. Renovarla exige el identificador
+// anterior (compare-and-swap), por lo que dos renovaciones tampoco se duplican.
+model checkout_sesion {
+  id_usuario Int
+  ambito     String @db.VarChar(160)
+  intento_id String @db.VarChar(36)
+
+  @@id([id_usuario, ambito])
 }
 
 // Caso de suspensión temporal de una cuenta por un hallazgo de fraude de

@@ -7,6 +7,7 @@ const productoService = require('./productoService');
 const compromisoService = require('./compromisoService');
 const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
+const intentos = require('./checkoutIntentoService');
 
 // El tope por pedido de una cuenta con límites suaves: 403 con `codigo: LIMITE_MONTO`.
 function verificarTopeDeMonto(total, montoMaximo) {
@@ -30,19 +31,24 @@ function verificarTopeDeMonto(total, montoMaximo) {
 // restriccionService.js y middleware/controlPedidos.js, que lo decide por la ruta). Se
 // hace cumplir ACÁ, dentro de la transacción, porque solo acá se conoce el total: si lo
 // supera, se rechaza y TODO se revierte. Sin él (undefined/null) no hay tope.
-async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoReventa, montoMaximo }) {
+async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoReventa, montoMaximo, intentoId }) {
+  const datos = { direccionId, metodoPagoId, items, aceptaNoReventa };
+  if (intentoId) {
+    const anterior = await intentos.recuperar(usuarioId, intentoId, datos);
+    if (anterior) return anterior;
+  }
   if (!items || items.length === 0) {
-    throw new Error('El carrito no puede estar vacío');
+    throw Object.assign(new Error('El carrito no puede estar vacío'), { status: 400 });
   }
   if (!esEnteroPositivo(direccionId) || !esEnteroPositivo(metodoPagoId)) {
-    throw new Error('direccionId y metodoPagoId deben ser enteros positivos');
+    throw Object.assign(new Error('direccionId y metodoPagoId deben ser enteros positivos'), { status: 400 });
   }
   // Sin esto, una cantidad negativa pasaba la validación de stock (cualquier
   // stock es "mayor" que un negativo) y luego el decrement de inventario con un
   // número negativo terminaba SUMANDO stock en vez de restarlo.
   for (const { productoId, cantidad } of items) {
     if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
-      throw new Error('Cada item necesita productoId y cantidad como enteros positivos');
+      throw Object.assign(new Error('Cada item necesita productoId y cantidad como enteros positivos'), { status: 400 });
     }
   }
 
@@ -66,7 +72,10 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
     throw err;
   }
 
-  return prisma.$transaction(async (tx) => {
+  const ejecutar = intentoId
+    ? (operacion) => intentos.transaccion({ usuarioId, intentoId, datos }, operacion)
+    : (operacion) => prisma.$transaction(operacion);
+  return ejecutar(async (tx) => {
     await cartService.bloquearUsuario(tx, usuarioId);
     // La dirección y el método de pago deben pertenecer a quien está pagando —
     // si no, cualquier usuario autenticado podría pasar el ID de otro y usar
@@ -77,10 +86,10 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
     ]);
 
     if (!direccion || direccion.id_usuario !== usuarioId) {
-      throw new Error('La dirección indicada no pertenece al usuario');
+      throw Object.assign(new Error('La dirección indicada no pertenece al usuario'), { status: 400 });
     }
     if (!metodoPago || metodoPago.id_usuario !== usuarioId) {
-      throw new Error('El método de pago indicado no pertenece al usuario');
+      throw Object.assign(new Error('El método de pago indicado no pertenece al usuario'), { status: 400 });
     }
 
     let total = 0;
@@ -154,9 +163,11 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
 
     // Durable y atómico con el pedido: una caída de Redis no recupera productos comprados.
     await tx.carrito.deleteMany({ where: { id_usuario: usuarioId } });
+    await cartService.avanzarVersion(tx, usuarioId);
 
     return { compra, pago };
   }).then(async (resultado) => {
+    if (intentos.reutilizado(resultado)) return resultado;
     // Invalidar inmediatamente después del commit, antes de los reenvíos lentos.
     await cartService.invalidarCache(usuarioId);
     // Fuera de la transacción a propósito: la compra ya está confirmada y es
@@ -230,15 +241,15 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
 // dicho que sí — ver §4.2, "dos guardas, no una"), y reenvía a Mongo después
 // de confirmar. `descuento` en compra_detalle, que en el checkout normal
 // siempre queda en 0, acá sí lleva el ahorro real.
-async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId, aceptaNoReventa, montoMaximo }) {
+async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario, direccionId, metodoPagoId, aceptaNoReventa, montoMaximo, ejecutarTransaccion }) {
   if (!esEnteroPositivo(productoId) || !esEnteroPositivo(cantidad)) {
-    throw new Error('productoId y cantidad deben ser enteros positivos');
+    throw Object.assign(new Error('productoId y cantidad deben ser enteros positivos'), { status: 400 });
   }
   if (!esEnteroPositivo(direccionId) || !esEnteroPositivo(metodoPagoId)) {
-    throw new Error('direccionId y metodoPagoId deben ser enteros positivos');
+    throw Object.assign(new Error('direccionId y metodoPagoId deben ser enteros positivos'), { status: 400 });
   }
   if (typeof precioUnitario !== 'number' || precioUnitario <= 0) {
-    throw new Error('precioUnitario debe ser un número positivo');
+    throw Object.assign(new Error('precioUnitario debe ser un número positivo'), { status: 400 });
   }
   // Autoridad final de la regla "nadie compra lo suyo" para oferta flash y
   // recomendaciones (las dos pasan por acá) — ofertaFlashService/
@@ -251,16 +262,17 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
   // final: ofertaFlashService/tendenciaService lo exigen antes de Redis.
   const compromiso = await compromisoService.exigirCompromiso(usuarioId, aceptaNoReventa);
 
-  return prisma.$transaction(async (tx) => {
+  const ejecutar = ejecutarTransaccion || ((operacion) => prisma.$transaction(operacion));
+  return ejecutar(async (tx) => {
     const [direccion, metodoPago] = await Promise.all([
       tx.direcciones.findUnique({ where: { id: direccionId } }),
       tx.metodo_pago.findUnique({ where: { id: metodoPagoId } }),
     ]);
     if (!direccion || direccion.id_usuario !== usuarioId) {
-      throw new Error('La dirección indicada no pertenece al usuario');
+      throw Object.assign(new Error('La dirección indicada no pertenece al usuario'), { status: 400 });
     }
     if (!metodoPago || metodoPago.id_usuario !== usuarioId) {
-      throw new Error('El método de pago indicado no pertenece al usuario');
+      throw Object.assign(new Error('El método de pago indicado no pertenece al usuario'), { status: 400 });
     }
 
     const inventario = await tx.inventario.findUnique({ where: { id_producto: productoId } });
@@ -272,14 +284,14 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
       // (ofertaFlashService.comprar) revierte el contador de Redis cuando
       // esto pasa, para no dejar quemada una unidad del pool que nadie
       // efectivamente se llevó.
-      throw new Error(`Stock insuficiente para el producto ${productoId}`);
+      throw Object.assign(new Error(`Stock insuficiente para el producto ${productoId}`), { status: 409 });
     }
 
     const descontado = await tx.inventario.updateMany({
       where: { id_producto: productoId, cantidad: { gte: cantidad } },
       data: { cantidad: { decrement: cantidad } },
     });
-    if (descontado.count !== 1) throw new Error(`Stock insuficiente para el producto ${productoId}`);
+    if (descontado.count !== 1) throw Object.assign(new Error(`Stock insuficiente para el producto ${productoId}`), { status: 409 });
 
     const precioFinal = precioUnitario * cantidad;
     // Mismo tope por pedido que checkout() (ver arriba): rechaza y revierte la reserva.
@@ -323,6 +335,7 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
 
     return { compra, pago };
   }).then(async (resultado) => {
+    if (intentos.reutilizado(resultado)) return resultado;
     // Mismo reenvío de mejor esfuerzo que checkout() — ver el comentario de
     // arriba, es la misma copia de lectura en Mongo, actualizada por el mismo
     // motivo.

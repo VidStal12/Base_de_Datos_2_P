@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ofertasApi } from '../api/ofertas';
-import { direccionesApi, metodosPagoApi } from '../api/cuenta';
+import { direccionesApi, metodosPagoApi, checkoutApi } from '../api/cuenta';
 import { formatCurrency } from '../utils/format';
 import { Button } from '../components/common/Button';
 import { Spinner } from '../components/common/Spinner';
@@ -12,6 +12,8 @@ import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoRev
 import { ConfirmarContrasenaModal } from '../components/checkout/ConfirmarContrasenaModal';
 import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
 import { errorDeContrasena, esRechazoDeContrasena } from '../utils/restriccion';
+import { cargarIntento, renovarIntento, claveIntento } from '../utils/checkoutIntento';
+import { EstadoIntento } from '../components/checkout/EstadoIntento';
 
 // Compra directa de una oferta flash — deliberadamente separada de
 // CheckoutPage/CartContext (ver IA/ENTREGA-2-PLAN.md §4.2, "no reemplaza el
@@ -38,22 +40,62 @@ export function OfertaCheckoutPage() {
   // Una cuenta bajo revisión confirma cada pedido con su contraseña (ver utils/restriccion.js);
   // null = no se está pidiendo.
   const [pidiendoContrasena, setPidiendoContrasena] = useState(null);
+  const [intento, setIntento] = useState(null);
+  const enCurso = useRef(false);
+  const clave = claveIntento(usuario.id_usuario, id);
 
   useEffect(() => {
-    Promise.all([ofertasApi.consultarStock(id), direccionesApi.listar(token), metodosPagoApi.listar(token)])
-      .then(([stock, dirs, metodos]) => {
+    let vigente = true;
+    cargarIntento(clave, (datos) => ofertasApi.preparar(id, datos, token), token)
+      .then(async (actual) => {
+        if (!vigente) return null;
+        setIntento(actual);
+        if (actual.datos) {
+          setDireccionId(actual.datos.direccionId);
+          setMetodoPagoId(actual.datos.metodoPagoId);
+        }
+        if (actual.recuperado && actual.estado === 'completado') {
+          sessionStorage.removeItem(clave);
+          navigate(`/pedidos/${actual.compraId}`, { replace: true });
+          return null;
+        }
+        return Promise.all([ofertasApi.consultarStock(id), direccionesApi.listar(token), metodosPagoApi.listar(token)]);
+      })
+      .then((datos) => {
+        if (!vigente || !datos) return;
+        const [stock, dirs, metodos] = datos;
         setProducto(stock.producto);
         setOfertaStock(stock);
         setDirecciones(dirs);
         setMetodosPago(metodos);
-        if (dirs.length) setDireccionId(dirs[0].id);
-        if (metodos.length) setMetodoPagoId(metodos[0].id);
+        if (dirs.length) setDireccionId((prev) => prev ?? dirs[0].id);
+        if (metodos.length) setMetodoPagoId((prev) => prev ?? metodos[0].id);
         setMostrarFormDireccion(dirs.length === 0);
         setMostrarFormPago(metodos.length === 0);
       })
-      .catch(() => setError('No pudimos cargar esta oferta.'))
-      .finally(() => setCargando(false));
-  }, [id, token]);
+      .catch((err) => { if (vigente) setError(err.message); })
+      .finally(() => { if (vigente) setCargando(false); });
+    return () => { vigente = false; };
+  }, [id, token, clave, navigate]);
+
+  async function nuevaCompra() {
+    if (enCurso.current || !intento) return;
+    enCurso.current = true;
+    setConfirmando(true);
+    setError('');
+    try {
+      const actual = await renovarIntento(clave, intento, (datos) => ofertasApi.preparar(id, datos, token), token);
+      setIntento(actual);
+      if (actual.recuperado && actual.estado === 'completado') {
+        navigate(`/pedidos/${actual.compraId}`);
+        return;
+      }
+      const stock = await ofertasApi.consultarStock(id);
+      setOfertaStock(stock);
+      setProducto(stock.producto);
+    } catch (err) { setError(err.message); }
+    finally { enCurso.current = false; setConfirmando(false); }
+  }
 
   async function crearDireccion(datos) {
     const nueva = await direccionesApi.crear(datos, token);
@@ -77,6 +119,8 @@ export function OfertaCheckoutPage() {
   }
 
   async function confirmar(aceptaNoReventa, contrasena) {
+    if (enCurso.current || !intento || intento.estado !== 'pendiente') return;
+    enCurso.current = true;
     setError('');
     setPidiendoCompromiso(false);
     setConfirmando(true);
@@ -85,14 +129,16 @@ export function OfertaCheckoutPage() {
         id,
         {
           cantidad: 1,
+          intentoId: intento.intentoId,
           direccionId,
           metodoPagoId,
-          precioEsperado: ofertaStock.precio_oferta,
+          precioEsperado: intento.datos?.precioEsperado ?? ofertaStock.precio_oferta,
           ...(aceptaNoReventa && { aceptaNoReventa: true }),
           ...(contrasena && { contrasena }),
         },
         token
       );
+      sessionStorage.removeItem(clave);
       navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
     } catch (err) {
       // El servidor pide el compromiso (rol desactualizado en la interfaz): se
@@ -108,6 +154,15 @@ export function OfertaCheckoutPage() {
         setPidiendoContrasena(null);
         setError(err.message);
       }
+      try {
+        const actual = await checkoutApi.intento(intento.intentoId, token);
+        setIntento(actual);
+        if (actual.estado === 'completado') {
+          sessionStorage.removeItem(clave);
+          navigate(`/pedidos/${actual.compraId}`);
+          return;
+        }
+      } catch { /* No iniciar otra compra cuando no se conoce el resultado. */ }
       // Alguien más pudo haberse quedado con la última unidad mientras esta
       // persona elegía dirección/pago — refrescar el remanente para que no
       // quede una pantalla ofreciendo algo que ya no existe.
@@ -116,11 +171,14 @@ export function OfertaCheckoutPage() {
         .then((stock) => { setOfertaStock(stock); setProducto(stock.producto); })
         .catch(() => {});
     } finally {
+      enCurso.current = false;
       setConfirmando(false);
     }
   }
 
   if (cargando) return <Spinner />;
+  if (intento && intento.estado !== 'pendiente') return <EstadoIntento intento={intento} procesando={confirmando} onNuevo={nuevaCompra} error={error} />;
+  if (!intento) return <p role="alert" className="py-8 text-danger-600">{error || 'No pudimos preparar la compra. Volvé a cargar la página para reintentar.'}</p>;
   if (error && !producto) {
     return <p className="rounded-lg bg-danger-500/10 p-4 text-sm text-danger-600">{error}</p>;
   }
@@ -135,7 +193,7 @@ export function OfertaCheckoutPage() {
     );
   }
 
-  const listoParaConfirmar = direccionId && metodoPagoId && !confirmando;
+  const listoParaConfirmar = intento.estado === 'pendiente' && direccionId && metodoPagoId && !confirmando;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
@@ -231,6 +289,7 @@ export function OfertaCheckoutPage() {
         </Button>
       </aside>
 
+      {error && <Button variant="outline" disabled={confirmando} onClick={nuevaCompra}>Revisar datos de compra</Button>}
       <CompromisoNoReventaModal
         abierto={pidiendoCompromiso}
         procesando={confirmando}

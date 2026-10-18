@@ -12,6 +12,7 @@ function escenario({ propios = [], vendedores = [], suspendidos = [] } = {}) {
   let falla = false;
   const pedidos = [];
   const servicio = cargar('../src/services/ofertaFlashService.js', {
+    './checkoutIntentoService': {},
     '../config/redis': { conectar: () => ({
       get: async () => String(restante),
       decrementarOferta: async (k, inicial, ttl, cantidad) => { if (cantidad > restante) return -1; restante -= cantidad; return restante; },
