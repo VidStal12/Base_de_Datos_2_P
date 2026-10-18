@@ -219,6 +219,18 @@ Escenarios (`--falla=`): `mysql-dentro` (rollback atómico), `mongo-antes` (fall
 
 `recalcularInventario()`/`recalcularVentas()` (los botones del administrador) aceptan ahora una lista opcional `productoIds` para reparar solo esos productos; sin ella siguen reescribiendo todo el catálogo.
 
+## Evaluación opcional: ¿los pagos en NoSQL? (ADR-005 y spike)
+
+[ADR-005](IA/ADR-005-evaluacion-nosql-pagos.md) evalúa migrar el módulo de pagos a un motor NoSQL frente al modelo relacional (el PRD escribe «NewSQL»; el equipo confirmó que es una errata de NoSQL). La decisión es **no migrar la autoridad de los pagos**: MySQL se endurece y MongoDB queda como espejo para cuando aparezca un disparador medible. El ADR incluye el escenario de migración por fases. Su evidencia es un ensayo reproducible contra las bases locales, mejor con el backend apagado:
+
+```bash
+npm run spike:pagos                       # los 9 experimentos, ≈ 5 min
+npm run spike:pagos -- --experimento=2,5  # un subconjunto (E2 idempotencia, E5 saga con fallas)
+npm run spike:pagos -- --rapido           # humo: tamaños reducidos, sin valor estadístico
+```
+
+Trabaja en bases temporales (`tiendaya_poc_pagos` en Mongo y `prisma_migrate_shadow_db_poc` en MySQL) que crea y borra; de `tiendaya` solo lee `pago`, `compra` y `metodo_pago` con una sesión de solo lectura. No modifica `backend/src/` ni detiene contenedores. Los resultados de la corrida registrada están en [`IA/ADR-005-spike-resultados.json`](IA/ADR-005-spike-resultados.json).
+
 ## Verificar el carrito en Redis (Entrega 2)
 
 ```bash
@@ -458,6 +470,7 @@ backend/
   scripts/
     verificarCheckout.js    Evidencia de atomicidad del checkout
     demo_consistencia_compra.js  Demo del checkout contra las 5 bases y fallas simuladas (--falla=…): componente, punto de falla, observado y mitigación (Entrega 3)
+    spike-pagos/              Ensayo de MongoDB para el módulo de pagos (ADR-005): dinero, idempotencia, transacciones, contención, saga con fallas, rendimiento y migración de los pagos reales
     verificarCarrito.js      Evidencia del carrito en Redis (TTL, clamp, vaciado en checkout — Entrega 2)
     verificarOfertaFlash.js   Evidencia de la oferta flash bajo concurrencia (Entrega 2)
     verificarOfertaCache.js    Evidencia, contra un Redis real, de los datos de la oferta flash: hash con la estructura del carrito y regeneración (Entrega 2)

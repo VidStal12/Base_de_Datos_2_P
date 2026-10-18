@@ -21,6 +21,7 @@
     "verificar:idempotencia": "node scripts/verificarIdempotenciaCheckout.js",
     "demo:consistencia": "node scripts/demo_consistencia_compra.js",
     "demo:consistencia:fallas": "node scripts/demo_consistencia_compra.js --falla=todas",
+    "spike:pagos": "node scripts/spike-pagos/index.js",
     "verificar:ofertaFlash": "node scripts/verificarOfertaFlash.js",
     "verificar:ofertaCache": "node scripts/verificarOfertaCache.js",
     "verificar:recomendaciones": "node scripts/verificarRecomendaciones.js",

@@ -1,0 +1,1559 @@
+{
+  "entorno": {
+    "fecha": "2026-10-18T21:17:22.793Z",
+    "mongod": "7.0.40",
+    "miembros_rs": 1,
+    "journal_en_majority": true,
+    "mysql": "8.4.11",
+    "innodb_flush_log_at_trx_commit": 1,
+    "sync_binlog": 1,
+    "aislamiento_mysql": "REPEATABLE-READ",
+    "buffer_pool_mb": 128,
+    "driver_mongodb": "7.5.0",
+    "driver_mariadb": "3.4.5",
+    "node": "v24.14.1",
+    "so": "Windows_NT 10.0.26300",
+    "cpu": "11th Gen Intel(R) Core(TM) i7-11800H @ 2.30GHz x16",
+    "ram_gb": 16
+  },
+  "rapido": false,
+  "experimentos": [
+    {
+      "id": 1,
+      "segundos": 4.5,
+      "titulo": "E1 — Representación del dinero",
+      "checks": [
+        {
+          "nombre": "Decimal128 devuelve 19.99 exacto tras guardar y leer",
+          "ok": true,
+          "detalle": "19.99"
+        },
+        {
+          "nombre": "Validador rechaza un monto double (19.99 como Number) — código 121",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Validador rechaza un monto string (\"19.99\") — código 121",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Validador rechaza escala 3 (12.345) — código 121",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Validador acepta 12.34",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Validador rechaza un estado fuera del enum — código 121",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Σ 100000 montos en Decimal128 ($sum) es exacta",
+          "ok": true,
+          "detalle": "4999516.75 vs 4999516.75"
+        },
+        {
+          "nombre": "Σ 100000 montos en DECIMAL(10,2) de MySQL es exacta",
+          "ok": true,
+          "detalle": "4999516.75 vs 4999516.75"
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Σ de 100.000 montos",
+          "md": "| Representación | Suma | Diferencia vs exacto |\n|---|---|---|\n| Enteros en centavos (referencia exacta) | 4999516.75 | 0 |\n| JavaScript Number acumulado | 4999516.749999998 | -1.86e-9 |\n| Mongo `$sum` sobre double | 4999516.75 | 0 |\n| Mongo `$sum` sobre Decimal128 | 4999516.75 | 0 |\n| MySQL `SUM(DECIMAL(10,2))` | 4999516.75 | 0 |"
+        }
+      ],
+      "notas": [
+        "`multipleOf: 0.01` sobre un Decimal128: 12.34 → aceptado; 12.345 → error 121.",
+        "MySQL con 12.345 en DECIMAL(10,2): guarda 12.35 y emite Note 1265 (\"Data truncated for column 'monto' at row 1\") — redondea, no rechaza.",
+        "MySQL con 123456789012.34 (fuera de rango): error 1264.",
+        "`JSON.stringify({ monto: Decimal128(\"19.99\") })` → `{\"monto\":{\"$numberDecimal\":\"19.99\"}}`: la API necesitaría un mapeo explícito a string.",
+        "`JSON.stringify({ monto: new Prisma.Decimal(\"19.99\") })` → `{\"monto\":\"19.99\"}` (lo que devuelve hoy la API)."
+      ],
+      "datos": {
+        "N": 100000,
+        "exacto": "4999516.75",
+        "sumaJs": 4999516.749999998,
+        "sumaMongoDbl": 4999516.75,
+        "sumaMongoDec": "4999516.75",
+        "sumaMysql": "4999516.75"
+      }
+    },
+    {
+      "id": 2,
+      "segundos": 1.4,
+      "titulo": "E2 — Idempotencia",
+      "checks": [
+        {
+          "nombre": "Mongo: 20 rondas × 50 inserciones simultáneas del mismo intento → 1 éxito por ronda",
+          "ok": true,
+          "detalle": "20 éxitos, 980 E11000, 0 otros"
+        },
+        {
+          "nombre": "Mongo: queda un solo documento por intento",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: upsert simultáneo deja exactamente un documento",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: upsert simultáneo no produce errores distintos de E11000",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: segundo pago APROBADO de la misma compra → E11000",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: un pago ANULADO de esa compra sí se admite",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: un APROBADO de otra compra sí se admite",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: tras perder la respuesta, el reintento devuelve el documento original (reutilizado)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: la respuesta perdida no duplica el pago",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: 20 rondas × 50 inserciones simultáneas del mismo intento → 1 éxito por ronda",
+          "ok": true,
+          "detalle": "20 éxitos, 980 ER_DUP_ENTRY, 0 otros"
+        },
+        {
+          "nombre": "MySQL: segundo pago APROBADO de la misma compra → ER_DUP_ENTRY (1062)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: un pago ANULADO de esa compra sí se admite",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: un pago con id_compra inexistente se rechaza (FK, error 1452)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: no se puede borrar una compra que ya tiene pagos (RESTRICT, error 1451)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: un pago con compra_id inexistente SE ACEPTA (no hay claves foráneas: la integridad pasa a ser del código)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: borrar la compra a la que apunta un pago no se impide (no hay RESTRICT)",
+          "ok": true,
+          "detalle": ""
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Idempotencia: Mongo vs MySQL",
+          "md": "| Mecanismo | MongoDB 7.0 | MySQL 8.4 |\n|---|---|---|\n| Clave de idempotencia única, 50 escrituras simultáneas | 1 éxito por ronda (980 E11000) | 1 éxito por ronda (980 ER_DUP_ENTRY) |\n| \"Un aprobado por compra\" | índice único parcial | UNIQUE sobre columna generada |\n| Anulado/reembolso de la misma compra | admitido | admitido |\n| Pago con compra inexistente / borrar una compra con pagos | se acepta / se permite (sin FK) | rechazado 1452 / rechazado 1451 (FK RESTRICT) |\n| Requiere cambio de esquema hoy | colección nueva | ALTER TABLE pago (columna + 2 UNIQUE) |"
+        }
+      ],
+      "notas": [
+        "Upsert ×50 sobre la misma clave: 1 lo insertó, 0 E11000 visibles para el cliente, 0 otros errores."
+      ],
+      "datos": {
+        "RONDAS": 20,
+        "PARALELO": 50,
+        "mongo": {
+          "exitos": 20,
+          "dups": 980,
+          "otros": 0,
+          "insertaron": 1,
+          "dupVisible": 0
+        },
+        "mysql": {
+          "exitosMy": 20,
+          "dupsMy": 980,
+          "otrosMy": 0
+        }
+      }
+    },
+    {
+      "id": 3,
+      "segundos": 1.7,
+      "titulo": "E3 — Transacciones y aislamiento",
+      "checks": [
+        {
+          "nombre": "Una falla dentro de la transacción deshace pago, evento y stock a la vez",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Un lector externo no ve el pago antes del commit y sí después",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "50 transacciones simultáneas sobre un documento: el contador final es exacto (50)",
+          "ok": true,
+          "detalle": "n=50"
+        },
+        {
+          "nombre": "Mongoose: las mismas operaciones en secuencia dentro de la transacción nunca fallan",
+          "ok": true,
+          "detalle": "0 fallas"
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Documento caliente",
+          "md": "| Transacciones simultáneas | Ejecuciones del callback | Reintentos | Tiempo total (ms) |\n|---|---|---|---|\n| 50 | 248 | 198 | 296 |"
+        }
+      ],
+      "notas": [
+        "Documento caliente: 50 transacciones simultáneas → 248 ejecuciones del callback (198 reintentos por WriteConflict), 296 ms.",
+        "Mongoose `connection.transaction()` con 5 `create()` en `Promise.all` y la misma sesión: 30/30 transacciones fallaron (ejemplo: MongoServerError: Only servers in a sharded cluster can start a new transaction at the active transaction number); documentos persistidos 0 de 0 esperados para las que confirmaron."
+      ],
+      "datos": {
+        "N": 50,
+        "intentos": 248,
+        "msCaliente": 295.61800000071526,
+        "mongoose": {
+          "REPETICIONES": 30,
+          "PARALELAS": 5,
+          "fallaron": 30,
+          "ejemplo": "MongoServerError: Only servers in a sharded cluster can start a new transaction at the active transaction number",
+          "insertados": 0,
+          "esperados": 0,
+          "fallaronSecuencial": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "segundos": 17.1,
+      "titulo": "E4 — Concurrencia sobre el stock",
+      "checks": [
+        {
+          "nombre": "MySQL (actual): UPDATE condicional + compra + pago en 1 tx — 100 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 70 agotadas, 0 errores"
+        },
+        {
+          "nombre": "MySQL (actual): UPDATE condicional + compra + pago en 1 tx — 100 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "Mongo sin transacción (descuento atómico + 2 inserts) — 100 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 70 agotadas, 0 errores"
+        },
+        {
+          "nombre": "Mongo sin transacción (descuento atómico + 2 inserts) — 100 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "Mongo con transacción multi-documento — 100 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 70 agotadas, 0 errores"
+        },
+        {
+          "nombre": "Mongo con transacción multi-documento — 100 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "MySQL (actual): UPDATE condicional + compra + pago en 1 tx — 400 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 370 agotadas, 0 errores"
+        },
+        {
+          "nombre": "MySQL (actual): UPDATE condicional + compra + pago en 1 tx — 400 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "Mongo sin transacción (descuento atómico + 2 inserts) — 400 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 370 agotadas, 0 errores"
+        },
+        {
+          "nombre": "Mongo sin transacción (descuento atómico + 2 inserts) — 400 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "Mongo con transacción multi-documento — 400 compradores / 30 unidades: exactamente 30 compras",
+          "ok": true,
+          "detalle": "30 compradas, 370 agotadas, 0 errores"
+        },
+        {
+          "nombre": "Mongo con transacción multi-documento — 400 compradores / 30 unidades: stock final 0, 30 pagos, sin sobreventa",
+          "ok": true,
+          "detalle": "stock 0, pagos 30"
+        },
+        {
+          "nombre": "MySQL: con orden opuesto de bloqueo aparecen deadlocks reales (error 1213) si no se reintenta",
+          "ok": true,
+          "detalle": "30 de 60"
+        },
+        {
+          "nombre": "MySQL: cada deadlock deja la transacción totalmente revertida (descuento == transacciones exitosas)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: reintentando la transacción completa en 1213, todas terminan",
+          "ok": true,
+          "detalle": "60/60, 71 reintentos"
+        },
+        {
+          "nombre": "MySQL: con orden canónico no hay deadlocks y todas terminan",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: orden opuesto en transacciones — todas terminan y el descuento es exacto",
+          "ok": true,
+          "detalle": "60/60"
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Oferta flash: compradores simultáneos sobre pocas unidades",
+          "md": "| Variante | Compradores/unidades | Compradas/agotadas/errores | Stock final | Pagos | Reintentos de tx | Tiempo total (ms) | p50 (ms) | p95 (ms) | p99 (ms) |\n|---|---|---|---|---|---|---|---|---|---|\n| MySQL (actual) | 100/30 | 30/70/0 | 0 | 30 | — | 399 | 376.3 | 392.4 | 394.2 |\n| Mongo sin transacción | 100/30 | 30/70/0 | 0 | 30 | — | 61 | 33.0 | 60.1 | 60.3 |\n| Mongo con transacción | 100/30 | 30/70/0 | 0 | 30 | 776 | 599 | 417.8 | 504.3 | 534.5 |\n| MySQL (actual) | 400/30 | 30/370/0 | 0 | 30 | — | 563 | 474.1 | 549.4 | 555.5 |\n| Mongo sin transacción | 400/30 | 30/370/0 | 0 | 30 | — | 108 | 61.5 | 100.6 | 107.3 |\n| Mongo con transacción | 400/30 | 30/370/0 | 0 | 30 | 4447 | 2110 | 1771.5 | 1980.4 | 2061.3 |"
+        },
+        {
+          "titulo": "Orden de bloqueo entre dos productos",
+          "md": "| Caso | Tx | Terminaron | Deadlocks (1213) | Reintentos | Otros errores | Tiempo (ms) |\n|---|---|---|---|---|---|---|\n| MySQL, orden opuesto, pausa 15 ms, sin reintento | 60 | 30 | 30 | 0 | 0 | 1050 |\n| MySQL, orden opuesto, pausa 15 ms, con reintento en 1213 | 60 | 60 | 0 | 71 | 0 | 2392 |\n| MySQL, orden canónico (id ascendente), pausa 15 ms | 60 | 60 | 0 | 0 | 0 | 2101 |\n| MySQL, orden opuesto, SIN pausa (ventana real) | 300 | 150 | 150 | 0 | 0 | 1943 |\n| Mongo, orden opuesto, pausa 15 ms, withTransaction | 60 | 60 | 0 | 1016 | 0 | 4501 |"
+        }
+      ],
+      "notas": [
+        "Ventana real (sin pausa artificial), orden opuesto: 150 deadlocks en 300 transacciones simultáneas."
+      ],
+      "datos": {
+        "flash": [
+          {
+            "v": "MySQL (actual)",
+            "esc": "100/30",
+            "ok": "30/70/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": "—",
+            "ms": "399",
+            "p50": "376.3",
+            "p95": "392.4",
+            "p99": "394.2"
+          },
+          {
+            "v": "Mongo sin transacción",
+            "esc": "100/30",
+            "ok": "30/70/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": "—",
+            "ms": "61",
+            "p50": "33.0",
+            "p95": "60.1",
+            "p99": "60.3"
+          },
+          {
+            "v": "Mongo con transacción",
+            "esc": "100/30",
+            "ok": "30/70/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": 776,
+            "ms": "599",
+            "p50": "417.8",
+            "p95": "504.3",
+            "p99": "534.5"
+          },
+          {
+            "v": "MySQL (actual)",
+            "esc": "400/30",
+            "ok": "30/370/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": "—",
+            "ms": "563",
+            "p50": "474.1",
+            "p95": "549.4",
+            "p99": "555.5"
+          },
+          {
+            "v": "Mongo sin transacción",
+            "esc": "400/30",
+            "ok": "30/370/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": "—",
+            "ms": "108",
+            "p50": "61.5",
+            "p95": "100.6",
+            "p99": "107.3"
+          },
+          {
+            "v": "Mongo con transacción",
+            "esc": "400/30",
+            "ok": "30/370/0",
+            "stock": 0,
+            "pagos": 30,
+            "reint": 4447,
+            "ms": "2110",
+            "p50": "1771.5",
+            "p95": "1980.4",
+            "p99": "2061.3"
+          }
+        ],
+        "bloqueo": [
+          {
+            "caso": "MySQL, orden opuesto, pausa 15 ms, sin reintento",
+            "n": 60,
+            "ok": 30,
+            "deadlocks": 30,
+            "reint": 0,
+            "otros": 0,
+            "ms": "1050"
+          },
+          {
+            "caso": "MySQL, orden opuesto, pausa 15 ms, con reintento en 1213",
+            "n": 60,
+            "ok": 60,
+            "deadlocks": 0,
+            "reint": 71,
+            "otros": 0,
+            "ms": "2392"
+          },
+          {
+            "caso": "MySQL, orden canónico (id ascendente), pausa 15 ms",
+            "n": 60,
+            "ok": 60,
+            "deadlocks": 0,
+            "reint": 0,
+            "otros": 0,
+            "ms": "2101"
+          },
+          {
+            "caso": "MySQL, orden opuesto, SIN pausa (ventana real)",
+            "n": 300,
+            "ok": 150,
+            "deadlocks": 150,
+            "reint": 0,
+            "otros": 0,
+            "ms": "1943"
+          },
+          {
+            "caso": "Mongo, orden opuesto, pausa 15 ms, withTransaction",
+            "n": 60,
+            "ok": 60,
+            "deadlocks": 0,
+            "reint": 1016,
+            "otros": 0,
+            "ms": "4501"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "segundos": 9.1,
+      "titulo": "E5 — Saga de pago en Mongo con fallas inyectadas",
+      "checks": [
+        {
+          "nombre": "S0 sin falla: pedido confirmado, pago aprobado, un descuento de stock",
+          "ok": true,
+          "detalle": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado"
+        },
+        {
+          "nombre": "S1 20 confirmaciones simultáneas del mismo intento: un pedido, un pago, un descuento",
+          "ok": true,
+          "detalle": "20 respondieron (19 reutilizadas); intento completado; compras 1; pago aprobado; eventos autorizado→aprobado"
+        },
+        {
+          "nombre": "S2 Mongo caído: el checkout falla cerrado (sin pedido, sin pago, stock intacto) y la compensación pendiente se completa al volver Mongo",
+          "ok": true,
+          "detalle": "error: MongoServerSelectionError; 4.6 s hasta fallar; tras volver: fallido+compensado"
+        },
+        {
+          "nombre": "S3 MySQL falla tras autorizar en Mongo: el pago se anula en línea, sin pedido ni descuento",
+          "ok": true,
+          "detalle": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado"
+        },
+        {
+          "nombre": "S4 stock insuficiente después de autorizar: pago anulado, sin pedido",
+          "ok": true,
+          "detalle": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado"
+        },
+        {
+          "nombre": "S5 proceso muerto tras autorizar: queda un pago huérfano visible (ventana abierta, sin compensación en línea)",
+          "ok": true,
+          "detalle": "intento pendiente; compras 0; pago autorizado; eventos autorizado"
+        },
+        {
+          "nombre": "S5 un barrido antes del umbral NO anula (no se compensa a ciegas)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "S5 el barrido tras el umbral anula el pago y cierra el intento",
+          "ok": true,
+          "detalle": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado"
+        },
+        {
+          "nombre": "S6 respuesta de Mongo perdida: el reintento choca con la clave única (E11000) y se trata como éxito; un solo pago",
+          "ok": true,
+          "detalle": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado"
+        },
+        {
+          "nombre": "S7 COMMIT ambiguo: no se anula el pago (el pedido sí existe); el reintento devuelve el pedido guardado",
+          "ok": true,
+          "detalle": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado"
+        },
+        {
+          "nombre": "S8 pedido confirmado con el pago aún \"autorizado\": el barrido lo aprueba sin duplicar eventos",
+          "ok": true,
+          "detalle": "inmediato: intento completado; compras 1; pago autorizado; eventos autorizado"
+        },
+        {
+          "nombre": "S9 outbox hacia Mongo: con Mongo caído la fila queda pendiente; la entrega duplicada (caída tras escribir) deja un solo documento",
+          "ok": true,
+          "detalle": "pendiente con Mongo caído: true; documentos tras reentrega: 1; intentos fallidos registrados: 2"
+        },
+        {
+          "nombre": "Invariante I1: cada pedido tiene exactamente un pago aprobado",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Invariante I2: no hay pagos aprobados sin pedido",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Invariante I3: no queda ningún pago \"autorizado\" tras el barrido",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Invariante I4: el stock descontado equivale a los pedidos confirmados",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Invariante I5: Σ total de pedidos == Σ monto de pagos aprobados",
+          "ok": true,
+          "detalle": ""
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Escenarios",
+          "md": "| # | Escenario | Falla inyectada | Estado inmediato | Tras el barrido | OK |\n|---|---|---|---|---|---|\n| S0 | Sin falla (referencia) | — | intento completado; compras 1; pago aprobado; eventos autorizado→aprobado | — | ✔ |\n| S1 | Doble clic: 20 confirmaciones simultáneas, mismo intento | — | 20/20 respondieron, 19 con el resultado guardado; intento completado; compras 1; pago aprobado; eventos autorizado→aprobado | — | ✔ |\n| S2 | Corte de red hacia Mongo antes de autorizar el pago | proxy cortado; serverSelectionTimeoutMS=1500, 2 intentos | MongoServerSelectionError tras 4.6 s (incluye el intento de compensación); intento fallido; compras 0; pago —; eventos — | intento fallido+compensado; compras 0; pago —; eventos — | ✔ |\n| S3 | Falla de MySQL tras autorizar el pago en Mongo | error antes del COMMIT | intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado | — | ✔ |\n| S4 | Stock insuficiente (rechazo de negocio) tras autorizar | UPDATE condicional afecta 0 filas | intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado | — | ✔ |\n| S5 | El proceso muere entre la autorización en Mongo y el COMMIT | excepción sin compensación en línea | intento pendiente; compras 0; pago autorizado; eventos autorizado; un barrido prematuro (umbral 60 s) no cambia nada | intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado | ✔ |\n| S6 | Mongo escribió el pago pero la respuesta se perdió | excepción de red tras el insert | intento completado; compras 1; pago aprobado; eventos autorizado→aprobado | — | ✔ |\n| S7 | COMMIT de MySQL aplicado pero la respuesta se perdió | excepción tras el COMMIT | intento completado; compras 1; pago aprobado; eventos autorizado→aprobado | reintento: pedido 4 reutilizado, sin escrituras nuevas | ✔ |\n| S8 | Pedido confirmado pero Mongo no puede aprobar el pago en ese instante | excepción al aprobar | intento completado; compras 1; pago autorizado; eventos autorizado | intento completado; compras 1; pago aprobado; eventos autorizado→aprobado | ✔ |\n| S9 | Variante outbox (Mongo como proyección): Mongo caído y relevo que cae tras escribir | Mongo inalcanzable; caída antes de marcar procesado | fila pendiente (intentos=1); pedido ya confirmado | documentos=1, procesada=true | ✔ |"
+        }
+      ],
+      "notas": [
+        "S2: con Mongo inalcanzable el checkout tardó 4.6 s en fallar (serverSelectionTimeoutMS=1500, 2 intentos, más un intento de compensación). El valor por defecto del driver es 30 000 ms: sin configurarlo, el usuario esperaría con su fila bloqueada hasta que venza la transacción interactiva de Prisma (15 s en checkoutIntentoService.js).",
+        "Estado final: 6 pedidos y 9 documentos de pago (S9 agrega un pago proyectado sin pasar por los estados autorizado/anulado)."
+      ],
+      "datos": {
+        "escenarios": [
+          {
+            "n": "S0",
+            "nombre": "Sin falla (referencia)",
+            "falla": "—",
+            "inmediato": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado",
+            "tras": "—",
+            "ok": "✔"
+          },
+          {
+            "n": "S1",
+            "nombre": "Doble clic: 20 confirmaciones simultáneas, mismo intento",
+            "falla": "—",
+            "inmediato": "20/20 respondieron, 19 con el resultado guardado; intento completado; compras 1; pago aprobado; eventos autorizado→aprobado",
+            "tras": "—",
+            "ok": "✔"
+          },
+          {
+            "n": "S2",
+            "nombre": "Corte de red hacia Mongo antes de autorizar el pago",
+            "falla": "proxy cortado; serverSelectionTimeoutMS=1500, 2 intentos",
+            "inmediato": "MongoServerSelectionError tras 4.6 s (incluye el intento de compensación); intento fallido; compras 0; pago —; eventos —",
+            "tras": "intento fallido+compensado; compras 0; pago —; eventos —",
+            "ok": "✔"
+          },
+          {
+            "n": "S3",
+            "nombre": "Falla de MySQL tras autorizar el pago en Mongo",
+            "falla": "error antes del COMMIT",
+            "inmediato": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado",
+            "tras": "—",
+            "ok": "✔"
+          },
+          {
+            "n": "S4",
+            "nombre": "Stock insuficiente (rechazo de negocio) tras autorizar",
+            "falla": "UPDATE condicional afecta 0 filas",
+            "inmediato": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado",
+            "tras": "—",
+            "ok": "✔"
+          },
+          {
+            "n": "S5",
+            "nombre": "El proceso muere entre la autorización en Mongo y el COMMIT",
+            "falla": "excepción sin compensación en línea",
+            "inmediato": "intento pendiente; compras 0; pago autorizado; eventos autorizado; un barrido prematuro (umbral 60 s) no cambia nada",
+            "tras": "intento fallido+compensado; compras 0; pago anulado; eventos autorizado→anulado",
+            "ok": "✔"
+          },
+          {
+            "n": "S6",
+            "nombre": "Mongo escribió el pago pero la respuesta se perdió",
+            "falla": "excepción de red tras el insert",
+            "inmediato": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado",
+            "tras": "—",
+            "ok": "✔"
+          },
+          {
+            "n": "S7",
+            "nombre": "COMMIT de MySQL aplicado pero la respuesta se perdió",
+            "falla": "excepción tras el COMMIT",
+            "inmediato": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado",
+            "tras": "reintento: pedido 4 reutilizado, sin escrituras nuevas",
+            "ok": "✔"
+          },
+          {
+            "n": "S8",
+            "nombre": "Pedido confirmado pero Mongo no puede aprobar el pago en ese instante",
+            "falla": "excepción al aprobar",
+            "inmediato": "intento completado; compras 1; pago autorizado; eventos autorizado",
+            "tras": "intento completado; compras 1; pago aprobado; eventos autorizado→aprobado",
+            "ok": "✔"
+          },
+          {
+            "n": "S9",
+            "nombre": "Variante outbox (Mongo como proyección): Mongo caído y relevo que cae tras escribir",
+            "falla": "Mongo inalcanzable; caída antes de marcar procesado",
+            "inmediato": "fila pendiente (intentos=1); pedido ya confirmado",
+            "tras": "documentos=1, procesada=true",
+            "ok": "✔"
+          }
+        ],
+        "invariantes": {
+          "I1": true,
+          "I2": true,
+          "I3": true,
+          "I4": true,
+          "I5": true,
+          "compras": 6,
+          "pagos": 9
+        }
+      }
+    },
+    {
+      "id": 6,
+      "segundos": 277.6,
+      "titulo": "E6 — Rendimiento",
+      "checks": [
+        {
+          "nombre": "Carga A (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga B (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga C (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga D (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga E (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga F (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga G (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga H (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga A (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga B (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga C (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga D (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga E (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga F (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga G (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga H (concurrencia 8) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga A (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga B (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga C (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga D (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga E (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga F (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga G (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Carga H (concurrencia 32) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R1 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R2 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R3 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R4 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R5 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R6 (concurrencia 1) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R1 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R2 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R3 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R4 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R5 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Lectura R6 (concurrencia 16) sin errores",
+          "ok": true,
+          "detalle": ""
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Leyenda de las cargas de escritura",
+          "md": "| # | Carga | Qué hace | Escribe |\n|---|---|---|---|\n| A | MySQL: INSERT de un pago (autocommit) | Una fila en una tabla con la forma de `pago`, sin FK, con fsync por COMMIT. | 1 fila, 1 commit |\n| B | Mongo: insertOne con w:1 | Un documento de pago; se confirma en memoria sin esperar el journal (puede perderse ante una caída). | 1 doc |\n| C | Mongo: insertOne con w:1, j:true | Un documento de pago; se confirma tras escribir el journal en disco. | 1 doc, 1 commit |\n| D | Mongo: insertOne con w:majority | Un documento de pago; w:majority en un replica set de un nodo equivale a esperar el journal (writeConcernMajorityJournalDefault=true). | 1 doc, 1 commit |\n| E | Pedido como hoy (todo en MySQL) | Una transacción: UPDATE condicional de stock + INSERT compra + INSERT pago, con las FK reales. | 3 filas, 1 commit |\n| F | Pedido + fila outbox hacia Mongo (Opción C) | Igual que E más una fila de outbox en la misma transacción; el relevo a Mongo ocurre fuera de la ruta crítica. | 4 filas, 1 commit |\n| G | Saga: pago en Mongo, pedido en MySQL (Opción B) | Transacción Mongo {pago autorizado, evento} dentro de la transacción MySQL {stock, compra, intento}, y luego transacción Mongo {aprobar pago, evento}. | 4 docs + 3 filas, 3 commits |\n| H | Todo en Mongo, una transacción (Opción A3) | Transacción multi-documento: descuento de stock + compra + pago + evento, con snapshot y w:majority. | 4 docs, 1 commit |"
+        },
+        {
+          "titulo": "Escrituras — concurrencia 1 (300 operaciones por celda × 3 rondas)",
+          "md": "| # | Carga | ops/s mediana [mín–máx] | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|---|\n| A | MySQL: INSERT de un pago (autocommit) | 95 [85–97] | 9.64 | 13.27 | 18.16 |\n| B | Mongo: insertOne con w:1 | 1547 [1396–1682] | 0.60 | 0.76 | 0.96 |\n| C | Mongo: insertOne con w:1, j:true | 214 [203–215] | 4.06 | 7.20 | 8.39 |\n| D | Mongo: insertOne con w:majority | 211 [200–213] | 4.14 | 7.31 | 8.34 |\n| E | Pedido como hoy (todo en MySQL) | 76 [74–78] | 12.77 | 16.40 | 22.41 |\n| F | Pedido + fila outbox hacia Mongo (Opción C) | 76 [75–78] | 12.54 | 15.86 | 22.91 |\n| G | Saga: pago en Mongo, pedido en MySQL (Opción B) | 37 [36–37] | 26.88 | 33.53 | 38.24 |\n| H | Todo en Mongo, una transacción (Opción A3) | 135 [129–138] | 6.87 | 10.19 | 13.40 |"
+        },
+        {
+          "titulo": "Escrituras — concurrencia 8 (800 operaciones por celda × 3 rondas)",
+          "md": "| # | Carga | ops/s mediana [mín–máx] | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|---|\n| A | MySQL: INSERT de un pago (autocommit) | 282 [275–293] | 26.16 | 38.66 | 47.04 |\n| B | Mongo: insertOne con w:1 | 6602 [6048–7043] | 1.11 | 1.60 | 2.03 |\n| C | Mongo: insertOne con w:1, j:true | 810 [793–832] | 9.09 | 12.49 | 14.29 |\n| D | Mongo: insertOne con w:majority | 791 [717–817] | 9.62 | 12.90 | 13.50 |\n| E | Pedido como hoy (todo en MySQL) | 271 [266–271] | 26.51 | 41.41 | 57.70 |\n| F | Pedido + fila outbox hacia Mongo (Opción C) | 264 [255–275] | 26.98 | 44.93 | 66.24 |\n| G | Saga: pago en Mongo, pedido en MySQL (Opción B) | 101 [99–101] | 78.21 | 115.26 | 128.00 |\n| H | Todo en Mongo, una transacción (Opción A3) | 643 [591–643] | 12.05 | 16.45 | 18.19 |"
+        },
+        {
+          "titulo": "Escrituras — concurrencia 32 (3200 operaciones por celda × 3 rondas)",
+          "md": "| # | Carga | ops/s mediana [mín–máx] | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|---|\n| A | MySQL: INSERT de un pago (autocommit) | 971 [949–1021] | 31.97 | 47.81 | 64.35 |\n| B | Mongo: insertOne con w:1 | 5718 [5717–7167] | 4.83 | 8.18 | 8.94 |\n| C | Mongo: insertOne con w:1, j:true | 2525 [2506–2533] | 12.51 | 15.37 | 18.16 |\n| D | Mongo: insertOne con w:majority | 2539 [2417–2575] | 12.47 | 15.99 | 18.66 |\n| E | Pedido como hoy (todo en MySQL) | 795 [702–863] | 38.94 | 54.27 | 94.78 |\n| F | Pedido + fila outbox hacia Mongo (Opción C) | 709 [652–787] | 39.20 | 70.85 | 114.75 |\n| G | Saga: pago en Mongo, pedido en MySQL (Opción B) | 267 [252–269] | 117.89 | 185.60 | 217.34 |\n| H | Todo en Mongo, una transacción (Opción A3) | 1169 [1123–1184] | 27.93 | 32.02 | 37.41 |"
+        },
+        {
+          "titulo": "Lecturas sobre 100.000 pagos — concurrencia 1",
+          "md": "| # | Carga | ops/s mediana [mín–máx] | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|---|\n| R1 | MySQL: pago de una compra (por id_compra) | 2415 [2337–2436] | 0.40 | 0.61 | 0.72 |\n| R2 | Mongo: pago de una compra (por compra_id) | 1730 [1698–1745] | 0.56 | 0.69 | 0.81 |\n| R3 | \"¿Pagó el producto X?\" MySQL: JOIN compra⨝detalle⨝pago | 1923 [1820–1945] | 0.49 | 0.74 | 0.89 |\n| R4 | \"¿Pagó el producto X?\" pago en Mongo: consulta MySQL + consulta Mongo (2 viajes) | 794 [779–799] | 1.23 | 1.51 | 1.94 |\n| R5 | MySQL: últimos 20 pagos de un usuario (JOIN compra⨝pago) | 1896 [1881–1911] | 0.52 | 0.60 | 0.68 |\n| R6 | Mongo: últimos 20 pagos de un usuario (usuario_id denormalizado) | 1524 [1456–1576] | 0.64 | 0.79 | 0.90 |"
+        },
+        {
+          "titulo": "Lecturas sobre 100.000 pagos — concurrencia 16",
+          "md": "| # | Carga | ops/s mediana [mín–máx] | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|---|\n| R1 | MySQL: pago de una compra (por id_compra) | 18362 [16330–18552] | 0.85 | 1.07 | 1.17 |\n| R2 | Mongo: pago de una compra (por compra_id) | 6920 [6404–7462] | 2.19 | 2.80 | 4.20 |\n| R3 | \"¿Pagó el producto X?\" MySQL: JOIN compra⨝detalle⨝pago | 15177 [12090–15853] | 1.03 | 1.28 | 1.41 |\n| R4 | \"¿Pagó el producto X?\" pago en Mongo: consulta MySQL + consulta Mongo (2 viajes) | 4487 [3944–4631] | 3.47 | 4.49 | 5.54 |\n| R5 | MySQL: últimos 20 pagos de un usuario (JOIN compra⨝pago) | 13265 [11883–13480] | 1.17 | 1.47 | 1.74 |\n| R6 | Mongo: últimos 20 pagos de un usuario (usuario_id denormalizado) | 4967 [4897–5019] | 2.94 | 4.88 | 8.18 |"
+        }
+      ],
+      "notas": [
+        "Las cifras de E6 comparan filas entre sí dentro de una misma corrida; no son capacidad de producción (ver \"Límites\" del ADR-005)."
+      ],
+      "datos": {
+        "escrituras": [
+          {
+            "c": 1,
+            "id": "A",
+            "grupo": "Pago aislado",
+            "nombre": "MySQL: INSERT de un pago (autocommit)",
+            "ops": 94.90286817976953,
+            "p50": 9.639,
+            "p95": 13.271,
+            "p99": 18.159,
+            "errores": 0,
+            "min": 85.38090742327363,
+            "max": 97.01594162731071
+          },
+          {
+            "c": 1,
+            "id": "B",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1",
+            "ops": 1546.8103482372885,
+            "p50": 0.602,
+            "p95": 0.759,
+            "p99": 0.964,
+            "errores": 0,
+            "min": 1396.4452091490807,
+            "max": 1681.7246422398414
+          },
+          {
+            "c": 1,
+            "id": "C",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1, j:true",
+            "ops": 213.70349437996785,
+            "p50": 4.059,
+            "p95": 7.199,
+            "p99": 8.391,
+            "errores": 0,
+            "min": 202.70320946114109,
+            "max": 215.1209983915753
+          },
+          {
+            "c": 1,
+            "id": "D",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:majority",
+            "ops": 210.55894134295536,
+            "p50": 4.143,
+            "p95": 7.307,
+            "p99": 8.343,
+            "errores": 0,
+            "min": 200.3794385061375,
+            "max": 212.67670864606492
+          },
+          {
+            "c": 1,
+            "id": "E",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido como hoy (todo en MySQL)",
+            "ops": 75.52264882712515,
+            "p50": 12.767,
+            "p95": 16.399,
+            "p99": 22.415,
+            "errores": 0,
+            "min": 74.4711672092651,
+            "max": 77.56436116185067
+          },
+          {
+            "c": 1,
+            "id": "F",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido + fila outbox hacia Mongo (Opción C)",
+            "ops": 75.76547756121779,
+            "p50": 12.535,
+            "p95": 15.855,
+            "p99": 22.911,
+            "errores": 0,
+            "min": 74.71833429534135,
+            "max": 77.53910523244296
+          },
+          {
+            "c": 1,
+            "id": "G",
+            "grupo": "Checkout completo",
+            "nombre": "Saga: pago en Mongo, pedido en MySQL (Opción B)",
+            "ops": 36.508401690612295,
+            "p50": 26.879,
+            "p95": 33.535,
+            "p99": 38.239,
+            "errores": 0,
+            "min": 36.36281875118413,
+            "max": 36.526872966546115
+          },
+          {
+            "c": 1,
+            "id": "H",
+            "grupo": "Checkout completo",
+            "nombre": "Todo en Mongo, una transacción (Opción A3)",
+            "ops": 135.0060887749731,
+            "p50": 6.871,
+            "p95": 10.191,
+            "p99": 13.399,
+            "errores": 0,
+            "min": 128.51464529349477,
+            "max": 137.70290350764463
+          },
+          {
+            "c": 8,
+            "id": "A",
+            "grupo": "Pago aislado",
+            "nombre": "MySQL: INSERT de un pago (autocommit)",
+            "ops": 281.8841644955979,
+            "p50": 26.159,
+            "p95": 38.655,
+            "p99": 47.039,
+            "errores": 0,
+            "min": 274.7126428491314,
+            "max": 293.10247800554396
+          },
+          {
+            "c": 8,
+            "id": "B",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1",
+            "ops": 6602.054560094626,
+            "p50": 1.106,
+            "p95": 1.602,
+            "p99": 2.031,
+            "errores": 0,
+            "min": 6048.033482105218,
+            "max": 7043.400554171773
+          },
+          {
+            "c": 8,
+            "id": "C",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1, j:true",
+            "ops": 809.6116282957356,
+            "p50": 9.087,
+            "p95": 12.487,
+            "p99": 14.295,
+            "errores": 0,
+            "min": 792.7462921578721,
+            "max": 831.8269467228288
+          },
+          {
+            "c": 8,
+            "id": "D",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:majority",
+            "ops": 790.747151286407,
+            "p50": 9.615,
+            "p95": 12.903,
+            "p99": 13.503,
+            "errores": 0,
+            "min": 717.052319812116,
+            "max": 817.2567021701533
+          },
+          {
+            "c": 8,
+            "id": "E",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido como hoy (todo en MySQL)",
+            "ops": 270.85120034328264,
+            "p50": 26.511,
+            "p95": 41.407,
+            "p99": 57.695,
+            "errores": 0,
+            "min": 266.0982187813909,
+            "max": 271.18200064742337
+          },
+          {
+            "c": 8,
+            "id": "F",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido + fila outbox hacia Mongo (Opción C)",
+            "ops": 263.5980775131969,
+            "p50": 26.975,
+            "p95": 44.927,
+            "p99": 66.239,
+            "errores": 0,
+            "min": 254.55717806023662,
+            "max": 274.5228047297913
+          },
+          {
+            "c": 8,
+            "id": "G",
+            "grupo": "Checkout completo",
+            "nombre": "Saga: pago en Mongo, pedido en MySQL (Opción B)",
+            "ops": 100.7272811881917,
+            "p50": 78.207,
+            "p95": 115.263,
+            "p99": 127.999,
+            "errores": 0,
+            "min": 98.55981320949701,
+            "max": 100.99436017189203
+          },
+          {
+            "c": 8,
+            "id": "H",
+            "grupo": "Checkout completo",
+            "nombre": "Todo en Mongo, una transacción (Opción A3)",
+            "ops": 643.2848698601285,
+            "p50": 12.055,
+            "p95": 16.447,
+            "p99": 18.191,
+            "errores": 0,
+            "min": 590.8714060687535,
+            "max": 643.3919624200495
+          },
+          {
+            "c": 32,
+            "id": "A",
+            "grupo": "Pago aislado",
+            "nombre": "MySQL: INSERT de un pago (autocommit)",
+            "ops": 971.3385023285908,
+            "p50": 31.967,
+            "p95": 47.807,
+            "p99": 64.351,
+            "errores": 0,
+            "min": 948.8540393261453,
+            "max": 1020.8217327856777
+          },
+          {
+            "c": 32,
+            "id": "B",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1",
+            "ops": 5717.767426293574,
+            "p50": 4.835,
+            "p95": 8.179,
+            "p99": 8.935,
+            "errores": 0,
+            "min": 5716.649957390081,
+            "max": 7167.407112129618
+          },
+          {
+            "c": 32,
+            "id": "C",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:1, j:true",
+            "ops": 2525.4996543122556,
+            "p50": 12.511,
+            "p95": 15.367,
+            "p99": 18.159,
+            "errores": 0,
+            "min": 2505.722443623484,
+            "max": 2533.291407357051
+          },
+          {
+            "c": 32,
+            "id": "D",
+            "grupo": "Pago aislado",
+            "nombre": "Mongo: insertOne con w:majority",
+            "ops": 2538.520662830643,
+            "p50": 12.471,
+            "p95": 15.991,
+            "p99": 18.655,
+            "errores": 0,
+            "min": 2416.575654921256,
+            "max": 2575.418930132783
+          },
+          {
+            "c": 32,
+            "id": "E",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido como hoy (todo en MySQL)",
+            "ops": 795.3905131299217,
+            "p50": 38.943,
+            "p95": 54.271,
+            "p99": 94.783,
+            "errores": 0,
+            "min": 702.0078631471725,
+            "max": 863.4718746980288
+          },
+          {
+            "c": 32,
+            "id": "F",
+            "grupo": "Checkout completo",
+            "nombre": "Pedido + fila outbox hacia Mongo (Opción C)",
+            "ops": 708.5354273796682,
+            "p50": 39.199,
+            "p95": 70.847,
+            "p99": 114.751,
+            "errores": 0,
+            "min": 651.5674595475181,
+            "max": 786.7120789652413
+          },
+          {
+            "c": 32,
+            "id": "G",
+            "grupo": "Checkout completo",
+            "nombre": "Saga: pago en Mongo, pedido en MySQL (Opción B)",
+            "ops": 267.24894198024987,
+            "p50": 117.887,
+            "p95": 185.599,
+            "p99": 217.343,
+            "errores": 0,
+            "min": 251.7076911660296,
+            "max": 269.0471464933414
+          },
+          {
+            "c": 32,
+            "id": "H",
+            "grupo": "Checkout completo",
+            "nombre": "Todo en Mongo, una transacción (Opción A3)",
+            "ops": 1168.8071238531413,
+            "p50": 27.935,
+            "p95": 32.015,
+            "p99": 37.407,
+            "errores": 0,
+            "min": 1123.0957122477075,
+            "max": 1184.0562095195223
+          }
+        ],
+        "lecturas": [
+          {
+            "c": 1,
+            "id": "R1",
+            "nombre": "MySQL: pago de una compra (por id_compra)",
+            "ops": "2415 [2337–2436]",
+            "p50": "0.40",
+            "p95": "0.61",
+            "p99": "0.72"
+          },
+          {
+            "c": 1,
+            "id": "R2",
+            "nombre": "Mongo: pago de una compra (por compra_id)",
+            "ops": "1730 [1698–1745]",
+            "p50": "0.56",
+            "p95": "0.69",
+            "p99": "0.81"
+          },
+          {
+            "c": 1,
+            "id": "R3",
+            "nombre": "\"¿Pagó el producto X?\" MySQL: JOIN compra⨝detalle⨝pago",
+            "ops": "1923 [1820–1945]",
+            "p50": "0.49",
+            "p95": "0.74",
+            "p99": "0.89"
+          },
+          {
+            "c": 1,
+            "id": "R4",
+            "nombre": "\"¿Pagó el producto X?\" pago en Mongo: consulta MySQL + consulta Mongo (2 viajes)",
+            "ops": "794 [779–799]",
+            "p50": "1.23",
+            "p95": "1.51",
+            "p99": "1.94"
+          },
+          {
+            "c": 1,
+            "id": "R5",
+            "nombre": "MySQL: últimos 20 pagos de un usuario (JOIN compra⨝pago)",
+            "ops": "1896 [1881–1911]",
+            "p50": "0.52",
+            "p95": "0.60",
+            "p99": "0.68"
+          },
+          {
+            "c": 1,
+            "id": "R6",
+            "nombre": "Mongo: últimos 20 pagos de un usuario (usuario_id denormalizado)",
+            "ops": "1524 [1456–1576]",
+            "p50": "0.64",
+            "p95": "0.79",
+            "p99": "0.90"
+          },
+          {
+            "c": 16,
+            "id": "R1",
+            "nombre": "MySQL: pago de una compra (por id_compra)",
+            "ops": "18362 [16330–18552]",
+            "p50": "0.85",
+            "p95": "1.07",
+            "p99": "1.17"
+          },
+          {
+            "c": 16,
+            "id": "R2",
+            "nombre": "Mongo: pago de una compra (por compra_id)",
+            "ops": "6920 [6404–7462]",
+            "p50": "2.19",
+            "p95": "2.80",
+            "p99": "4.20"
+          },
+          {
+            "c": 16,
+            "id": "R3",
+            "nombre": "\"¿Pagó el producto X?\" MySQL: JOIN compra⨝detalle⨝pago",
+            "ops": "15177 [12090–15853]",
+            "p50": "1.03",
+            "p95": "1.28",
+            "p99": "1.41"
+          },
+          {
+            "c": 16,
+            "id": "R4",
+            "nombre": "\"¿Pagó el producto X?\" pago en Mongo: consulta MySQL + consulta Mongo (2 viajes)",
+            "ops": "4487 [3944–4631]",
+            "p50": "3.47",
+            "p95": "4.49",
+            "p99": "5.54"
+          },
+          {
+            "c": 16,
+            "id": "R5",
+            "nombre": "MySQL: últimos 20 pagos de un usuario (JOIN compra⨝pago)",
+            "ops": "13265 [11883–13480]",
+            "p50": "1.17",
+            "p95": "1.47",
+            "p99": "1.74"
+          },
+          {
+            "c": 16,
+            "id": "R6",
+            "nombre": "Mongo: últimos 20 pagos de un usuario (usuario_id denormalizado)",
+            "ops": "4967 [4897–5019]",
+            "p50": "2.94",
+            "p95": "4.88",
+            "p99": "8.18"
+          }
+        ],
+        "reps": 3,
+        "volumenLectura": 100000
+      }
+    },
+    {
+      "id": 7,
+      "segundos": 0.7,
+      "titulo": "E7 — Flexibilidad del payload de la pasarela",
+      "checks": [
+        {
+          "nombre": "Mongo: 3000 pagos con tres formas distintas de \"pasarela\" conviven en una colección",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: se encuentra un pago por un campo que solo existe en una de las formas",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: esa consulta usa el índice parcial (IXSCAN)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: un campo del payload SIN índice se resuelve con COLLSCAN (cada campo consultado necesita su índice)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: el validador rechaza un pago sin \"pasarela\" (121)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Mongo: el validador rechaza un tipo de pasarela desconocido (121)",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: 3000 pagos con tres formas distintas de \"pasarela\" conviven en una columna JSON",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: se encuentra un pago por un campo que solo existe en una de las formas",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "MySQL: esa consulta usa el índice sobre la columna generada",
+          "ok": true,
+          "detalle": "key=e7_aut, type=ref"
+        },
+        {
+          "nombre": "MySQL: un campo del payload SIN columna generada indexada recorre toda la tabla (type=ALL)",
+          "ok": true,
+          "detalle": "type=ALL"
+        },
+        {
+          "nombre": "MySQL: el CHECK rechaza un tipo de pasarela desconocido (3819)",
+          "ok": true,
+          "detalle": ""
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Mongo vs MySQL 8.4 con JSON",
+          "md": "| Capacidad | MongoDB 7.0 | MySQL 8.4 |\n|---|---|---|\n| Tres formas de payload en una misma tabla/colección | sí | sí (columna JSON) |\n| Consulta por un campo de la parte variable | índice parcial → IXSCAN | columna generada + índice → ref |\n| Campo variable sin índice | COLLSCAN | recorrido completo (ALL) |\n| Validación de los campos obligatorios | $jsonSchema (121) | CHECK constraint (3819) |\n| Costo de añadir un campo nuevo consultable | crear índice | ALTER TABLE + columna generada + índice |"
+        }
+      ],
+      "notas": [],
+      "datos": {
+        "N": 3000
+      }
+    },
+    {
+      "id": 8,
+      "segundos": 0.3,
+      "titulo": "E8 — Migración de los pagos reales (ensayo de la fase 1)",
+      "checks": [
+        {
+          "nombre": "La fuente trae el mismo número de filas que COUNT(*) de pago",
+          "ok": true,
+          "detalle": "261 filas"
+        },
+        {
+          "nombre": "Carga inicial: 261 documentos insertados, ninguno modificado",
+          "ok": true,
+          "detalle": "upserted=261, modified=0, 79 ms"
+        },
+        {
+          "nombre": "Conciliación: mismo conteo",
+          "ok": true,
+          "detalle": "261 vs 261"
+        },
+        {
+          "nombre": "Conciliación: misma suma exacta de montos",
+          "ok": true,
+          "detalle": "102990.89 vs 102990.89"
+        },
+        {
+          "nombre": "Conciliación: misma huella SHA-256 de todas las filas",
+          "ok": true,
+          "detalle": "6747703deec69ed9"
+        },
+        {
+          "nombre": "Segunda carga: idempotente (0 insertados, 0 modificados)",
+          "ok": true,
+          "detalle": "upserted=0, modified=0"
+        },
+        {
+          "nombre": "Segunda carga: la huella no cambia",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Divergencia de un monto: el conteo NO la detecta",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Divergencia de un monto: la suma y la huella SÍ la detectan",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "La comparación fila a fila identifica exactamente el pago alterado",
+          "ok": true,
+          "detalle": "legacy_id 131"
+        },
+        {
+          "nombre": "Borrado accidental de un documento: el conteo lo detecta",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Reejecutar la carga repara ambas divergencias (1 insertado, 1 modificado)",
+          "ok": true,
+          "detalle": "upserted=1, modified=1"
+        },
+        {
+          "nombre": "Tras reparar, conteo, suma y huella vuelven a coincidir",
+          "ok": true,
+          "detalle": ""
+        },
+        {
+          "nombre": "Los datos reales cumplen el índice único parcial \"un pago aprobado por compra\"",
+          "ok": true,
+          "detalle": ""
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Cargas y conciliaciones",
+          "md": "| Paso | Resultado |\n|---|---|\n| Carga inicial | 261 insertados, 0 modificados (79 ms) |\n| Conciliación | conteo 261/261, Σ 102990.89, huella igual |\n| Segunda carga | 0 insertados, 0 modificados |\n| Monto alterado en destino | conteo igual; Σ 112910.05 (esperada 102990.89); fila 131 identificada |\n| Documento borrado | conteo 260/261 |\n| Reparación (tercera carga) | 1 insertado, 1 modificado; huella igual |"
+        }
+      ],
+      "notas": [
+        "Fuente: 261 pagos (estados: aprobado 261), Σ monto = 102990.89, del 2026-08-23 al 2026-10-07.",
+        "Tamaño: tabla MySQL `pago` ≈ 80.0 KB (datos + índices) vs colección Mongo ≈ 4.0 KB de almacenamiento + 20.0 KB de índices (318 B por documento).",
+        "Huella de conciliación (SHA-256 de 261 filas): 6747703deec69ed9517323f18c8aa0fabdd57793a832d3a50a87beafc2cd4304."
+      ],
+      "datos": {
+        "original": {
+          "conteo": 261,
+          "suma": "102990.89",
+          "huella": "6747703deec69ed9517323f18c8aa0fabdd57793a832d3a50a87beafc2cd4304"
+        },
+        "c1": {
+          "upserted": 261,
+          "modified": 0,
+          "ms": 78.71429999172688
+        },
+        "c2": {
+          "upserted": 0,
+          "modified": 0,
+          "ms": 14.481700003147125
+        },
+        "c3": {
+          "upserted": 1,
+          "modified": 1,
+          "ms": 18.919100001454353
+        },
+        "porEstado": {
+          "aprobado": 261
+        },
+        "kbMysql": 80,
+        "kbMongo": 4,
+        "kbIndicesMongo": 20,
+        "avgObjSize": 318
+      }
+    },
+    {
+      "id": 9,
+      "segundos": 4.7,
+      "titulo": "E9 — Deadlock visto desde Prisma (el stack de la aplicación)",
+      "checks": [
+        {
+          "nombre": "Prisma: dos transacciones con orden opuesto producen exactamente un fallo (la víctima del deadlock)",
+          "ok": true,
+          "detalle": "1 fallos"
+        },
+        {
+          "nombre": "Prisma expone el deadlock con un código estable que se puede capturar",
+          "ok": true,
+          "detalle": "PrismaClientKnownRequestError P2034"
+        },
+        {
+          "nombre": "La transacción víctima se revierte por completo (los dos productos quedan descontados igual, una sola vez)",
+          "ok": true,
+          "detalle": "cantidades 99999 y 99999"
+        },
+        {
+          "nombre": "Con reintento ante P2034: las 40 transacciones de orden opuesto terminan",
+          "ok": true,
+          "detalle": "40/40, 46 reintentos"
+        },
+        {
+          "nombre": "Con reintento: el descuento es exacto en ambos productos",
+          "ok": true,
+          "detalle": "cantidades 99960 y 99960"
+        }
+      ],
+      "tablas": [
+        {
+          "titulo": "Error que ve el código del checkout",
+          "md": "| Clase | Código | Mensaje |\n|---|---|---|\n| PrismaClientKnownRequestError | P2034 | Transaction failed due to a write conflict or a deadlock. Please retry your transaction |"
+        }
+      ],
+      "notas": [
+        "El deadlock llega al código de la aplicación como PrismaClientKnownRequestError con código P2034."
+      ],
+      "datos": {
+        "clase": "PrismaClientKnownRequestError",
+        "codigo": "P2034",
+        "mensaje": "Transaction failed due to a write conflict or a deadlock. Please retry your transaction",
+        "N": 40,
+        "reintentos": 46,
+        "terminaron": 40
+      }
+    }
+  ],
+  "duracion_s": 319
+}
