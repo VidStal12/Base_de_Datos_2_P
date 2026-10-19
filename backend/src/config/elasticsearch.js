@@ -13,6 +13,17 @@ const INDICE = process.env.ELASTICSEARCH_INDICE || 'tiendaya_productos';
 // (ver productoService.js). imagen_url: index:false — se guarda para
 // mostrarla en los resultados, nunca se busca ni se agrega por ella.
 const MAPPING = {
+  // 'strict': un campo que aDocumento() agregue sin declararlo acá FALLA al
+  // indexar (strict_dynamic_mapping_exception) en vez de que Elasticsearch le
+  // adivine el tipo. Con el valor por defecto (true) un campo olvidado quedaba
+  // como `text` con el analizador estándar (sin español), y uno mal escrito
+  // (precioo) creaba un campo nuevo sin avisar: el producto desaparecía de los
+  // filtros de precio sin ningún error. Aplica también a los objetos internos
+  // (atributos). OJO: indexarProducto() solo registra el error (mejor
+  // esfuerzo), así que un campo olvidado dejaría el producto SIN indexar —
+  // tests/busquedaMapping.test.js (npm run test:busqueda) es lo que obliga a
+  // que aDocumento() y este mapping se mantengan alineados.
+  dynamic: 'strict',
   properties: {
     producto_id: { type: 'integer' },
     descripcion: {
