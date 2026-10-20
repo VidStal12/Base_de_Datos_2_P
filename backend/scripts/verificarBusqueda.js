@@ -63,6 +63,18 @@ async function main() {
   );
   todasOk &&= sugerenciasOk;
 
+  // 5) Autocompletado que se estrecha: un texto bien escrito no debe traer a sus
+  // "vecinos" por tolerancia. "smartphone x" solo coincide con "Smartphone X100";
+  // con fuzzy a secas traía también todos los demás "Smartphone ?" (difieren en
+  // UNA letra). Las aproximadas solo se usan si no hay ninguna exacta — por eso
+  // la prueba 4 ("bicicletta", sin exactas) sigue funcionando.
+  const estrechas = await busquedaService.sugerir('smartphone x');
+  const estrechasOk = estrechas.length > 0 && estrechas.every((s) => s.toLowerCase().startsWith('smartphone x'));
+  console.log(
+    (estrechasOk ? 'OK' : 'FALLA') + ` — sugerir("smartphone x") devolvió ${estrechas.length}: ${JSON.stringify(estrechas)}`
+  );
+  todasOk &&= estrechasOk;
+
   console.log(todasOk ? 'Todas las verificaciones de búsqueda pasaron.' : 'Hay verificaciones que fallaron.');
   process.exitCode = todasOk ? 0 : 1;
 }

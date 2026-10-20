@@ -3,11 +3,12 @@ const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
 const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
-const { esEnteroPositivo } = require('../utils/validation');
+const { esEnteroPositivo, escaparRegex } = require('../utils/validation');
 const busquedaSyncService = require('./busquedaSyncService');
 const fraudeSyncService = require('./fraudeSyncService');
 const ofertaDatos = require('./ofertaDatosService');
 const suspension = require('./suspensionService');
+const { componenteCaido } = require('../utils/resiliencia');
 
 // Todo el contenido de catálogo, incluido precio/cantidad, vive en el
 // documento de Mongo — ver Producto.js. MySQL (`inventario`) sigue siendo la
@@ -114,7 +115,9 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
     filtro.subcategoria_id = { $in: subcategorias.map((s) => s._id) };
   }
   if (q) {
-    filtro.descripcion = { $regex: q, $options: 'i' };
+    // Texto literal, no una expresión regular: lo escribe una persona en un buscador público, y
+    // un `(` suelto o un patrón pesado rompía la consulta (o la volvía lentísima) en vez de buscar.
+    filtro.descripcion = { $regex: escaparRegex(q), $options: 'i' };
   }
   const suspendidos = await suspension.vendedoresSuspendidos();
   if (vendedorId) {
@@ -318,6 +321,34 @@ function vendedoresOcultos() {
   return suspension.vendedoresSuspendidos();
 }
 
+// ¿Está publicado cada producto, de quién es y cómo se llama? Lo necesitan el carrito y el
+// checkout (un producto inactivo no se compra) y la fuente es Mongo. Si Mongo está apagado,
+// se le pregunta al índice de búsqueda, que guarda una copia de esos mismos campos: la
+// compra sigue siendo posible, con un único riesgo acotado — un producto que se pausó
+// mientras el índice también estaba apagado figuraría como activo hasta que Mongo vuelva.
+// Si ninguno de los dos responde, se informa la caída del catálogo (el checkout se niega:
+// sin saber si está publicado no se vende). Un producto que el índice no conoce NO aparece
+// en el resultado, así que se trata como no disponible.
+// Devuelve Map(productoId → { estado, vendedor_id, descripcion, imagen_url }).
+async function estadoPublicacion(productoIds) {
+  try {
+    await conectar();
+    const docs = await Producto.find({ producto_id: { $in: productoIds } }).select('producto_id estado vendedor_id descripcion imagenes').lean();
+    return new Map(docs.map((doc) => {
+      const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
+      return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, descripcion: doc.descripcion, imagen_url: principal?.url || '' }];
+    }));
+  } catch (err) {
+    if (componenteCaido(err) !== 'mongo') throw err;
+    try {
+      // Carga diferida: este servicio no depende del buscador salvo en este respaldo.
+      return await require('./busquedaService').publicacionDelIndice(productoIds);
+    } catch {
+      throw err;
+    }
+  }
+}
+
 // Edición: cualquier campo que cambie (descriptivo O precio/cantidad) genera
 // un evento — el historial reconstruye el producto completo, y precio/stock
 // son parte de "el producto" tanto como la descripción (ver conversación de
@@ -487,6 +518,7 @@ module.exports = {
   verificarPermiso,
   verificarNoEsPropio,
   verificarVendedoresActivos,
+  estadoPublicacion,
   vendedorOculto,
   vendedoresOcultos,
 };

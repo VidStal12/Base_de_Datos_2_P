@@ -1,19 +1,31 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { Client } = require('cassandra-driver');
+const { ServicioNoDisponible, crearCircuito } = require('../utils/resiliencia');
 
 let conexion;
+
+// Cassandra solo alimenta el panel de ventas (las ventas viajan por el outbox de MySQL,
+// ver ventasSyncService.js): apagada, el checkout no se entera. Aun así, que el panel
+// y el worker lo descubran rápido: tras la primera falla de conexión, las demás llamadas
+// fallan al instante durante unos segundos en vez de esperar cada una su connectTimeout.
+const circuito = crearCircuito('cassandra', { aperturaMs: 5000 });
 
 // La promesa compartida evita abrir varias conexiones si el panel y el worker
 // consultan al mismo tiempo. Se elimina al fallar para permitir otro intento.
 async function obtenerCliente() {
   if (!conexion) {
-    conexion = conectar().catch((error) => {
+    conexion = circuito.ejecutar(() => conectar()).catch((error) => {
       conexion = undefined;
       throw error;
     });
+    return conexion;
   }
-  return conexion;
+  const cliente = await conexion;
+  // El driver ya sabe que el nodo cayó (reconecta solo, con espera creciente): se
+  // responde de inmediato en vez de dejar que cada consulta espere su readTimeout.
+  if (cliente.getState().getConnectedHosts().length === 0) throw new ServicioNoDisponible('cassandra');
+  return cliente;
 }
 
 async function conectar() {
@@ -33,7 +45,7 @@ async function conectar() {
       .split(',').map((punto) => punto.trim()).filter(Boolean),
     localDataCenter,
     protocolOptions: { port },
-    socketOptions: { connectTimeout: 5000, readTimeout: 10000 },
+    socketOptions: { connectTimeout: 2000, readTimeout: 5000 },
     queryOptions: { prepare: true },
   };
   if (!opciones.contactPoints.length) {
@@ -79,4 +91,4 @@ async function cerrar() {
   }
 }
 
-module.exports = { obtenerCliente, cerrar };
+module.exports = { obtenerCliente, cerrar, circuito };

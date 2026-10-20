@@ -2,6 +2,8 @@
 
 > **Actualización 2026-10-17:** el checkout HTTP normal y flash ahora exige un intento durable e idempotente. El pedido y el resultado del intento se confirman juntos en MySQL. La reserva/devolución flash tiene identificador, Lua idempotente y recuperación de compensaciones pendientes; esto reemplaza la compensación flash de un solo intento descrita en el punto 5 y en las pruebas históricas de este documento. La compra por recomendaciones conserva su mecanismo anterior. Ver [CHECKOUT-IDEMPOTENCIA.md](CHECKOUT-IDEMPOTENCIA.md) para el flujo vigente, resumen del escenario de duplicación y evidencia de integración real.
 
+> **Actualización 2026-10-20:** el requerimiento se pensó para comprobarse **en vivo**: con la aplicación corriendo se apaga en Docker el contenedor de una o de varias bases, y la aplicación tiene que seguir siendo utilizable, solo que sin los datos de esa base. Medido con los contenedores realmente detenidos, **no lo cumplía** (con Redis apagado hasta el catálogo público tardaba ~108 s por petición y el carrito y el checkout no respondían; con Neo4j una compra tardaba 31 s; con MySQL el login devolvía `401` con el texto crudo de Prisma y la interfaz cerraba la sesión). **Ya lo cumple**: la nueva §7 tiene la medición antes/después de las seis bases, solas y combinadas, el diseño, los riesgos aceptados y cómo probarlo en vivo. Con eso se resuelve el tercer punto de §4 (Redis no falla rápido) y se corrigen dos filas de §5.4 (Mongo).
+
 > Creado: 2026-09-08/09; §5 rehecho el 2026-10-06 con `backend/scripts/demo_consistencia_compra.js --falla=…` (seis escenarios con aserciones, ver §5). Responde al requerimiento del PRD, Entrega 3: identificar cada componente involucrado en el checkout, mapear puntos de falla posibles, documentar el mecanismo de mitigación de cada uno, y probar al menos una falla simulada con evidencia real. No inventa arquitectura nueva — el sistema ya tenía varios mecanismos de consistencia distintos, construidos en momentos distintos por razones distintas; este documento es la primera vez que se juntan, se comparan, y se prueban de verdad contra una base caída, no contra un doble/mock.
 
 ---
@@ -54,20 +56,21 @@ El PRD pide **mapear** puntos de falla, no que todos estén resueltos. Uno real,
 
 **Un segundo punto, más probable que el anterior, encontrado el 2026-10-06 al inyectar un fallo en `ProductoEvento.create`** (el paso que sigue a `Producto.create` dentro de `crear()`): la compensación borra la fila de MySQL pero **no** el documento de Mongo que ya se había creado. Verificado contra las bases reales: el documento queda con `estado: activo`, aparece en el catálogo público (`GET /api/productos`) y `GET /api/productos/:id` responde 200, sin fila de `producto` ni de `inventario` en MySQL — un producto fantasma que se ve y no se puede comprar. Basta **un** fallo (no dos encadenados). Ningún `recalcular-*` lo repara: `recalcular-inventario` lo informa en `productos_omitidos` (no tiene inventario en MySQL) pero no lo borra ni lo desactiva. Arreglo propuesto, **no aplicado**: que la compensación deshaga también el documento y el evento de Mongo (en orden inverso a la creación), y un barrido que detecte documentos sin fila en MySQL.
 
-**Un tercer punto, medido el 2026-10-06: un Redis realmente caído no falla rápido.** Los `await` a Redis del camino de una petición —la invalidación del carrito tras el commit de `checkout()`, y las consultas de suspensión y de tope de pedidos que `requireAuth`/`controlPedidos` hacen antes de empezar— dependen de que ioredis se rinda. Con sus opciones por defecto (`maxRetriesPerRequest: 20` y cola offline activa; `config/redis.js` no las cambia), un comando contra un Redis que rechaza conexiones tardó **73 s en rechazarse en esta máquina Windows** (medido con un cliente contra un puerto cerrado; unos 11 s son lo esperable donde `ECONNREFUSED` es inmediato). Mientras tanto la petición espera: en el checkout el commit ya ocurrió, pero la respuesta y los reenvíos a Mongo y a Neo4j quedan detrás de esa espera (ensanchan la ventana de §5, escenario 1b), y las comprobaciones «falla abierto» (suspensión, topes) solo abren después de ella. Es un problema de latencia y de ventana más que de datos —nada se pierde—, pero la simulación `--falla=redis` lo oculta porque rechaza al instante. Arreglo propuesto, **no aplicado**: opciones de ioredis con un `commandTimeout` corto (p. ej. 1,5 s) o `maxRetriesPerRequest: 1`, y lanzar la invalidación del carrito y el reenvío a Mongo en paralelo en vez de en serie.
+**Un tercer punto, medido el 2026-10-06: un Redis realmente caído no falla rápido.** Los `await` a Redis del camino de una petición —la invalidación del carrito tras el commit de `checkout()`, y las consultas de suspensión y de tope de pedidos que `requireAuth`/`controlPedidos` hacen antes de empezar— dependen de que ioredis se rinda. Con sus opciones por defecto (`maxRetriesPerRequest: 20` y cola offline activa; `config/redis.js` no las cambia), un comando contra un Redis que rechaza conexiones tardó **73 s en rechazarse en esta máquina Windows** (medido con un cliente contra un puerto cerrado; unos 11 s son lo esperable donde `ECONNREFUSED` es inmediato). Mientras tanto la petición espera: en el checkout el commit ya ocurrió, pero la respuesta y los reenvíos a Mongo y a Neo4j quedan detrás de esa espera (ensanchan la ventana de §5, escenario 1b), y las comprobaciones «falla abierto» (suspensión, topes) solo abren después de ella. Es un problema de latencia y de ventana más que de datos —nada se pierde—, pero la simulación `--falla=redis` lo oculta porque rechaza al instante. Arreglo propuesto, **no aplicado**: opciones de ioredis con un `commandTimeout` corto (p. ej. 1,5 s) o `maxRetriesPerRequest: 1`, y lanzar la invalidación del carrito y el reenvío a Mongo en paralelo en vez de en serie. **Resuelto el 2026-10-20 (§7):** `config/redis.js` usa ahora `commandTimeout: 1500`, `maxRetriesPerRequest: 1` y rechaza al instante mientras la conexión está caída; con el contenedor de Redis detenido, el login, el carrito y el checkout responden en 0,1-1,1 s (antes 73 s o sin respuesta en 200 s).
 
 ## 5. Prueba de falla simulada — evidencia real sobre las bases reales
 
-El PRD pide, como mínimo, **una falla simulada sobre el checkout y el comportamiento resultante del sistema**, identificando cada componente, sus puntos de falla y la mitigación adoptada (reintentos idempotentes, un patrón de compensación, o la aceptación documentada de una ventana de consistencia eventual). Hay **dos generaciones de evidencia** y conviene no confundirlas:
+El PRD pide, como mínimo, **una falla simulada sobre el checkout y el comportamiento resultante del sistema**, identificando cada componente, sus puntos de falla y la mitigación adoptada (reintentos idempotentes, un patrón de compensación, o la aceptación documentada de una ventana de consistencia eventual). Hay **tres generaciones de evidencia** y conviene no confundirlas (la C, en §7, es la que más se parece a lo que pide el requerimiento: apagar contenedores con la aplicación en marcha):
 
 | | Cuándo | Cómo se provoca la falla | Qué cubre |
 |---|---|---|---|
 | **A. Contenedor detenido** | 2026-09-08/09 | `docker compose stop mongo` / `stop cassandra` + `scripts/intentarCheckoutReal.js` | Mongo y Cassandra caídos (capturas históricas, §5.5) |
 | **B. Falla inyectada** | 2026-10-06 | `node scripts/demo_consistencia_compra.js --falla=<escenario>` | Seis escenarios con aserciones (§5.3), contra las bases reales |
+| **C. Aplicación completa con contenedores detenidos, en vivo** | 2026-10-19/20 | `docker stop tiendaya-<base>` (una o varias) con el backend corriendo + sondas HTTP concurrentes, una compra completa y la interfaz | Las seis bases, solas y combinadas, con la aplicación entera (§7) |
 
 **Por qué hay una B.** Después de A, el checkout cambió: desde el 2026-10-03 `checkout()` lee Mongo **antes** de abrir la transacción (para comprobar que el producto esté activo), de modo que con Mongo detenido lanza —tras el *timeout* del driver— y la compra no se confirma (el control de flujo está comprobado en el escenario 1a). El «Escenario 1» de A (compra confirmada con Mongo caído) **ya no se reproduce tal cual**; lo que sigue siendo cierto de él —un reenvío post-commit que falla deja a Mongo desfasado— solo ocurre ahora si Mongo cae en la ventana entre esa lectura y el reenvío, y eso no se puede provocar deteniendo el contenedor. Por eso el escenario se divide en 1a y 1b y se prueba inyectando la falla en la llamada exacta.
 
-**Qué es real y qué es simulado en B.** Las cinco bases están arriba y se leen de verdad antes y después (stock y pedidos de MySQL, el documento de Mongo, la clave del carrito en Redis, las filas de Cassandra, las aristas de Neo4j, la fila del outbox). Lo simulado es **el fallo**: la llamada que fallaría (`Producto.find`, `Producto.updateOne`, `cassandra.obtenerCliente`, `redis.invalidarCarrito`, `fraudeSyncService.registrarCompra`) se reemplaza solo en el proceso del script y solo mientras dura esa llamada por una que rechaza con el error de la base caída (`ECONNREFUSED`). No hay dobles de la base ni se detiene ningún contenedor (eso interrumpiría el backend que esté corriendo). Con el contenedor realmente detenido el resultado esperado es el mismo —para Mongo, tras el *timeout* de selección de servidor del driver—, pero eso **no** se re-ejecutó para los escenarios nuevos.
+**Qué es real y qué es simulado en B.** Las cinco bases están arriba y se leen de verdad antes y después (stock y pedidos de MySQL, el documento de Mongo, la clave del carrito en Redis, las filas de Cassandra, las aristas de Neo4j, la fila del outbox). Lo simulado es **el fallo**: la llamada que fallaría (`Producto.find`, `Producto.updateOne`, `cassandra.obtenerCliente`, `redis.invalidarCarrito`, `fraudeSyncService.registrarCompra`) se reemplaza solo en el proceso del script y solo mientras dura esa llamada por una que rechaza con el error de la base caída (`ECONNREFUSED`). No hay dobles de la base ni se detiene ningún contenedor (eso interrumpiría el backend que esté corriendo). Con el contenedor realmente detenido el resultado esperado es el mismo —para Mongo, tras el *timeout* de selección de servidor del driver—, y eso se hizo después, con la aplicación entera y los contenedores realmente detenidos: ver §7.
 
 ### 5.1 Cómo correrlo
 
@@ -171,15 +174,15 @@ El descuento del primer ítem **se revirtió** con el resto (`ROLLBACK`): pedido
 | Componente | Punto de falla | Observado (medido en las bases reales) | Mitigación adoptada | Categoría del PRD |
 |---|---|---|---|---|
 | MySQL | a mitad de la transacción | pedido rechazado; stock 10→10, 0 pedidos nuevos, ninguna otra base tocada | `ROLLBACK` atómico | (base de todo lo demás: nada que compensar) |
-| MongoDB | antes del commit (pre-chequeo de estado) | `checkout()` lanza; MySQL, Mongo, Cassandra y Neo4j sin cambio | falla cerrada, se reintenta la compra | sin inconsistencia posible |
-| MongoDB | después del commit (`$inc` de la copia) | compra confirmada; Mongo stock 10 vs MySQL 9, no se autorepara; reparado con `recalcular-*` | ventana eventual aceptada y documentada + reparación idempotente a demanda | aceptación documentada de una ventana eventual |
+| MongoDB | antes del commit (pre-chequeo de estado) | simulado: `checkout()` lanza; MySQL, Mongo, Cassandra y Neo4j sin cambio. Con el contenedor detenido (§7) el estado de publicación se lee del índice de búsqueda y la compra se confirma (`201`, 1,1 s) | respaldo en el índice de búsqueda; si tampoco responde, falla cerrada y se reintenta la compra | sin inconsistencia posible |
+| MongoDB | después del commit (`$inc` de la copia) | compra confirmada; Mongo stock 10 vs MySQL 9 hasta que Mongo responde. Desde 2026-10-20 se repara solo (≤ 15 s tras volver, §7.4); antes había que correr `recalcular-*` | ventana eventual + reparación idempotente automática (los productos afectados se anotan y se recalculan desde MySQL) y a demanda (`recalcular-*`) | aceptación documentada de una ventana eventual |
 | Redis | invalidación del carrito | compra confirmada; carrito SQL vacío; la copia de Redis queda hasta su TTL (≤ 450 s) o hasta `revisar()` | ventana eventual acotada por TTL | aceptación documentada de una ventana eventual |
 | Neo4j | reenvío de la compra al grafo | compra confirmada; el grafo queda sin ella (0) hasta reenviarla desde MySQL (1, idempotente) | mejor esfuerzo + reenvío idempotente (`MERGE` por `detalle_id`) | reintento idempotente (manual) |
 | Cassandra | escritura de las proyecciones de venta | la venta espera en el outbox con `intentos`, *backoff* y error; al volver se escribe sola (1 fila); reenviarla no la duplica | outbox durable + reintentos con inserciones idempotentes | reintentos idempotentes |
 
 ### 5.5 Evidencia histórica A (2026-09-09, contenedor realmente detenido)
 
-Se conserva porque es la única corrida con un contenedor de verdad detenido. Se hizo con el código de entonces, que aún **no** consultaba Mongo antes de la transacción: por eso el checkout confirmó con Mongo caído.
+Se conserva como antecedente; la corrida completa, con las seis bases y la aplicación entera, es la de §7. Se hizo con el código de entonces, que aún **no** consultaba Mongo antes de la transacción: por eso el checkout confirmó con Mongo caído.
 
 *Mongo detenido* (`docker compose stop mongo` + `node scripts/intentarCheckoutReal.js`):
 
@@ -201,8 +204,120 @@ Con Mongo todavía caído, `GET /api/productos/1` seguía devolviendo `inventari
 - **Una caída del proceso entre el commit y los reenvíos.** No se simula; equivale a que los tres reenvíos post-commit (Redis, Mongo, Neo4j) fallen a la vez, y cada uno queda en la ventana descrita arriba. Cassandra no se ve afectada: la fila del outbox ya está confirmada con el pedido.
 - **Los dos puntos de §4** (la compensación de `productoService.crear()` que también falla, y el documento de Mongo que esa compensación nunca borra): siguen sin mitigación; el segundo se verificó con un fallo inyectado puntual que no forma parte de la demo, porque `crear()` no es el flujo de checkout.
 - **Concurrencia:** dos compras simultáneas del mismo producto con un reenvío fallido. Cada `$inc` perdido deja la copia más atrás, y la misma reparación (que recalcula desde MySQL, no incrementa) lo corrige; no se probó.
-- **Contenedores realmente detenidos** en los escenarios nuevos (ver arriba). En particular, la **latencia** de un Redis caído de verdad (§4, tercer punto): la simulación solo muestra el estado final, no cuánto tarda la petición en llegar a él.
+- **Contenedores realmente detenidos:** cubierto en §7 (las seis bases, solas y combinadas, con la aplicación entera). Incluye la **latencia** de un Redis caído de verdad (§4, tercer punto), que la simulación no mostraba porque rechaza al instante.
 
 ## 6. Qué queda para el informe final de Entrega 3
 
 Este documento cubre el requerimiento de consistencia. El buscador (el otro requerimiento técnico de la misma entrega) quedó implementado y verificado el 2026-09-22 con Elasticsearch — tolerancia ortográfica, facetas por agregación real y autocompletado — y vive en [PLAN-ELASTICSEARCH-BUSQUEDA.md](PLAN-ELASTICSEARCH-BUSQUEDA.md), no acá a propósito: son dos requerimientos distintos. Su sincronización sigue el mismo criterio de §3 (la fuerza de la garantía depende del costo de que el dato quede desactualizado): de mejor esfuerzo, sin outbox, recuperable con `busqueda:backfill`. La evaluación opcional del PRD —mover los pagos a un almacén NoSQL— reutiliza el análisis de fallas de este documento con Mongo como autoridad del pago (misma compensación bajo el bloqueo del usuario, mismo barrido); su ensayo, sus diez escenarios de falla y la decisión están en [ADR-005](ADR-005-evaluacion-nosql-pagos.md). Lo que sigue pendiente de Entrega 3 es el informe.
+
+## 7. Degradación elegante: la aplicación con una o varias bases apagadas (prueba en vivo, 2026-10-19/20)
+
+**El requerimiento se pensó para comprobarse en vivo:** con la aplicación corriendo se apaga en Docker el contenedor de una base —o de varias— y la aplicación tiene que seguir siendo utilizable, solo que **sin los datos de esa base**. §5 probaba las fallas *dentro* del proceso (B) o solo el checkout con un contenedor detenido (A); esta sección apaga los contenedores de verdad (`docker stop tiendaya-<base>`) y mide la aplicación **entera** —catálogo, búsqueda, sesión, carrito, una **compra completa**, paneles de administrador y edición de vendedor— por HTTP contra el backend corriendo y en la interfaz.
+
+**Método.** Con el backend de desarrollo en marcha y todas las bases arriba se arma una compra (cuenta sintética, un producto con su carrito); se detiene el contenedor y se lanzan **en paralelo** las sondas HTTP (con un tope de 60-200 s para ver también los bloqueos largos) más la compra completa — ver el carrito, preparar el intento, confirmar —; se repite una segunda pasada, se vuelve a encender el contenedor **sin reiniciar el backend** y se comprueba que todo responde y que los datos quedaron coherentes. Los tiempos son de la *primera pasada* (la que paga el descubrimiento de la caída), en segundos, en esta máquina (Windows + Docker Desktop).
+
+### 7.1 Qué se encontró: la aplicación NO lo cumplía
+
+| Base apagada | Prueba | Antes (código del 2026-10-17) | Ahora |
+|---|---|---|---|
+| **Redis** | Login | 72,6 s | 0,2 s |
+| | Ver carrito / agregar al carrito | **sin respuesta en 200 s** | 0,1 s / 0,6 s |
+| | Confirmar el pedido | **sin respuesta en 200 s** (el preparar tardó 87,6 s) | 1,1 s, `201` |
+| | Catálogo público (segunda pasada) | 107,7 s | 0,1 s |
+| | Recomendaciones | `500` tras 180 s | 0,1 s |
+| **Neo4j** | Confirmar el pedido | 31,6 s | 1,0 s |
+| | Editar un producto (vendedor) | 31,2 s | 1,1 s |
+| | Panel de fraude | 57 s y `200` con listas **vacías** | `503` en 1,3 s, con mensaje |
+| **Elasticsearch** | Búsqueda / autocompletado | `503` tras 7,8 s / 7,2 s | 0,2 s / 0,1 s (búsqueda básica, §7.2) |
+| | Editar un producto | 7,9 s | 0,9 s |
+| **MongoDB** | Catálogo / categorías | `500` tras 30 s | 0,1 s (desde el índice de búsqueda) |
+| | Detalle de un producto | `404` tras 30 s («no encontramos este producto») | 0,0 s |
+| | Agregar al carrito | `400` tras 30 s | 0,5 s |
+| | Confirmar el pedido | `503` tras 30 s | 1,1 s, `201` |
+| | Editar un producto | `400` tras 30 s | `503` en 0,1 s, con mensaje |
+| **MySQL** | Login | `401` tras 10 s, **con la ruta del archivo de Prisma en el cuerpo** | `503` en 2,5 s, con mensaje |
+| | Perfil (`/auth/me`) | `404` tras 10 s — y la interfaz **cerraba la sesión** | `503` en 2,5 s; la sesión se conserva |
+| | Mis pedidos / agregar al carrito | `500` / `400` tras 10 s | `503` en 2,5 s |
+| **Cassandra** | Panel de ventas | `503` inmediato (ya estaba bien) | igual |
+
+**La causa de fondo no era qué hacía el código al fallar** —casi todo ya fallaba «abierto» o con un `503` explicado (§3, §4)— **sino cuánto tardaba en enterarse.** ioredis esperaba ~73 s por comando, y como **toda** petición autenticada consulta Redis para saber si la cuenta está suspendida, un Redis apagado dejaba a todo el sitio, catálogo público incluido, a ~108 s por petición (§4, tercer punto, ya lo anticipaba y proponía este arreglo); el driver de Mongo esperaba 30 s para seleccionar servidor; el de Neo4j hasta 30 s por consulta (y el checkout espera el reenvío al grafo antes de responder); el pool de MySQL, 10 s. Aparecieron además defectos de otra clase:
+
+- **Un fallo se reportaba como otra cosa.** MySQL apagado: `401` en el login (con el mensaje crudo del driver, incluida la ruta del archivo), `404` en `/auth/me` y `400` al agregar al carrito; la interfaz tomaba cualquier error al leer el perfil como «sesión inválida» y **cerraba la sesión de todo el mundo**. Mongo apagado: el detalle de un producto decía «no encontramos este producto».
+- **Un fallo de arranque se quedaba para siempre.** Si la primera conexión a Mongo o a Elasticsearch fallaba (el backend arrancó con esa base apagada), el error o el cliente a medio preparar quedaba guardado: la base volvía y la aplicación seguía rota hasta reiniciarla.
+- **Un defecto preexistente que la prueba en la interfaz dejó a la vista:** al completar una compra con Mongo apagado, la pantalla del pedido mostraba la línea «× 1» **sin nombre de producto** — y lo hacía también con todo arriba, porque desde ADR-002 MySQL guarda de cada línea solo el producto como ancla y la pantalla seguía leyendo la descripción de ahí. Ahora el nombre y la imagen salen del catálogo (o de su copia en el índice) y, si ninguno responde, la línea se identifica por su número (`compraService.js`).
+- **El panel de fraude mentía.** Con Neo4j apagado respondía `200` con listas vacías —«no hay nada sospechoso»— cuando en realidad nadie había mirado.
+
+### 7.2 Qué hace la aplicación sin cada base
+
+| Base apagada | Qué se pierde | Qué sigue funcionando | Con qué mecanismo |
+|---|---|---|---|
+| **Redis** | Ofertas flash y compras con cupo personal (se ocultan; comprarlas da `503` con mensaje). Los topes de pedidos y los bloqueos de cuentas «fallan abiertos» (ya diseñado, §3) | Todo lo demás: catálogo, búsqueda, login, carrito (se arma desde MySQL), **checkout**, recomendaciones (sin caché) | Cliente con tiempos acotados y rechazo inmediato; sus consumidores ya eran de mejor esfuerzo |
+| **Elasticsearch** | Tolerancia a errores de tipeo, relevancia y autocompletado inteligente | Búsqueda y autocompletado **básicos sobre Mongo** (texto literal, facetas calculadas en el servidor; la interfaz avisa «búsqueda básica»); editar productos no se detiene | `catalogoLecturaService`: Mongo es el respaldo del índice |
+| **Neo4j** | Panel de fraude (`503`); el barrido que suspende cuentas queda ciego | Compras, ventas, ediciones: el reenvío al grafo se omite al instante | Cortacircuitos; la compra no espera |
+| **Cassandra** | Panel de ventas (`503`) | Todo, **incluido el checkout**: las ventas esperan en el outbox y se escriben solas al volver | Outbox durable (§3) |
+| **MongoDB** | Reseñas, ofertas flash, historial y la edición de productos y categorías (`503` con mensaje) | Catálogo, detalle y categorías **desde el índice de búsqueda**; carrito y **checkout** (el estado de publicación de cada producto se lee del índice); la copia de stock que quedó atrás **se repara sola** al volver (≤ 15 s) | `catalogoLecturaService`, `productoService.estadoPublicacion`, `reconciliacionMongoService`: el índice es el respaldo de Mongo |
+| **MySQL** | Cuentas, carrito, pedidos: sin login, ni compra, ni edición (`503` con mensaje) | Catálogo, detalle, búsqueda, categorías, recomendaciones; **las sesiones abiertas siguen** (el perfil mínimo se arma del token y se reintenta cada 10 s) | `503` explicado; la interfaz no cierra la sesión |
+| **Mongo y Elasticsearch a la vez** | No hay catálogo ni su copia: ni qué mostrar ni qué vender | Login y el resto de lo que no necesita productos | `503`: sin saber si está publicado, no se vende |
+
+**Una combinación de verdad.** Con **Redis, Elasticsearch, Neo4j y Cassandra apagados a la vez** (solo MySQL y Mongo arriba) todo el flujo del comprador funciona: catálogo, búsqueda básica, login, carrito, **compra completa en 1,1 s** (`201`) y edición de un producto; solo los paneles de ventas y de fraude responden `503`. Con **MySQL y Redis apagados** el catálogo y la búsqueda siguen; login, carrito y pedidos dicen que no están disponibles. Con **las seis apagadas** el backend arranca igual (en ~2 s), `/api/health` responde `200`, `/api/health/componentes` dice `critico` y cada pantalla responde un `503` claro en milisegundos; al encender las seis **sin reiniciar el backend** todo vuelve solo en ~24 s (el tiempo que tardan los contenedores). Una caída de tres minutos con las seis apagadas y todos los procesos de fondo corriendo (outbox, barrido de fraude, recuperación de intentos) no tumbó el proceso, y la venta hecha mientras Cassandra estaba apagada llegó sola a su tabla.
+
+### 7.3 Resultado medido, base por base (primera pasada, con una compra real)
+
+Cada celda: `ok` = respuesta correcta; `503` = no disponible con mensaje; tiempo en segundos.
+
+| Prueba | ES | Neo4j | Cassandra | Redis | Mongo | MySQL | Redis+ES+Neo4j+Cass. | MySQL+Redis | Mongo+ES |
+|---|---|---|---|---|---|---|---|---|---|
+| Catálogo | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | 503 0,0 |
+| Detalle de un producto | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,0 | ok 0,1 | ok 0,0 | ok 0,1 | 503 0,0 |
+| Búsqueda / autocompletado | ok 0,2 / 0,1 | ok 0,3 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,1 | ok 0,3 / 0,2 | 503 0,0 |
+| Login | ok 0,2 | ok 0,2 | ok 0,2 | ok 0,2 | ok 0,2 | 503 2,5 | ok 0,2 | 503 2,5 | ok 0,2 |
+| Ver carrito / agregar | ok 0,1 / 0,6 | ok 0,0 / 0,5 | ok 0,0 / 0,5 | ok 0,1 / 0,6 | ok 0,0 / 0,5 | ok 0,0 / 503 2,5 | ok 0,1 / 0,5 | 503 2,5 | ok 0,0 / 503 0,1 |
+| **Confirmar el pedido** | **ok 1,5** | **ok 1,0** | **ok 1,4** | **ok 1,1** | **ok 1,1** | 503 | **ok 1,1** | 503 | 503 0,0 |
+| Panel de ventas | ok 0,4 | ok 0,2 | **503 0,0** | ok 0,2 | ok 0,2 | ok 2,6 | 503 0,0 | ok 2,6 | ok 0,2 |
+| Panel de fraude | ok 0,3 | **503 1,3** | ok 0,3 | ok 0,3 | ok 0,2 | ok (parcial) 5,1 | 503 1,1 | ok (parcial) 8,8 | ok 0,2 |
+| Editar un producto (vendedor) | ok 0,9 | ok 1,1 | ok 0,8 | ok 0,2 | **503 0,1** | 503 2,5 | ok 1,3 | 503 2,5 | 503 0,1 |
+
+(«Parcial»: el panel responde con lo que sí pudo leer y avisa lo que no; con MySQL apagado no puede enriquecer las fichas.) En la segunda pasada todo lo que responde lo hace en menos de 0,3 s: el cortacircuitos ya sabe que la base está caída y no la vuelve a esperar.
+
+### 7.4 Cómo se logra
+
+1. **Fallar rápido** — cada cliente con tiempos acotados (el cambio de mayor efecto) y un cortacircuitos mínimo (`utils/resiliencia.js`): la primera falla de *conexión* lo abre y, durante 5 s, las llamadas siguientes fallan al instante en vez de esperar cada una su timeout; pasado ese tiempo se deja pasar una prueba. Solo las fallas de conexión lo abren — un error de la consulta, no.
+
+   | Cliente | Antes | Ahora |
+   |---|---|---|
+   | ioredis (`config/redis.js`) | sin tope por comando, 20 reintentos (~73 s) | 1,5 s por comando, 1 reintento, y rechazo **inmediato** mientras la conexión está caída |
+   | Mongoose (`config/mongo.js`) | 30 s de selección de servidor, 10 s de cola | 2 s; con la conexión perdida falla al instante; el primer fallo de conexión no se guarda |
+   | Prisma + MariaDB (`config/prisma.js`) | 10 s de espera de pool | 2,5 s |
+   | neo4j-driver (`config/neo4j.js`) | hasta 30 s por consulta | 1,5 s de conexión y 0,5 s de reintento; cortacircuitos |
+   | cassandra-driver (`config/cassandra.js`) | 5 s de conexión, 10 s de lectura | 2 s y 5 s; falla al instante si el nodo ya está marcado caído; cortacircuitos |
+   | Elasticsearch (`config/elasticsearch.js`) | 30 s y 3 reintentos | 2 s y ninguno; cortacircuitos; la preparación del índice ya no se queda a medias |
+
+2. **Decir qué falta, con el estado correcto** (`utils/http.js`): una base apagada responde **`503`** con `codigo: SERVICIO_NO_DISPONIBLE` y el componente — nunca `401`, `404` ni `500` — y **sin** rutas de archivo ni nombres internos del driver (`componenteCaido()` reconoce el error de cada driver; la tabla de formas está en `tests/resilienciaNucleo.test.js`). Un manejador global (`app.js`) cubre las rutas que dejaban escapar el error.
+3. **Cada base es el respaldo de otra** (`catalogoLecturaService.js`, `productoService.estadoPublicacion`): Elasticsearch guarda una copia de lo que el catálogo muestra y Mongo es la fuente de esa copia. Mongo apagado → el catálogo, el detalle, las categorías y —lo importante— **el estado de publicación que exigen el carrito y el checkout** salen del índice. Elasticsearch apagado → la búsqueda cae a Mongo. Solo se cae al respaldo cuando falló el esperado (un error de validación o un bug no se esconde) y, si los dos están apagados, se informa la caída del origen.
+4. **Lo que quedó atrás se repara solo** (`reconciliacionMongoService.js`): los productos cuya copia de Mongo no se pudo actualizar tras confirmar un pedido se anotan y, en cuanto Mongo responde, se recalculan **desde MySQL** (idempotente: el mismo resultado se ejecute una o cinco veces) — solo esos productos, nunca el catálogo entero.
+5. **Que se vea** (`/api/health/componentes` y la franja amarilla del frontend): un ping barato por el mismo camino que usa el código real, con tope propio de 1,5 s y vigencia de 2 s, devuelve `completo`, `degradado` o `critico` y el detalle de cada base. La interfaz lo consulta cada 10 s y le dice a la persona qué cambia («la búsqueda es básica», «hoy no hay ofertas flash»).
+6. **La sesión no depende de MySQL para seguir** (`AuthContext.jsx`): solo `401`/`403`/`404` cierran la sesión; con un `503` o sin red se arma un perfil mínimo del token (id y rol, que decide qué secciones ve) y se reintenta cada 10 s.
+7. **El pedido se muestra completo sin el catálogo** (`compraService.js`): el pedido es de MySQL; los nombres de producto se piden al catálogo y, si no responde, la línea se identifica por su número.
+8. **Los procesos de fondo no tumban el servidor** (`server.js`): una promesa rechazada sin manejar —un reenvío «de mejor esfuerzo», un temporizador— se registra y el servidor sigue; los barridos escriben **una** línea cada 15 s por base caída en vez del bloque completo del driver en cada vuelta.
+
+### 7.5 Cómo probarlo en vivo
+
+```bash
+docker stop tiendaya-redis                                    # una base
+docker stop tiendaya-redis tiendaya-elasticsearch tiendaya-neo4j tiendaya-cassandra   # varias
+curl http://localhost:3000/api/health/componentes             # qué responde ahora
+docker start tiendaya-redis                                   # vuelve sola: no hace falta reiniciar el backend
+```
+
+Los seis contenedores son `tiendaya-mysql`, `tiendaya-mongo`, `tiendaya-redis`, `tiendaya-cassandra`, `tiendaya-neo4j` y `tiendaya-elasticsearch` (nunca `postgres_ezpass` ni `redis_ezpass`, que son de otro proyecto). En la interfaz aparece una franja amarilla («Algunos servicios no están disponibles en este momento») con lo que cambia, que se actualiza sola cada 10 s. La lógica (la decisión de a quién preguntar, el cortacircuitos, las políticas de cada cliente, la reconciliación, el carrito degradado) está cubierta por `npm run test:resiliencia` (49 pruebas) y por las suites existentes, que siguen pasando.
+
+### 7.6 Riesgos aceptados y límites (a propósito, documentados)
+
+- **Comprar con Mongo apagado usa el índice para saber si el producto está publicado.** Un producto que el vendedor pausó mientras el índice *también* estaba apagado figuraría como activo hasta que Mongo vuelva; uno que el índice no conoce se trata como no disponible. Si ninguno de los dos responde, no se vende (falla cerrada, como en §5.3, escenario 1a).
+- **Con Redis apagado no se aplican los topes de pedidos por hora ni los bloqueos de cuentas** (ya eran «falla abierta» por diseño: `suspensionService.js`, `limitePedidosService.js`): una cuenta suspendida podría actuar durante la caída. Al volver Redis, el barrido de bloqueos reconstruye los candados desde MySQL (`bloqueoService.reconciliar()`, cada 60 s).
+- **Una compra flash intentada mientras Redis estaba apagado queda como intento fallido** (`503` con el mensaje de qué falta, ver [CHECKOUT-IDEMPOTENCIA.md](CHECKOUT-IDEMPOTENCIA.md)): al volver Redis hay que iniciar una compra nueva — la pantalla ofrece «Preparar una nueva compra» —, y entonces se confirma (verificado: `201` con un intento renovado; con Redis apagado, la compra normal del mismo producto siguió confirmándose).
+- **Neo4j y Elasticsearch no se ponen al día solos:** lo ocurrido durante su caída (compras y productos hacia el grafo; ediciones hacia el índice) se recupera con `npm run fraude:backfill` y `npm run busqueda:backfill`, ambos idempotentes. Mientras tanto el índice puede mostrar un precio o stock desactualizado en la búsqueda (el detalle y el carrito leen siempre la fuente).
+- **La reconciliación de Mongo vive en memoria:** si el backend se reinicia durante la caída se pierde la lista, y queda `POST /api/admin/recalcular-inventario` y `-ventas` (§5.4).
+- **La primera petición tras la caída paga el descubrimiento** (hasta ~2,5 s con MySQL, ~1,3 s en el panel de fraude); después, el cortacircuitos la vuelve inmediata.
+- **La aplicación vuelve a usar una base unos segundos después de que su contenedor está sano** (de inmediato a ~25 s; el peor caso observado fue Cassandra, cuyo driver reconecta con espera creciente y a la que además se le da una ventana de 5 s del cortacircuitos). Nada hay que reiniciar.
+- **Los tiempos son de esta máquina** (Windows + Docker Desktop, donde un puerto publicado de un contenedor detenido rechaza conexiones al instante); donde las conexiones se cuelgan en vez de rechazarse, el tope de cada cliente es lo que acota la espera.

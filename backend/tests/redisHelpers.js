@@ -90,8 +90,9 @@ function redisFalso() {
 // de producto que pertenecen a quien compra (la regla "nadie compra lo que él
 // mismo vende"). Rechaza igual que el real: 403, antes de cualquier otra cosa.
 // `suspendidos` son los vendedores suspendidos (sus productos no se muestran ni se
-// pueden comprar): por omisión nadie.
-function productoFalso({ propios = [], suspendidos = [], ...resto } = {}) {
+// pueden comprar): por omisión nadie. `catalogo` es el doble del modelo de Mongo
+// (find().select().lean()): estadoPublicacion() lo consulta igual que el real.
+function productoFalso({ propios = [], suspendidos = [], catalogo, ...resto } = {}) {
   const ids = new Set(propios);
   // Un Set compartido por referencia deja suspender y levantar a un vendedor a mitad de una prueba.
   const ocultos = suspendidos instanceof Set ? suspendidos : new Set(suspendidos);
@@ -99,6 +100,13 @@ function productoFalso({ propios = [], suspendidos = [], ...resto } = {}) {
     vendedoresOcultos: async () => ocultos,
     vendedorOculto: async (vendedorId) => ocultos.has(Number(vendedorId)),
     verificarVendedoresActivos: async () => {},
+    estadoPublicacion: async (productoIds) => {
+      const docs = catalogo ? await catalogo.find({ producto_id: { $in: productoIds } }).select().lean() : [];
+      return new Map(docs.map((doc) => {
+        const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
+        return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, descripcion: doc.descripcion, imagen_url: principal?.url || '' }];
+      }));
+    },
     ...resto,
     verificarNoEsPropio: async (usuarioId, productoIds) => {
       if (productoIds.some((id) => ids.has(id))) {

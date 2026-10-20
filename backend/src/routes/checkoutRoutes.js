@@ -2,7 +2,7 @@ const express = require('express');
 const { checkout } = require('../services/checkoutService');
 const { requireAuth } = require('../middleware/auth');
 const { controlPedidos } = require('../middleware/controlPedidos');
-const { cuerpoDeError } = require('../utils/http');
+const { cuerpoDeError, responderError } = require('../utils/http');
 const intentos = require('../services/checkoutIntentoService');
 
 const router = express.Router();
@@ -16,17 +16,17 @@ const router = express.Router();
 // checkout() hace cumplir dentro de la transacción.
 router.post('/intentos', requireAuth, async (req, res) => {
   try { res.json(await intentos.preparar(req.usuario.id_usuario, { anteriorIntentoId: req.body.anteriorIntentoId })); }
-  catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  catch (err) { responderError(res, err, 503); }
 });
 router.get('/intentos/:id', requireAuth, async (req, res) => {
   try { res.json(await intentos.consultar(req.usuario.id_usuario, req.params.id)); }
-  catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  catch (err) { responderError(res, err, 503); }
 });
 router.post('/intentos/:id/cancelar', requireAuth, async (req, res) => {
   try {
     await intentos.resolverFallo(req.usuario.id_usuario, req.params.id, new Error('Compra cancelada para revisar los datos.'));
     res.json(await intentos.consultar(req.usuario.id_usuario, req.params.id));
-  } catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  } catch (err) { responderError(res, err, 503); }
 });
 
 async function recuperarConfirmado(req, res, next) {
@@ -34,7 +34,7 @@ async function recuperarConfirmado(req, res, next) {
     const anterior = await intentos.recuperar(req.usuario.id_usuario, req.body.intentoId, req.body);
     if (anterior) return res.status(200).json(anterior);
     next();
-  } catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  } catch (err) { responderError(res, err, 503); }
 }
 router.post('/', requireAuth, recuperarConfirmado, controlPedidos, async (req, res) => {
   try {

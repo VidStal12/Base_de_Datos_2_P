@@ -1,8 +1,7 @@
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/redis');
-const { conectar: conectarMongo } = require('../config/mongo');
-const Producto = require('../models/mongo/Producto');
 const productoService = require('./productoService');
+const { componenteCaido } = require('../utils/resiliencia');
 
 const TTL_SEGUNDOS = 450;
 const clave = (usuarioId) => `carrito:${usuarioId}`;
@@ -49,30 +48,44 @@ function respuesta(items) {
 
 // Solo en carga fría, mutaciones y entrada al checkout. No se guarda stock
 // dentro del carrito: se usa aquí para calcular la disponibilidad del checkout.
+//
+// Devuelve { items, completo }. `completo: false` significa que el catálogo (Mongo y su
+// copia en el índice de búsqueda) no respondió: el carrito se muestra igual, con lo que sí se
+// sabe (cantidad y precio vienen de MySQL) y los productos como no disponibles, y NO se guarda
+// en la caché de Redis para que no se quede mostrando «Producto #12» cuando el catálogo vuelva.
 async function cargarActual(usuarioId) {
   const filas = await prisma.carrito.findMany({ where: { id_usuario: usuarioId }, orderBy: { id_producto: 'asc' }, select: { id_producto: true, cantidad: true } });
-  if (!filas.length) return [];
+  if (!filas.length) return { items: [], completo: true };
   const ids = filas.map((fila) => fila.id_producto);
-  await conectarMongo();
-  const [docs, inventarios, ocultos] = await Promise.all([
-    Producto.find({ producto_id: { $in: ids } }).select('producto_id descripcion estado imagenes vendedor_id').lean(),
+  let completo = true;
+  const [publicados, inventarios, ocultos] = await Promise.all([
+    productoService.estadoPublicacion(ids).catch((err) => {
+      if (!componenteCaido(err)) throw err;
+      completo = false;
+      return new Map();
+    }),
     prisma.inventario.findMany({ where: { id_producto: { in: ids } } }),
     // Un producto de un vendedor suspendido sigue en el carrito, pero como no
     // disponible (ver productoService.listar): vuelve a estarlo si se levanta.
     productoService.vendedoresOcultos(),
   ]);
-  const productos = new Map(docs.map((doc) => [doc.producto_id, doc]));
   const stock = new Map(inventarios.map((inv) => [inv.id_producto, inv]));
-  return filas.map((fila) => {
-    const doc = productos.get(fila.id_producto);
+  const items = filas.map((fila) => {
+    const doc = publicados.get(fila.id_producto);
     const inv = stock.get(fila.id_producto);
-    const imagen = doc?.imagenes?.find((img) => img.principal) || doc?.imagenes?.[0];
     return {
-      producto: { id: fila.id_producto, descripcion: doc?.descripcion || 'Producto no disponible', imagen_url: imagen?.url || '', estado: doc?.estado || 'inactivo', precio: inv ? Number(inv.precio) : null },
+      producto: {
+        id: fila.id_producto,
+        descripcion: doc?.descripcion || (completo ? 'Producto no disponible' : `Producto #${fila.id_producto}`),
+        imagen_url: doc?.imagen_url || '',
+        estado: doc?.estado || 'inactivo',
+        precio: inv ? Number(inv.precio) : null,
+      },
       cantidad: fila.cantidad,
       disponible: doc?.estado === 'activo' && !ocultos.has(doc.vendedor_id) && !!inv && inv.cantidad >= fila.cantidad,
     };
   });
+  return { items, completo };
 }
 
 async function obtener(usuarioId, revisar = false) {
@@ -84,7 +97,8 @@ async function obtener(usuarioId, revisar = false) {
     for (let i = 0; i < campos.length; i += 2) crudo[campos[i]] = campos[i + 1];
     const guardadas = leerLineas(crudo);
     if (!revisar && guardadas !== null) return respuesta(guardadas);
-    const items = await cargarActual(usuarioId);
+    const { items, completo } = await cargarActual(usuarioId);
+    if (!completo) return respuesta(items);
     const payload = {};
     for (const item of items) payload[item.producto.id] = JSON.stringify(item);
     const publicada = await cacheSeguro((redis) => redis.publicarCarrito(clave(usuarioId), revisionClave(usuarioId), revision, TTL_SEGUNDOS, JSON.stringify(payload)));
@@ -108,8 +122,8 @@ async function guardar(usuarioId, productoId, cantidad, sumar) {
   // rechazar. El checkout lo vuelve a verificar (carritos anteriores a la regla,
   // llamadas directas a la API).
   await productoService.verificarNoEsPropio(usuarioId, [productoId]);
-  await conectarMongo();
-  const producto = await Producto.findOne({ producto_id: productoId }).select('estado vendedor_id').lean();
+  // Mongo, o su copia en el índice de búsqueda si Mongo está apagado (estadoPublicacion).
+  const producto = (await productoService.estadoPublicacion([productoId])).get(productoId);
   if (producto?.estado !== 'activo' || (await productoService.vendedorOculto(producto.vendedor_id))) throw new Error('El producto no está disponible');
   await prisma.$transaction(async (tx) => {
     await bloquearUsuario(tx, usuarioId);

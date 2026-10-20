@@ -12,6 +12,14 @@ const checkoutIntentos = require('./services/checkoutIntentoService');
 
 const PORT = process.env.PORT || 3000;
 
+// Una base que se apaga con la aplicación en marcha puede rechazar alguna promesa que
+// nadie esperaba (un reenvío "de mejor esfuerzo", un temporizador). Por defecto Node
+// termina el proceso ante una promesa rechazada sin manejar, y entonces una caída de
+// Neo4j o de Redis tumbaría TODA la aplicación en vez de degradarla: se registra y se sigue.
+process.on('unhandledRejection', (motivo) => {
+  console.error('Promesa rechazada sin manejar (el servidor sigue en pie):', motivo?.message || motivo);
+});
+
 const servidor = app.listen(PORT, () => {
   console.log(`TiendaYa backend escuchando en http://localhost:${PORT}`);
   checkoutIntentos.iniciar();

@@ -1,7 +1,9 @@
 const express = require('express');
 const { requireAuth, requireRole, optionalAuth } = require('../middleware/auth');
 const productoService = require('../services/productoService');
+const catalogoLectura = require('../services/catalogoLecturaService');
 const resenaService = require('../services/resenaService');
+const { responderError } = require('../utils/http');
 
 const router = express.Router();
 
@@ -15,7 +17,8 @@ router.get('/', optionalAuth, async (req, res) => {
   const mostrarInactivos =
     req.usuario?.rol === 'administrador' ||
     (req.usuario?.rol === 'vendedor' && String(req.usuario.id_usuario) === String(req.query.vendedorId));
-  const productos = await productoService.listar({ ...req.query, mostrarInactivos });
+  // Con Mongo apagado el catálogo se sirve del índice de búsqueda (catalogoLecturaService.js).
+  const productos = await catalogoLectura.listar({ ...req.query, mostrarInactivos });
   res.json(productos);
 });
 
@@ -34,14 +37,14 @@ router.get('/estadisticas/ediciones', async (req, res) => {
 // a él se le marca como oculto para que la pantalla lo diga.
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
-    const producto = await productoService.obtener(Number(req.params.id));
+    const producto = await catalogoLectura.obtener(Number(req.params.id));
     const oculto = await productoService.vendedorOculto(producto.vendedor_id);
     if (oculto && req.usuario?.rol !== 'administrador') {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
     res.json(oculto ? { ...producto, vendedor_suspendido: true } : producto);
   } catch (err) {
-    res.status(404).json({ error: err.message });
+    responderError(res, err, 404);
   }
 });
 
@@ -61,7 +64,7 @@ router.get('/:id/historial', requireAuth, requireRole('vendedor', 'administrador
       res.json(eventos);
     }
   } catch (err) {
-    res.status(404).json({ error: err.message });
+    responderError(res, err, 404);
   }
 });
 // Reseñas (reference, ver ADR-002 §6.1 y Resena.js) — listar es público,
@@ -71,7 +74,7 @@ router.get('/:id/resenas', async (req, res) => {
     const resenas = await resenaService.listarPorProducto(Number(req.params.id));
     res.json(resenas);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 
@@ -80,7 +83,7 @@ router.post('/:id/resenas', requireAuth, async (req, res) => {
     const resena = await resenaService.crear(req.usuario, Number(req.params.id), req.body);
     res.status(201).json(resena);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 
@@ -89,7 +92,7 @@ router.post('/', requireAuth, requireRole('vendedor', 'administrador'), async (r
     const producto = await productoService.crear(req.usuario, req.body);
     res.status(201).json(producto);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 
@@ -98,7 +101,7 @@ router.patch('/:id', requireAuth, requireRole('vendedor', 'administrador'), asyn
     const producto = await productoService.actualizar(req.usuario, Number(req.params.id), req.body);
     res.json(producto);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 

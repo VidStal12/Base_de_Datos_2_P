@@ -2,7 +2,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { controlPedidos } = require('../middleware/controlPedidos');
 const tendenciaService = require('../services/tendenciaService');
-const { cuerpoDeError } = require('../utils/http');
+const { responderError } = require('../utils/http');
 
 const router = express.Router();
 
@@ -13,7 +13,7 @@ router.get('/', requireAuth, async (req, res) => {
     const resultado = await tendenciaService.recomendar(req.usuario.id_usuario);
     res.json(resultado);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    responderError(res, err, 500);
   }
 });
 
@@ -30,7 +30,7 @@ router.post('/:productoId/comprar', requireAuth, controlPedidos, async (req, res
     });
     res.status(201).json(resultado);
   } catch (err) {
-    res.status(err.status || 400).json(cuerpoDeError(err));
+    responderError(res, err, 400);
   }
 });
 

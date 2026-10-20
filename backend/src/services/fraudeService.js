@@ -873,9 +873,11 @@ function construirMotivoReventa(h, corroboradores) {
 //     revender es justo una ráfaga de gasto).
 async function consultarFraude(parametros = {}) {
   const advertencias = [];
+  const fallos = [];
   const aislar = (nombre, promesa) =>
     promesa.catch((err) => {
       advertencias.push(`No se pudo evaluar ${nombre}: ${err.message}`);
+      fallos.push(err);
       return [];
     });
 
@@ -888,6 +890,10 @@ async function consultarFraude(parametros = {}) {
     aislar('autocompras', buscarAutocompra()),
     aislar('reventa de lo comprado', buscarReventa()),
   ]);
+  // Que UNA señal falle deja las otras seis (ver arriba). Que fallen LAS SIETE significa
+  // que el grafo no responde: devolver listas vacías diría «no hay nada sospechoso», que
+  // es lo contrario de la verdad (nadie miró). Se informa como lo que es, una caída.
+  if (fallos.length === 7) throw fallos[0];
   // Las publicaciones activas se resuelven ANTES de armar el resto: que una
   // cuenta esté revendiendo es también un corroborador de sus otras señales.
   const reventas = await enriquecerReventa(reventasBrutas).catch((err) => {

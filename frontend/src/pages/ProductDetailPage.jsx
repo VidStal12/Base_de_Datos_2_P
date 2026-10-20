@@ -191,7 +191,13 @@ export function ProductDetailPage() {
         </div>
       </div>
 
-      {ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (
+      {producto.desde_indice && (
+        <p role="note" className="rounded-lg bg-warning-500/10 p-4 text-sm text-neutral-800">
+          Estás viendo la versión resumida de este producto: las reseñas, el historial y las ofertas flash no están disponibles en este momento.
+        </p>
+      )}
+
+      {!producto.desde_indice && ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (
         <HistorialSection
           productoId={producto.id}
           vendedorId={producto.vendedor_id}
@@ -201,7 +207,7 @@ export function ProductDetailPage() {
         />
       )}
 
-      <ResenasSection productoId={producto.id} token={token} estaAutenticado={estaAutenticado} />
+      {!producto.desde_indice && <ResenasSection productoId={producto.id} token={token} estaAutenticado={estaAutenticado} />}
     </div>
   );
 }

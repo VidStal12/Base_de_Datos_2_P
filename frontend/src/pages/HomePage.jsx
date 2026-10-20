@@ -131,6 +131,9 @@ export function HomePage() {
   const subcategoriaId = searchParams.get('subcategoriaId') || '';
 
   const [productos, setProductos] = useState([]);
+  // true cuando el buscador avanzado (Elasticsearch) no está disponible y el servidor
+  // respondió con una búsqueda básica sobre el catálogo (ver catalogoLecturaService.js).
+  const [busquedaBasica, setBusquedaBasica] = useState(false);
   const [categorias, setCategorias] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -187,10 +190,12 @@ export function HomePage() {
         .then((resultado) => {
           setProductos(resultado.resultados);
           setFacetas(resultado.facetas);
+          setBusquedaBasica(resultado.modo === 'basico');
         })
         .catch(() => setError('No se pudo buscar. ¿Está corriendo el backend?'))
         .finally(() => setCargando(false));
     } else {
+      setBusquedaBasica(false);
       productosApi
         .listar(filtros)
         .then(setProductos)
@@ -320,6 +325,12 @@ export function HomePage() {
             </select>
           </div>
         </div>
+
+        {q && busquedaBasica && (
+          <p role="note" className="rounded-lg bg-warning-500/10 p-3 text-sm text-neutral-800">
+            Búsqueda básica: el buscador avanzado no está disponible ahora, así que no se corrigen errores de tipeo.
+          </p>
+        )}
 
         {cargando && <Spinner />}
 

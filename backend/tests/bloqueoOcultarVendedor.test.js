@@ -181,13 +181,17 @@ function buscadorConElastic(suspension, opciones = []) {
   const cliente = {
     async search(pedido) {
       pedidos.push(pedido);
-      // Igual que el real, devuelve a lo sumo `size` opciones.
-      if (pedido.suggest) return { suggest: { sugerencias: [{ options: opciones.slice(0, pedido.suggest.sugerencias.completion.size) }] } };
+      // Igual que el real, devuelve a lo sumo `size` opciones. sugerir() pide dos suggesters
+      // (exactas y aproximadas, ver busquedaService.js); aquí ambos responden lo mismo.
+      if (pedido.suggest) {
+        const opcionesDe = (nombre) => [{ options: opciones.slice(0, pedido.suggest[nombre].completion.size) }];
+        return { suggest: { exactas: opcionesDe('exactas'), aproximadas: opcionesDe('aproximadas') } };
+      }
       return { hits: { total: { value: 0 }, hits: [] }, aggregations: {} };
     },
   };
   const servicio = cargar('../src/services/busquedaService.js', {
-    '../config/elasticsearch': { conectar: async () => cliente, indice: () => 'tiendaya_productos' },
+    '../config/elasticsearch': { conectar: async () => cliente, conCircuito: async (operacion) => operacion(cliente), indice: () => 'tiendaya_productos' },
     './suspensionService': suspension,
   });
   return { servicio, pedidos };
@@ -220,13 +224,13 @@ test('sugerir pide más opciones si hay suspendidos, descarta las de ese vendedo
   const { servicio, pedidos } = buscadorConElastic(e.suspension, opciones);
 
   const normales = plano(await servicio.sugerir('prod'));
-  assert.equal(pedidos[0].suggest.sugerencias.completion.size, 8, 'sin suspendidos pide lo de siempre');
+  assert.equal(pedidos[0].suggest.exactas.completion.size, 8, 'sin suspendidos pide lo de siempre');
   assert.deepEqual(plano(pedidos[0]._source), ['vendedor_id'], 'el vendedor viaja en la opción para poder descartarla');
   assert.deepEqual(normales, ['Producto 0', 'Producto 1', 'Producto 2', 'Producto 3', 'Producto 4', 'Producto 5', 'Producto 6', 'Producto 7']);
 
   await e.suspension.bloquear(11, DIA);
   const filtradas = plano(await servicio.sugerir('prod'));
-  assert.equal(pedidos[1].suggest.sugerencias.completion.size, 24, 'con suspendidos pide de más para poder descartar y aun así llenar 8');
+  assert.equal(pedidos[1].suggest.exactas.completion.size, 24, 'con suspendidos pide de más para poder descartar y aun así llenar 8');
   assert.deepEqual(filtradas, ['Producto 1', 'Producto 3', 'Producto 5', 'Producto 7', 'Producto 9', 'Producto 11', 'Producto 13', 'Producto 15'], 'ninguna es del vendedor 11, y sigue habiendo 8');
 
   await e.suspension.levantar(11);

@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const cartService = require('../services/cartService');
+const { responderError } = require('../utils/http');
 
 const router = express.Router();
 // Todo el carrito requiere sesión iniciada — decisión de Entrega 2 (ver
@@ -10,12 +11,12 @@ router.use(requireAuth);
 
 router.get('/', async (req, res) => {
   try { res.json(await cartService.obtener(req.usuario.id_usuario)); }
-  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+  catch (err) { responderError(res, err, 500); }
 });
 
 router.post('/revisar', async (req, res) => {
   try { res.json(await cartService.revisar(req.usuario.id_usuario)); }
-  catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+  catch (err) { responderError(res, err, 500); }
 });
 
 router.post('/items', async (req, res) => {
@@ -24,7 +25,7 @@ router.post('/items', async (req, res) => {
     const carrito = await cartService.agregar(req.usuario.id_usuario, Number(productoId), Number(cantidad));
     res.status(201).json(carrito);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 
@@ -37,7 +38,7 @@ router.patch('/items/:productoId', async (req, res) => {
     );
     res.json(carrito);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 

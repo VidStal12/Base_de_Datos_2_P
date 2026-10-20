@@ -1,6 +1,7 @@
 const { randomUUID, createHash } = require('node:crypto');
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/redis');
+const { registrarFallo } = require('../utils/resiliencia');
 
 const REUTILIZADO = Symbol('checkout_reutilizado');
 const json = (valor) => JSON.parse(JSON.stringify(valor));
@@ -176,7 +177,7 @@ function reconciliar() {
 }
 function iniciar() {
   if (temporizador) return;
-  const ejecutar = () => reconciliar().catch((err) => console.error('Recuperación de checkout:', err.message));
+  const ejecutar = () => reconciliar().catch((err) => registrarFallo('Recuperación de checkout', err));
   temporizador = setInterval(ejecutar, 30000);
   temporizador.unref();
   ejecutar();

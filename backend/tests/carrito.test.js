@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { cargar, redisFalso, productoFalso, compromisoFalso, ACEPTADO_EN } = require('./redisHelpers');
+const { ServicioNoDisponible } = require('../src/utils/resiliencia');
 
 // `propios`: ids de producto que pertenecen a quien compra (usuario 7) — la
 // regla "nadie compra lo que él mismo vende", que cartService exige con
@@ -40,16 +41,16 @@ function escenario({ propios = [], suspendidos = [] } = {}) {
   const servicio = cargar('../src/services/cartService.js', {
     '../config/prisma': db, '../config/redis': { conectar: () => redis },
     '../config/mongo': { conectar: async () => {} }, '../models/mongo/Producto': modelo,
-    './productoService': productoFalso({ propios, suspendidos }),
+    './productoService': productoFalso({ propios, suspendidos, catalogo: modelo }),
   });
-  return { servicio, filas, inv, redis, productos, consultas: () => consultas, consultasMongo: () => consultasMongo };
+  return { servicio, filas, inv, redis, productos, modelo, consultas: () => consultas, consultasMongo: () => consultasMongo };
 }
 
 // Doble de lo que checkoutService necesita para llegar hasta la transacción.
 function dependenciasCheckout(extra = {}) {
   return {
     '../config/mongo': { conectar: async () => {} },
-    './productoService': productoFalso(),
+    './productoService': productoFalso({ catalogo: extra['../models/mongo/Producto'] }),
     './compromisoService': compromisoFalso(),
     './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => {}, avanzarVersion: async () => {} },
     './checkoutIntentoService': { reutilizado: () => false },
@@ -203,6 +204,26 @@ test('un producto ausente sigue en el carrito, sin poder confirmarse', async () 
   assert.equal(c.items[0].producto.id, 1);
   assert.equal(c.items[0].disponible, false);
   assert.equal(e.filas.get(1), 2);
+});
+
+test('con el catálogo apagado el carrito se muestra con lo que MySQL sabe, sin disponibilidad y SIN guardarse en Redis', async () => {
+  const e = escenario();
+  await e.servicio.agregar(7, 1, 2);
+  await e.redis.del('carrito:7');
+  const buscar = e.modelo.find;
+  e.modelo.find = () => { throw new ServicioNoDisponible('mongo'); }; // ni Mongo ni su copia en el índice responden
+  const c = await e.servicio.obtener(7);
+  assert.equal(c.items[0].producto.descripcion, 'Producto #1', 'sin nombre: se identifica por su número');
+  assert.equal(c.items[0].producto.precio, 10, 'el precio sale de MySQL');
+  assert.equal(c.items[0].cantidad, 2);
+  assert.equal(c.items[0].disponible, false, 'no se puede confirmar lo que no se sabe si está publicado');
+  assert.equal(c.total, 20);
+  assert.equal(e.redis.hashes.get('carrito:7'), undefined, 'la versión degradada no queda en la caché: al volver el catálogo se ve completa');
+  e.modelo.find = buscar;
+  const vuelta = await e.servicio.obtener(7);
+  assert.equal(vuelta.items[0].producto.descripcion, 'Producto 1');
+  assert.equal(vuelta.items[0].disponible, true);
+  assert.ok(e.redis.hashes.get('carrito:7'), 'recuperado el catálogo, sí se guarda');
 });
 
 test('un producto propio no entra al carrito: se rechaza sin tocar SQL ni Redis', async () => {

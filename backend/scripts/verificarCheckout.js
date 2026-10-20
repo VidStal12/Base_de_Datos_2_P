@@ -2,6 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const redisConfig = require('../src/config/redis');
+const neo4j = require('../src/config/neo4j');
 const { checkout } = require('../src/services/checkoutService');
 
 // Evidencia de funcionamiento del checkout transaccional (PRD, Fase Inicial):
@@ -70,4 +71,6 @@ main()
     // Y checkout() invalida la caché del carrito en Redis: sin cerrarlo, esa conexión
     // mantiene vivo el proceso después de terminar.
     redisConfig.cerrar();
+    // Y reenvía la compra al grafo de fraude (Neo4j): su driver también mantiene vivo el proceso.
+    await neo4j.cerrar();
   });

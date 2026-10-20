@@ -2,7 +2,7 @@ const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { controlPedidos } = require('../middleware/controlPedidos');
 const ofertaFlashService = require('../services/ofertaFlashService');
-const { cuerpoDeError } = require('../utils/http');
+const { responderError } = require('../utils/http');
 const intentos = require('../services/checkoutIntentoService');
 
 const router = express.Router();
@@ -15,7 +15,7 @@ router.get('/:productoId/stock', async (req, res) => {
     const info = await ofertaFlashService.consultarStock(Number(req.params.productoId));
     res.json(info);
   } catch (err) {
-    res.status(404).json({ error: err.message });
+    responderError(res, err, 404);
   }
 });
 
@@ -26,7 +26,7 @@ router.patch('/:productoId', requireAuth, requireRole('vendedor', 'administrador
     const producto = await ofertaFlashService.actualizar(req.usuario, Number(req.params.productoId), req.body);
     res.json(producto);
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message });
+    responderError(res, err, 400);
   }
 });
 
@@ -41,14 +41,14 @@ router.patch('/:productoId', requireAuth, requireRole('vendedor', 'administrador
 router.post('/:productoId/intentos', requireAuth, async (req, res) => {
   try {
     res.json(await ofertaFlashService.prepararIntento(req.usuario.id_usuario, Number(req.params.productoId), req.body.anteriorIntentoId));
-  } catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  } catch (err) { responderError(res, err, 503); }
 });
 async function recuperarConfirmado(req, res, next) {
   try {
     const anterior = await intentos.recuperar(req.usuario.id_usuario, req.body.intentoId, { ...req.body, productoId: Number(req.params.productoId) });
     if (anterior) return res.status(200).json(anterior);
     next();
-  } catch (err) { res.status(err.status || 503).json(cuerpoDeError(err)); }
+  } catch (err) { responderError(res, err, 503); }
 }
 router.post('/:productoId/comprar', requireAuth, recuperarConfirmado, controlPedidos, async (req, res) => {
   try {
@@ -65,7 +65,7 @@ router.post('/:productoId/comprar', requireAuth, recuperarConfirmado, controlPed
     res.locals.checkoutReutilizado = intentos.reutilizado(resultado);
     res.status(res.locals.checkoutReutilizado ? 200 : 201).json(resultado);
   } catch (err) {
-    res.status(err.status || 503).json(cuerpoDeError(err));
+    responderError(res, err, 503);
   }
 });
 

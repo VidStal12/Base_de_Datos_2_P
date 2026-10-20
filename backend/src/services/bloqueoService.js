@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const suspension = require('./suspensionService');
 const restriccion = require('./restriccionService');
 const { consultarFraude, enriquecerUsuarios } = require('./fraudeService');
+const { registrarFallo } = require('../utils/resiliencia');
 
 // Respuesta escalonada a las señales de fraude (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md
 // §20 y §21): lo que se hace con una cuenta depende de CUÁNTO confía el detector.
@@ -595,7 +596,7 @@ let arranque;
 function iniciar() {
   const cfg = configuracion();
   if (temporizador || !cfg.habilitado) return;
-  const barrer = () => evaluar().catch((err) => console.error('No se pudo evaluar el bloqueo de cuentas:', err.message));
+  const barrer = () => evaluar().catch((err) => registrarFallo('No se pudo evaluar el bloqueo de cuentas', err));
   // La primera pasada espera unos segundos a que el servidor esté arriba, y de
   // paso reconstruye en Redis lo que se haya perdido en un reinicio.
   arranque = setTimeout(barrer, 3000);

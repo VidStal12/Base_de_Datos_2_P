@@ -6,6 +6,7 @@ const compromisoService = require('./compromisoService');
 const checkoutService = require('./checkoutService');
 const ofertaDatos = require('./ofertaDatosService');
 const { randomUUID, createHash } = require('node:crypto');
+const { ServicioNoDisponible, avisarCaida } = require('../utils/resiliencia');
 const intentos = require('./checkoutIntentoService');
 
 // Oferta flash (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.2): cupo limitado a
@@ -17,6 +18,13 @@ const RECHAZADO = -1;
 
 function clave(productoId, oferta) {
   return `oferta:${productoId}:stock${oferta?.revision ? `:${oferta.revision}` : ''}`;
+}
+
+// El cupo de una oferta flash se hace cumplir con un contador atómico en Redis (la guardia 1,
+// ver más abajo): sin Redis no hay forma de limitar el cupo promocional, así que la compra de
+// la OFERTA no se ofrece. El resto de la tienda, y el producto a su precio normal, no se ven afectados.
+function sinRedis(causa) {
+  return new ServicioNoDisponible('redis', causa, 'Las ofertas flash necesitan la caché (Redis), que no responde ahora. Podés comprar el producto a su precio normal.');
 }
 
 function versionOferta(oferta) {
@@ -69,9 +77,14 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
   // vigente_hasta, posiblemente extendido) recién guardados. Da igual si
   // quedó desactivada: el gate corta en el chequeo de `activo` antes de
   // siquiera tocar Redis, así que una clave vieja ahí no molesta a nadie.
+  // Es limpieza (la clave del cupo lleva la revisión de la oferta, así que una vieja nunca la
+  // toca): si Redis está apagado, la oferta queda guardada igual.
   if (nuevoActivo) {
-    const redis = conectar();
-    await redis.del(clave(productoId, doc.oferta_flash));
+    try {
+      await conectar().del(clave(productoId, doc.oferta_flash));
+    } catch (err) {
+      avisarCaida('redis', err);
+    }
   }
 
   return productoService.obtener(productoId);
@@ -100,8 +113,15 @@ async function consultarStock(productoId) {
     return { activo: false, producto, motivo: 'vencida' };
   }
 
-  const redis = conectar();
-  const crudo = await redis.get(clave(productoId, oferta));
+  // El remanente en vivo vive en Redis. Sin Redis no se sabe cuántas unidades quedan, así que
+  // la oferta no se muestra (el producto sigue a su precio normal) en vez de inventar un número.
+  let crudo;
+  try {
+    crudo = await conectar().get(clave(productoId, oferta));
+  } catch (err) {
+    avisarCaida('redis', err);
+    return { activo: false, producto, motivo: 'no_disponible' };
+  }
   const restante = crudo === null ? oferta.stock_oferta : Number(crudo);
 
   return { activo: true, producto, precio_oferta: oferta.precio_oferta, restante: Math.max(restante, 0), vigente_hasta: oferta.vigente_hasta };
@@ -154,8 +174,12 @@ async function intentarComprar(productoId, cantidad, precioEsperado, soloValidar
 
   if (soloValidar) return { producto, ttlSegundos };
 
-  const redis = conectar();
-  const restante = await redis.decrementarOferta(clave(productoId, oferta), oferta.stock_oferta, ttlSegundos, cantidad);
+  let restante;
+  try {
+    restante = await conectar().decrementarOferta(clave(productoId, oferta), oferta.stock_oferta, ttlSegundos, cantidad);
+  } catch (err) {
+    throw sinRedis(err);
+  }
 
   if (Number(restante) === RECHAZADO) {
     const err = new Error('No quedan unidades en oferta');
@@ -247,7 +271,12 @@ async function comprarConIntento(usuarioId, productoId, datos) {
       ejecutarTransaccion: (operacion) => intentos.transaccion({ usuarioId, intentoId, datos: solicitud,
         reservar: async (actual) => {
           const r = actual.reserva;
-          const admitido = await conectar().reservarOfertaIdempotente(r.claveStock, `checkout:reserva:${intentoId}`, r.stockInicial, r.vence, r.cantidad);
+          let admitido;
+          try {
+            admitido = await conectar().reservarOfertaIdempotente(r.claveStock, `checkout:reserva:${intentoId}`, r.stockInicial, r.vence, r.cantidad);
+          } catch (err) {
+            throw sinRedis(err);
+          }
           if (Number(admitido) !== 1) throw intentos.error('No quedan unidades en oferta', 'OFERTA_AGOTADA');
         },
       }, operacion),

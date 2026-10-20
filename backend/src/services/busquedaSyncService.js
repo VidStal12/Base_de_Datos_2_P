@@ -1,4 +1,4 @@
-const { conectar, indice } = require('../config/elasticsearch');
+const { conCircuito, indice } = require('../config/elasticsearch');
 
 // Documento de búsqueda a partir del MISMO objeto que ya arma
 // productoService.obtener()/formatear() — no vuelve a resolver
@@ -41,14 +41,16 @@ function aDocumento(producto) {
 // actualizar(); recuperable con scripts/backfillBusqueda.js.
 async function indexarProducto(producto) {
   try {
-    const cliente = await conectar();
-    await cliente.index({
+    await conCircuito((cliente) => cliente.index({
       index: indice(),
       id: String(producto.id),
       document: aDocumento(producto),
-    });
+    }));
   } catch (err) {
-    console.error('No se pudo indexar el producto en Elasticsearch:', err.message);
+    // Con Elasticsearch apagado esto falla al instante (cortacircuitos) y el producto queda
+    // sin reindexar: la ventana de consistencia eventual que se acepta, cerrada con
+    // `npm run busqueda:backfill` cuando el motor vuelve.
+    console.error(`No se pudo indexar el producto #${producto.id} en Elasticsearch:`, err.message);
   }
 }
 

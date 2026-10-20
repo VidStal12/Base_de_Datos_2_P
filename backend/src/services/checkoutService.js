@@ -8,6 +8,7 @@ const compromisoService = require('./compromisoService');
 const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
 const intentos = require('./checkoutIntentoService');
+const reconciliacionMongo = require('./reconciliacionMongoService');
 
 // El tope por pedido de una cuenta con límites suaves: 403 con `codigo: LIMITE_MONTO`.
 function verificarTopeDeMonto(total, montoMaximo) {
@@ -63,9 +64,11 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
   // suspensión (ver productoService.verificarVendedoresActivos).
   await productoService.verificarVendedoresActivos(items.map((item) => item.productoId));
 
-  await conectar();
-  const docs = await Producto.find({ producto_id: { $in: items.map((item) => item.productoId) } }).select('producto_id estado').lean();
-  const activos = new Set(docs.filter((doc) => doc.estado === 'activo').map((doc) => doc.producto_id));
+  // ¿Están publicados? La fuente es Mongo; con Mongo apagado se le pregunta al índice de
+  // búsqueda (productoService.estadoPublicacion). Si ninguno responde, el pedido se rechaza
+  // ANTES de abrir la transacción: sin saber si se puede vender, no se vende.
+  const publicados = await productoService.estadoPublicacion(items.map((item) => item.productoId));
+  const activos = new Set([...publicados].filter(([, producto]) => producto.estado === 'activo').map(([id]) => id));
   if (items.some((item) => !activos.has(item.productoId))) {
     const err = new Error('Hay productos no disponibles. Revisá el carrito.');
     err.status = 409;
@@ -188,6 +191,9 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
       );
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo:', err.message);
+      // Con Mongo apagado la copia queda atrás: se anota para recalcularla desde MySQL en
+      // cuanto responda (reconciliacionMongoService.js).
+      reconciliacionMongo.encolar(items.map(({ productoId }) => productoId));
     }
 
     // Detección de fraude (Entrega 2, ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md)
@@ -197,6 +203,9 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
     // del outbox de ventas) — si falla, el próximo backfillNeo4j.js lo
     // recupera; ver ENTREGA-3-CONSISTENCIA.md §3 para el porqué.
     try {
+      // Primero se comprueba que Mongo responda: con Mongo apagado, Producto.findOne() esperaría
+      // 2 s su cola de espera antes de fallar, y esa espera la paga la persona que acaba de pagar.
+      await conectar();
       const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
       for (const detalle of resultado.compra.compra_detalles) {
         const producto = await Producto.findOne({ producto_id: detalle.id_producto })
@@ -347,11 +356,15 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
       );
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo (oferta flash):', err.message);
+      reconciliacionMongo.encolar([productoId]);
     }
 
     // Detección de fraude — mismo criterio que checkout(), ver el comentario
     // de arriba. Cubre oferta flash Y recomendaciones, ambas pasan por acá.
     try {
+      // Primero se comprueba que Mongo responda: con Mongo apagado, Producto.findOne() esperaría
+      // 2 s su cola de espera antes de fallar, y esa espera la paga la persona que acaba de pagar.
+      await conectar();
       const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
       const producto = await Producto.findOne({ producto_id: productoId })
         .select('descripcion subcategoria_id vendedor_id vendedor_nombre')

@@ -1,6 +1,38 @@
 const Redis = require('ioredis');
+const { ServicioNoDisponible, avisarCaida, avisarRecuperacion } = require('../utils/resiliencia');
 
 let cliente;
+
+// Redis es una caché y un puñado de contadores auxiliares (carrito, ofertas flash,
+// bloqueos, topes de pedidos): sin él la aplicación sigue funcionando, solo que sin esos
+// datos. Con los valores por defecto de ioredis NO era así — un Redis apagado dejaba cada
+// comando esperando ~73 s (maxRetriesPerRequest 20 + reconexiones de 10 s), y como TODA
+// petición autenticada consulta si la cuenta está suspendida, hasta el catálogo público
+// tardaba ~108 s. Medido con el contenedor realmente detenido (IA/ENTREGA-3-CONSISTENCIA.md §7).
+//   - commandTimeout: ningún comando espera más de esto por su respuesta (también los que
+//     quedaron en la cola de espera de la conexión).
+//   - maxRetriesPerRequest: la cola se descarta tras un solo reintento fallido.
+//   - connectTimeout / retryStrategy: reconectar seguido, sin esperar 10 s por intento.
+const OPCIONES_RESILIENTES = {
+  commandTimeout: 1500,
+  maxRetriesPerRequest: 1,
+  connectTimeout: 2000,
+  retryStrategy: (intento) => Math.min(intento * 250, 2000),
+};
+
+// Mientras el cliente está reconectando (la conexión ya se perdió), un comando nuevo
+// falla AL INSTANTE en vez de esperar su commandTimeout: así una petición que toca Redis
+// varias veces no suma 1,5 s por cada una. En 'connecting' (el primer arranque) sí se deja
+// encolar, acotado por commandTimeout, porque Redis puede estar perfectamente sano.
+class RedisTolerante extends Redis {
+  sendCommand(comando, flujo) {
+    if (this.status === 'reconnecting' || this.status === 'end') {
+      comando.reject(new ServicioNoDisponible('redis'));
+      return comando.promise;
+    }
+    return super.sendCommand(comando, flujo);
+  }
+}
 
 // Oferta flash (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.2): un único comando
 // atómico que hace, en una sola ejecución de Redis (sin locks de aplicación,
@@ -195,7 +227,10 @@ return 0
 // una sola vez, la primera vez que algún servicio la necesita.
 function conectar() {
   if (!cliente) {
-    cliente = new Redis(process.env.REDIS_URL);
+    cliente = new RedisTolerante(process.env.REDIS_URL, OPCIONES_RESILIENTES);
+    // Sin un oyente, ioredis escribiría un "Unhandled error event" por cada reintento.
+    cliente.on('error', (err) => avisarCaida('redis', err));
+    cliente.on('ready', () => avisarRecuperacion('redis'));
     // Registrado una sola vez acá (no en cada llamada) — ioredis expone esto
     // después como cliente.decrementarOferta(key, ...argv), un comando más.
     cliente.defineCommand('decrementarOferta', { numberOfKeys: 1, lua: LUA_DECREMENTAR_OFERTA });

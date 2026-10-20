@@ -219,6 +219,29 @@ Escenarios (`--falla=`): `mysql-dentro` (rollback atómico), `mongo-antes` (fall
 
 `recalcularInventario()`/`recalcularVentas()` (los botones del administrador) aceptan ahora una lista opcional `productoIds` para reparar solo esos productos; sin ella siguen reescribiendo todo el catálogo.
 
+## Apagar una base de datos con la aplicación en marcha (Entrega 3)
+
+La aplicación sigue siendo utilizable cuando se apaga el contenedor de **una o de varias** bases: solo pierde los datos de esa base, y lo dice (una franja amarilla en la tienda y `GET /api/health/componentes`). Se vuelve a encender el contenedor y todo vuelve solo, sin reiniciar el backend.
+
+```bash
+docker stop tiendaya-redis                                    # una base
+docker stop tiendaya-redis tiendaya-elasticsearch tiendaya-neo4j tiendaya-cassandra   # varias
+curl http://localhost:3000/api/health/componentes             # qué responde ahora
+docker start tiendaya-redis                                   # vuelve sola
+npm run test:resiliencia                                      # (desde backend/) la lógica, sin Docker
+```
+
+| Contenedor | Qué se pierde | Qué sigue funcionando |
+|---|---|---|
+| `tiendaya-redis` | ofertas flash y compras con cupo personal | todo lo demás, **incluida la compra** |
+| `tiendaya-elasticsearch` | tolerancia a errores de tipeo y autocompletado inteligente | la búsqueda (básica, sobre Mongo) y todo lo demás |
+| `tiendaya-neo4j` | panel de fraude | tiendas, compras y ventas |
+| `tiendaya-cassandra` | panel de ventas | todo, incluida la compra (las ventas esperan en el outbox y se escriben solas) |
+| `tiendaya-mongo` | reseñas, ofertas flash, historial y edición de productos | catálogo, detalle y categorías (desde el índice de búsqueda), carrito y **compra** |
+| `tiendaya-mysql` | cuentas, carrito y pedidos (sin login ni compra) | catálogo y búsqueda; las sesiones abiertas siguen |
+
+Medición con los seis contenedores realmente detenidos, solos y combinados, el diseño y los riesgos aceptados: [IA/ENTREGA-3-CONSISTENCIA.md §7](IA/ENTREGA-3-CONSISTENCIA.md).
+
 ## Evaluación opcional: ¿los pagos en NoSQL? (ADR-005 y spike)
 
 [ADR-005](IA/ADR-005-evaluacion-nosql-pagos.md) evalúa migrar el módulo de pagos a un motor NoSQL frente al modelo relacional (el PRD escribe «NewSQL»; el equipo confirmó que es una errata de NoSQL). La decisión es **no migrar la autoridad de los pagos**: MySQL se endurece y MongoDB queda como espejo para cuando aparezca un disparador medible. El ADR incluye el escenario de migración por fases. Su evidencia es un ensayo reproducible contra las bases locales, mejor con el backend apagado:

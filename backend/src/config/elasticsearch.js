@@ -1,6 +1,14 @@
 const { Client } = require('@elastic/elasticsearch');
+const { crearCircuito } = require('../utils/resiliencia');
 
 let cliente;
+let preparacion;
+
+// Elasticsearch es el índice de búsqueda: apagado, el catálogo sigue (la búsqueda cae a
+// Mongo, ver busquedaService.js). Con los valores por defecto del cliente (3 reintentos),
+// una búsqueda tardaba 7-9 s en rendirse. Tras la primera falla de conexión, las demás
+// llamadas fallan al instante durante unos segundos (ver utils/resiliencia.js).
+const circuito = crearCircuito('elasticsearch', { aperturaMs: 5000 });
 
 const INDICE = process.env.ELASTICSEARCH_INDICE || 'tiendaya_productos';
 
@@ -81,17 +89,44 @@ const MAPPING = {
 // un mapping ya aplicado es válido en Elasticsearch (a diferencia de
 // cambiar el tipo de uno existente) y así este archivo se puede seguir
 // ampliando sin necesitar borrar y recrear el índice a mano cada vez.
-async function conectar() {
-  if (!cliente) {
-    cliente = new Client({ node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200' });
-    const existe = await cliente.indices.exists({ index: INDICE });
-    if (!existe) {
-      await cliente.indices.create({ index: INDICE, mappings: MAPPING });
-    } else {
-      await cliente.indices.putMapping({ index: INDICE, ...MAPPING });
-    }
+//
+// La preparación (crear el índice / aplicar el mapping) se guarda como PROMESA y solo se
+// conserva si termina bien: antes el cliente quedaba guardado antes de prepararlo, así que
+// un primer uso con Elasticsearch apagado dejaba un cliente sin índice que ya nadie volvía
+// a preparar, y dos primeros usos simultáneos se saltaban la preparación del otro.
+function conectar() {
+  if (!preparacion) {
+    preparacion = circuito.ejecutar(async () => {
+      const nuevo = new Client({
+        node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200',
+        requestTimeout: 2000,
+        maxRetries: 0,
+      });
+      try {
+        const existe = await nuevo.indices.exists({ index: INDICE });
+        if (!existe) {
+          await nuevo.indices.create({ index: INDICE, mappings: MAPPING });
+        } else {
+          await nuevo.indices.putMapping({ index: INDICE, ...MAPPING });
+        }
+      } catch (err) {
+        await nuevo.close().catch(() => {});
+        throw err;
+      }
+      cliente = nuevo;
+      return nuevo;
+    }).catch((err) => {
+      preparacion = undefined;
+      throw err;
+    });
   }
-  return cliente;
+  return preparacion;
+}
+
+// Cada petición al motor pasa por acá: si Elasticsearch no responde, la primera falla abre
+// el cortacircuitos y las siguientes no esperan. `operacion` recibe el cliente ya preparado.
+function conCircuito(operacion) {
+  return circuito.ejecutar(async () => operacion(await conectar()));
 }
 
 function indice() {
@@ -99,10 +134,12 @@ function indice() {
 }
 
 async function cerrar() {
+  preparacion = undefined;
   if (cliente) {
-    await cliente.close();
+    const abierto = cliente;
     cliente = undefined;
+    await abierto.close();
   }
 }
 
-module.exports = { conectar, indice, cerrar, MAPPING };
+module.exports = { conectar, conCircuito, indice, cerrar, MAPPING, circuito };

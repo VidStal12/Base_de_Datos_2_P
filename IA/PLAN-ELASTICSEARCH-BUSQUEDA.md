@@ -50,20 +50,27 @@ Se implementa **tolerancia a errores de tipeo** (`fuzziness: 'AUTO'` en la query
 
 ## 6. Mapping explícito
 
-Definido en código (no configuración por defecto — requerimiento técnico explícito), reusado por el script de creación del índice y por `verificarBusqueda.js`:
+Definido en código (no configuración por defecto — requerimiento técnico explícito), reusado por el script de creación del índice y por `verificarBusqueda.js`. Lista **vigente**: son 15 campos; los últimos se agregaron después (§12, §13) y el mapping completo es estricto (§14):
 
 ```
+producto_id:      integer
 descripcion:      text (analizador "spanish") + descripcion.keyword
 vendedor_nombre:  text (analizador "spanish") + vendedor_nombre.keyword
+imagen_url:       keyword, index:false — se guarda para mostrarla en los resultados; nunca se busca ni se agrega por ella
 categoria:        keyword   — denormalizado al indexar; Elasticsearch no hace joins
 subcategoria:     keyword   — idem
+categoria_id:     keyword   — id de la categoría en Mongo (texto), para el filtro exacto por categoría
+subcategoria_id:  keyword   — idem, para el filtro exacto por subcategoría
 atributos:        nested { nombre: keyword, valor: keyword }
 precio:           float
 cantidad:         integer
 estado:           keyword
-producto_id:      integer
-total_vendido:    integer
+total_vendido:    integer   — orden «más vendidos»
+vendedor_id:      integer   — solo presentación (§13)
+sugerencia:       completion, contexts: [estado] — autocompletado (§12)
 ```
+
+Además `dynamic: 'strict'` en la raíz: un campo que no figure en esta lista hace fallar el indexado en vez de que Elasticsearch le adivine el tipo (§14).
 
 `atributos` como `nested` (no un array de objetos plano) por la misma razón que `condicionesAtributos()` usa `$elemMatch` en Mongo: sin eso, un filtro por `{nombre: Talla, valor: M}` podría calzar cruzando el nombre de un atributo con el valor de OTRO atributo distinto del mismo producto — `nested` mantiene cada par `{nombre, valor}` como una unidad indivisible, igual que `$elemMatch`.
 
@@ -81,8 +88,8 @@ Mismo split ya establecido dos veces (`fraudeService.js`/`fraudeSyncService.js`,
 
 - Con `q`: `multi_match` sobre `descripcion`/`vendedor_nombre`, `fuzziness: 'AUTO'`. Sin `q`: `match_all` filtrado — la misma consulta sirve de base a los facets incluso sin texto de búsqueda.
 - Filtros exactos: `estado: 'activo'` (siempre — búsqueda es una vista pública, no repite la lógica de "vendedor ve sus propios inactivos" que sí tiene `GET /api/productos`), categoría/subcategoría, rango de precio, atributos vía filtro `nested`.
-- Agregaciones (requerimiento técnico): `terms` sobre `categoria.keyword`/`subcategoria.keyword`, y una agregación `nested` sobre `atributos` con sub-agregaciones `terms` por `nombre`+`valor` — misma forma `{nombre: [valores]}` que ya espera `FacetFilters` en el frontend, para reusar ese componente.
-- Devuelve `{ resultados, facetas, total }`.
+- Agregaciones (requerimiento técnico): `terms` sobre `categoria`/`subcategoria` (ya son `keyword`, no llevan subcampo), y una agregación `nested` sobre `atributos` con sub-agregaciones `terms` por `nombre`+`valor` — misma forma `{nombre: [valores]}` que ya espera `FacetFilters` en el frontend, para reusar ese componente.
+- Devuelve `{ resultados, total, facetas, categorias, subcategorias }`: `facetas` es `{nombre: [valores]}` de los atributos; `categorias`/`subcategorias` traen el conteo por cada una.
 
 `GET /api/busqueda` (público, sin auth — mismo criterio que `GET /api/productos`).
 
@@ -126,7 +133,9 @@ sugerencia: completion, contexts: [{ name: 'estado', type: 'category' }]
 
 **`conectar()` cambiado para ser autosanable:** antes solo aplicaba el mapping al crear el índice (`indices.create()`); ahora llama `indices.putMapping()` también cuando el índice ya existe. Agregar un campo nuevo a un mapping ya aplicado es una operación válida en Elasticsearch (a diferencia de cambiar el tipo de un campo existente), así que esto permite seguir ampliando `MAPPING` sin necesitar borrar y recrear el índice a mano cada vez — confirmado corriendo `npm run busqueda:backfill` sobre el índice ya existente de 106 productos, sin recrearlo.
 
-**`busquedaService.sugerir(q)`** — consulta `suggest`/`completion` separada de `buscar()` (prefijo + fuzzy sobre `sugerencia`, sin relevancia de texto libre ni agregaciones — pensada para responder mientras el usuario todavía escribe): `size: 8`, `skip_duplicates: true`, `fuzzy: { fuzziness: 'AUTO' }`, `contexts: { estado: ['activo'] }`. Expuesta en `GET /api/busqueda/sugerencias?q=` (público).
+**`busquedaService.sugerir(q)`** — consulta `suggest`/`completion` separada de `buscar()` (prefijo sobre `sugerencia`, sin relevancia de texto libre ni agregaciones — pensada para responder mientras el usuario todavía escribe): `size: 8`, `skip_duplicates: true`, `contexts: { estado: ['activo'] }`. Expuesta en `GET /api/busqueda/sugerencias?q=` (público). La versión original usaba solo `fuzzy: { fuzziness: 'AUTO' }`; desde 2026-10-19 hace **exactas primero, aproximadas solo si no hay ninguna** (ver abajo).
+
+**Exactas primero, aproximadas de respaldo (2026-10-19).** Con `fuzzy` a secas, un texto bien escrito traía también a sus «vecinos»: «smartphone x» (12 letras, hasta 2 ediciones con `AUTO`) devolvía los 8 smartphones, porque cada uno empieza con «smartphone » más UNA letra distinta (b, c, e, g, p: una edición), y los 8 puntuaban igual (12), así que nada ponía la coincidencia exacta por encima de las aproximadas. Ahora `sugerir()` manda **dos suggesters en una misma petición** — `exactas` (prefijo exacto) y `aproximadas` (el mismo con `fuzzy`) — y devuelve las exactas si hay alguna y las aproximadas solo cuando no hay ninguna. «smartphone x» → solo `Smartphone X100`; «camis» → 8 camisetas; «bicicletta» (error de tipeo, sin exactas) → las bicicletas, así que la tolerancia a errores se conserva. El descarte de vendedores suspendidos se hace **antes** de decidir: si todas las exactas eran de vendedores ocultos, se usan las aproximadas visibles. Cubierto por `tests/busquedaSugerencias.test.js` (8 pruebas sin conexiones: la forma de la consulta, la decisión exacta/aproximada, el tope de 8 y los suspendidos; verificadas con cinco regresiones simuladas) y por la prueba 5 de `verificarBusqueda.js` contra el motor real.
 
 **Frontend (`Header.jsx`)** — debounce de 250ms sobre el input de búsqueda ya existente, dropdown con navegación por teclado (flechas + Enter + Escape) y clic-afuera-cierra (mismo patrón `mousedown`+`contains` que ya usa `CategoryMenu.jsx`, no `onBlur`, porque `onBlur` del input dispara antes que el `onClick` de una sugerencia y la cerraría antes de poder seleccionarla). Un `ultimaBusquedaRef` evita que el dropdown se reabra solo justo después de ejecutar una búsqueda: sin él, seleccionar una sugerencia deja ese mismo texto en el input, lo que vuelve a disparar el efecto de autocompletado y reabre el dropdown con sugerencias que calzan contra el propio texto ya buscado, encima de la página de resultados — encontrado y corregido probando en navegador real, no era el comportamiento esperado.
 

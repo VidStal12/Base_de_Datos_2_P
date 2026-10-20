@@ -17,4 +17,10 @@ function esEnteroPositivo(valor) {
   return Number.isInteger(valor) && valor > 0;
 }
 
-module.exports = { esCorreoValido, validarPassword, esEnteroPositivo };
+// Texto literal para usarlo dentro de una expresión regular (el texto lo escribe una persona
+// en un buscador público: un `(` suelto o un patrón pesado no debe romper ni frenar la consulta).
+function escaparRegex(texto) {
+  return String(texto).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+module.exports = { esCorreoValido, validarPassword, esEnteroPositivo, escaparRegex };

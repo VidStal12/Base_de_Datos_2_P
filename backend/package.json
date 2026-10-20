@@ -37,6 +37,7 @@
     "busqueda:backfill": "node scripts/backfillBusqueda.js",
     "test:ventas": "node --test tests/ventas*.test.js",
     "test:busqueda": "node --test tests/busqueda*.test.js",
+    "test:resiliencia": "node --test tests/resiliencia*.test.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

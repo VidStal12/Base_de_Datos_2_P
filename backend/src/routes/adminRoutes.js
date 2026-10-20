@@ -7,6 +7,8 @@ const bloqueoService = require('../services/bloqueoService');
 const { mapaBloqueadas } = require('../services/suspensionService');
 const { mapaRestringidas } = require('../services/restriccionService');
 const limitePedidos = require('../services/limitePedidosService');
+const { responderError } = require('../utils/http');
+const { registrarFallo } = require('../utils/resiliencia');
 
 const router = express.Router();
 
@@ -14,7 +16,7 @@ const router = express.Router();
 // cosa es una dependencia caída y se informa sin detalles internos.
 function responderErrorBloqueo(res, err, contexto) {
   if ([400, 404].includes(err.status)) return res.status(err.status).json({ error: err.message });
-  console.error(`${contexto}:`, err.message);
+  registrarFallo(contexto, err);
   return res.status(503).json({ error: 'No se pudo completar la operación. Intenta nuevamente en unos momentos.' });
 }
 
@@ -35,7 +37,7 @@ router.get('/ventas', requireAuth, requireRole('administrador'), async (req, res
     res.json(await consultarVentas(req.query));
   } catch (err) {
     const status = [400, 422].includes(err.status) ? err.status : 503;
-    if (status === 503) console.error('No se pudo consultar el panel de ventas:', err.message);
+    if (status === 503) registrarFallo('No se pudo consultar el panel de ventas', err);
     res.status(status).json({ error: status === 503 ? 'El informe de ventas no está disponible. Intenta nuevamente en unos momentos.' : err.message });
   }
 });
@@ -56,7 +58,7 @@ router.get('/fraude', requireAuth, requireRole('administrador'), async (req, res
     ]);
     res.json({ ...datos, bloqueadas, restringidas });
   } catch (err) {
-    console.error('No se pudo consultar las señales de fraude:', err.message);
+    registrarFallo('No se pudo consultar las señales de fraude', err);
     res.status(503).json({ error: 'Las señales de fraude no están disponibles. Intenta nuevamente en unos momentos.' });
   }
 });
@@ -134,7 +136,7 @@ router.post('/recalcular-ventas', requireAuth, requireRole('administrador'), asy
     const resultado = await recalcularVentas();
     res.json(resultado);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    responderError(res, err, 500);
   }
 });
 
@@ -145,7 +147,7 @@ router.post('/recalcular-inventario', requireAuth, requireRole('administrador'),
     const resultado = await recalcularInventario();
     res.json(resultado);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    responderError(res, err, 500);
   }
 });
 

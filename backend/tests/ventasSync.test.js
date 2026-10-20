@@ -186,6 +186,7 @@ test('Cassandra reinicia conexión tras fallar y comparte un único cliente de c
     constructor(opciones) { this.opciones = opciones; clientes.push(this); }
     async connect() { if (clientes.length === 1) throw new Error('aún arrancando'); }
     async execute(sentencia) { consultas.push(sentencia); }
+    getState() { return { getConnectedHosts: () => ['127.0.0.1:9042'] }; }
     async shutdown() { this.cerrado = true; }
   }
   const config = cargar('../src/config/cassandra.js', { 'cassandra-driver': { Client } }, {
@@ -250,7 +251,7 @@ for (const variante of ['checkout', 'checkoutOferta']) {
       './checkoutIntentoService': { reutilizado: () => false },
       // checkoutService también valida "nadie compra lo suyo" y el compromiso de
       // no reventa; estas pruebas son de la captura del outbox, no de esas reglas.
-      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
+      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {}, estadoPublicacion: async () => new Map([[3, { estado: 'activo' }]]) },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       './fraudeSyncService': { registrarCompra: async () => {} },
       './ventasOutboxService': capturaPausada,
@@ -290,7 +291,7 @@ for (const variante of ['checkout', 'checkoutOferta']) {
       },
       './cartService': { bloquearUsuario: async () => {}, invalidarCache: async () => { cacheEscrita = true; }, avanzarVersion: async () => {} },
       './checkoutIntentoService': { reutilizado: () => false },
-      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {} },
+      './productoService': { verificarNoEsPropio: async () => {}, verificarVendedoresActivos: async () => {}, estadoPublicacion: async () => new Map([[3, { estado: 'activo' }]]) },
       './compromisoService': { exigirCompromiso: async () => ({ requerido: false, aceptadoEn: null }) },
       // fraudeSyncService ahora lee el correo de MySQL (prisma): sin este doble
       // el módulo real abriría una conexión en una prueba aislada.

@@ -2,6 +2,7 @@ const { types } = require('cassandra-driver');
 const prisma = require('../config/prisma');
 const cassandra = require('../config/cassandra');
 const { crearPayload } = require('./ventasOutboxService');
+const { registrarFallo } = require('../utils/resiliencia');
 const { fechaGuatemala } = require('../utils/ventas');
 
 let ejecucion;
@@ -128,7 +129,7 @@ function iniciar() {
       console.error(`Sincronización de ventas: ${resumen.fallidos} pendientes con reintento programado`);
     }
   }).catch((error) => {
-    console.error('No se pudo procesar el outbox de ventas:', error.message);
+    registrarFallo('No se pudo procesar el outbox de ventas', error);
   });
   temporizador = setInterval(ejecutar, intervalo);
   temporizador.unref();

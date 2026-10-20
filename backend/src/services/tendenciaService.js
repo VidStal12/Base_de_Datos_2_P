@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const { conectar: conectarMongo } = require('../config/mongo');
 const { conectar: conectarRedis } = require('../config/redis');
+const { ServicioNoDisponible, avisarCaida } = require('../utils/resiliencia');
 const Producto = require('../models/mongo/Producto');
 const checkoutService = require('./checkoutService');
 const productoService = require('./productoService');
@@ -161,13 +162,24 @@ async function calcularRecomendaciones(usuarioId) {
 // Cachea el resultado por usuario — el análisis + la búsqueda cruzan dos
 // bases y no hace falta recalcularlo en cada vista del catálogo. Mismo TTL
 // que rige el cupo personal de compra (ver comprar()), a propósito.
+//
+// La caché es solo una optimización: con Redis apagado se recalcula en cada visita (MySQL y
+// Mongo) en vez de fallar, y no se guarda nada.
 async function recomendar(usuarioId) {
-  const redis = conectarRedis();
-  const cacheado = await redis.get(claveCache(usuarioId));
+  let cacheado = null;
+  try {
+    cacheado = await conectarRedis().get(claveCache(usuarioId));
+  } catch (err) {
+    avisarCaida('redis', err);
+  }
   if (cacheado) return sinVendedoresOcultos(JSON.parse(cacheado));
 
   const resultado = await calcularRecomendaciones(usuarioId);
-  await redis.set(claveCache(usuarioId), JSON.stringify(resultado), 'EX', CACHE_TTL_SEGUNDOS);
+  try {
+    await conectarRedis().set(claveCache(usuarioId), JSON.stringify(resultado), 'EX', CACHE_TTL_SEGUNDOS);
+  } catch (err) {
+    avisarCaida('redis', err);
+  }
   return sinVendedoresOcultos(resultado);
 }
 
@@ -223,7 +235,14 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
 
   const redis = conectarRedis();
   const clave = claveCupo(productoId, usuarioId);
-  const restante = await redis.decrementarOferta(clave, CUPO_PERSONAL, CACHE_TTL_SEGUNDOS, cantidad);
+  let restante;
+  try {
+    restante = await redis.decrementarOferta(clave, CUPO_PERSONAL, CACHE_TTL_SEGUNDOS, cantidad);
+  } catch (err) {
+    // El cupo personal solo se puede hacer cumplir con el contador de Redis: sin él esta
+    // compra con descuento no se ofrece (la compra normal del producto sigue disponible).
+    throw new ServicioNoDisponible('redis', err, 'Las compras con descuento por recomendación necesitan la caché (Redis), que no responde ahora. Podés comprar el producto a su precio normal.');
+  }
   if (Number(restante) === RECHAZADO) {
     const err = new Error('Ya alcanzaste tu cupo personal para esta recomendación');
     err.status = 409;

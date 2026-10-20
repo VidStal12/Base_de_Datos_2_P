@@ -143,7 +143,7 @@ export function Header() {
                 role="combobox"
                 aria-expanded={mostrarSugerencias && sugerencias.length > 0}
                 aria-autocomplete="list"
-                className="w-full min-w-0 border-0 border-l border-brand-600 px-4 py-2.5 text-neutral-900 placeholder-neutral-400 focus:outline-2 focus:outline-accent-500"
+                className="w-full min-w-0 border-0 border-l border-brand-600 px-4 py-2.5 text-white placeholder-neutral-400 focus:outline-2 focus:outline-accent-500"
               />
               <button
                 type="submit"

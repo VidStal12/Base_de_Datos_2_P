@@ -12,6 +12,8 @@ const cartRoutes = require('./routes/cartRoutes');
 const ofertaRoutes = require('./routes/ofertaRoutes');
 const recomendacionRoutes = require('./routes/recomendacionRoutes');
 const busquedaRoutes = require('./routes/busquedaRoutes');
+const { manejarErrores } = require('./utils/http');
+const estadoServicios = require('./services/estadoServiciosService');
 
 const app = express();
 
@@ -23,6 +25,7 @@ app.get('/', (req, res) => {
     mensaje: 'TiendaYa API — todavía no hay frontend, este backend solo expone /api/*',
     endpoints: [
       'GET /api/health',
+      'GET /api/health/componentes (qué base de datos responde ahora: mysql, mongo, redis, elasticsearch, neo4j, cassandra; estado completo/degradado/critico)',
       'POST /api/auth/registro',
       'POST /api/auth/login',
       'GET /api/auth/me (requiere token)',
@@ -75,6 +78,8 @@ app.get('/', (req, res) => {
   });
 });
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+// Qué base responde ahora (la interfaz avisa qué función está limitada; ver estadoServiciosService.js).
+app.get('/api/health/componentes', async (req, res) => res.json(await estadoServicios.consultar()));
 app.use('/api/auth', authRoutes);
 app.use('/api/direcciones', direccionRoutes);
 app.use('/api/metodos-pago', metodoPagoRoutes);
@@ -87,5 +92,9 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/ofertas', ofertaRoutes);
 app.use('/api/recomendaciones', recomendacionRoutes);
 app.use('/api/busqueda', busquedaRoutes);
+
+// Último eslabón: una ruta que deja escapar un error (o una base caída) responde con un
+// mensaje claro y el estado correcto, no con la traza de Express (ver utils/http.js).
+app.use(manejarErrores);
 
 module.exports = app;
