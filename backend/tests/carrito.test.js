@@ -47,6 +47,15 @@ function escenario({ propios = [], suspendidos = [] } = {}) {
 }
 
 // Doble de lo que checkoutService necesita para llegar hasta la transacción.
+test('invalidar la caché informa éxito o fallo sin lanzar ni cambiar el carrito durable', async () => {
+  const e = escenario();
+  e.filas.set(1, 2);
+  assert.equal(await e.servicio.invalidarCache(7), true);
+  e.redis.invalidarCarrito = async () => { throw new ServicioNoDisponible('redis'); };
+  assert.equal(await e.servicio.invalidarCache(7), false);
+  assert.equal(e.filas.get(1), 2);
+});
+
 function dependenciasCheckout(extra = {}) {
   return {
     '../config/mongo': { conectar: async () => {} },

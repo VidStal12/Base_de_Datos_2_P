@@ -21,7 +21,8 @@ async function avanzarVersion(tx, usuarioId) {
 }
 
 async function invalidarCache(usuarioId) {
-  await cacheSeguro((redis) => redis.invalidarCarrito(clave(usuarioId), revisionClave(usuarioId)));
+  // El resto del carrito puede ignorarlo; checkout necesita comunicar el fallo parcial.
+  return (await cacheSeguro((redis) => redis.invalidarCarrito(clave(usuarioId), revisionClave(usuarioId)))) !== undefined;
 }
 
 function leerLineas(crudo) {

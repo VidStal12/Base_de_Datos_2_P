@@ -53,7 +53,18 @@ async function recuperar(usuarioId, intentoId, datos) {
 }
 function vista(i) {
   return { intentoId: i.id, estado: i.estado, compraId: i.compra_id, items: i.items, versionCarrito: i.version_carrito,
-    datos: i.reserva?.solicitud || null };
+    datos: i.reserva?.solicitud || null, advertencias: i.respuesta?.advertencias || [] };
+}
+// El pedido ya confirmó. Guardar el aviso permite recuperarlo al reenviar o recargar;
+// un fallo al guardar este dato informativo nunca convierte la compra en un rechazo.
+async function guardarAdvertencias(usuarioId, intentoId, respuesta) {
+  if (!intentoId) return;
+  try {
+    await prisma.checkout_intento.updateMany({
+      where: { id: intentoId, id_usuario: usuarioId, estado: 'completado', compra_id: respuesta.compra.id },
+      data: { respuesta: json(respuesta) },
+    });
+  } catch (err) { registrarFallo('No se pudo guardar el aviso del checkout', err); }
 }
 async function preparar(usuarioId, { productoId, ofertaVersion, anteriorIntentoId } = {}) {
   return prisma.$transaction(async (tx) => {
@@ -183,5 +194,5 @@ function iniciar() {
   ejecutar();
 }
 async function detener() { clearInterval(temporizador); temporizador = undefined; await ejecucion; }
-module.exports = { preparar, consultar, recuperar, registrarReserva, transaccion, resolverFallo, reconciliar, iniciar, detener,
+module.exports = { preparar, consultar, recuperar, registrarReserva, guardarAdvertencias, transaccion, resolverFallo, reconciliar, iniciar, detener,
   reutilizado: (respuesta) => !!respuesta[REUTILIZADO], error };

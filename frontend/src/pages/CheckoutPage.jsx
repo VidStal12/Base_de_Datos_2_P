@@ -12,8 +12,9 @@ import { CompromisoNoReventaModal } from '../components/checkout/CompromisoNoRev
 import { ConfirmarContrasenaModal } from '../components/checkout/ConfirmarContrasenaModal';
 import { CODIGO_COMPROMISO, puedeVender } from '../utils/compromiso';
 import { errorDeContrasena, esRechazoDeContrasena } from '../utils/restriccion';
-import { cargarIntento, renovarIntento, claveIntento } from '../utils/checkoutIntento';
+import { cargarIntento, renovarIntento, claveIntento, esResultadoCheckoutIncierto } from '../utils/checkoutIntento';
 import { EstadoIntento } from '../components/checkout/EstadoIntento';
+import { AvisoCheckoutInterrumpido } from '../components/checkout/AvisoCheckoutInterrumpido';
 
 export function CheckoutPage() {
   const { token, usuario } = useAuth();
@@ -35,6 +36,9 @@ export function CheckoutPage() {
   // aceptó del compromiso — mientras el diálogo está abierto. null = no se está pidiendo.
   const [pidiendoContrasena, setPidiendoContrasena] = useState(null);
   const [intento, setIntento] = useState(null);
+  const [avisoIntento, setAvisoIntento] = useState(false);
+  const [consultandoIntento, setConsultandoIntento] = useState(false);
+  const [mensajeConsulta, setMensajeConsulta] = useState('');
   const enCurso = useRef(false);
   const clave = claveIntento(usuario.id_usuario);
 
@@ -46,7 +50,7 @@ export function CheckoutPage() {
         setIntento(actual);
         if (actual.estado === 'completado') {
           sessionStorage.removeItem(clave);
-          navigate(`/pedidos/${actual.compraId}`, { replace: true });
+          navigate(`/pedidos/${actual.compraId}`, { replace: true, state: { advertencias: actual.advertencias } });
           return null;
         }
         return Promise.all([direccionesApi.listar(token), metodosPagoApi.listar(token), refrescar(true)]);
@@ -75,13 +79,41 @@ export function CheckoutPage() {
     try {
       const actual = await renovarIntento(clave, intento, (datos) => checkoutApi.preparar(datos, token), token);
       setIntento(actual);
+      setAvisoIntento(false);
+      setMensajeConsulta('');
       if (actual.estado === 'completado') {
-        navigate(`/pedidos/${actual.compraId}`);
+        navigate(`/pedidos/${actual.compraId}`, { state: { advertencias: actual.advertencias } });
         return;
       }
       await refrescar(true);
     } catch (err) { setError(err.message); }
     finally { enCurso.current = false; setConfirmando(false); }
+  }
+
+  async function consultarEstado() {
+    if (enCurso.current || !intento) return;
+    enCurso.current = true;
+    setConsultandoIntento(true);
+    setMensajeConsulta('');
+    try {
+      // Solo consulta el intento existente: no cancela, renueva ni confirma una compra.
+      const actual = await checkoutApi.intento(intento.intentoId, token);
+      setIntento(actual);
+      if (actual.estado === 'completado') {
+        limpiarLocal();
+        sessionStorage.removeItem(clave);
+        navigate(`/pedidos/${actual.compraId}`, { state: { advertencias: actual.advertencias } });
+      } else if (actual.estado === 'pendiente') {
+        setMensajeConsulta('Todavía no figura una compra confirmada para este intento. Podés volver a consultar o reintentar el mismo pedido.');
+      }
+    } catch (err) {
+      setMensajeConsulta(esResultadoCheckoutIncierto(err)
+        ? 'El servicio sigue sin responder. Tu intento permanece guardado; probá consultar nuevamente en unos instantes.'
+        : err.message);
+    } finally {
+      enCurso.current = false;
+      setConsultandoIntento(false);
+    }
   }
 
   async function crearDireccion(datos) {
@@ -113,7 +145,7 @@ export function CheckoutPage() {
     setPidiendoCompromiso(false);
     setConfirmando(true);
     try {
-      const { compra } = await checkoutApi.confirmar(
+      const { compra, advertencias } = await checkoutApi.confirmar(
         {
           direccionId,
           metodoPagoId,
@@ -127,8 +159,10 @@ export function CheckoutPage() {
       // El servidor ya vació SQL en la transacción. No borrar artículos añadidos después.
       limpiarLocal();
       sessionStorage.removeItem(clave);
-      navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true } });
+      navigate(`/pedidos/${compra.id}`, { state: { recienCreado: true, advertencias } });
     } catch (err) {
+      setAvisoIntento(esResultadoCheckoutIncierto(err));
+      setMensajeConsulta('');
       // Si el servidor pide el compromiso (la interfaz tenía el rol desactualizado),
       // se vuelve a mostrar el aviso en vez de un error suelto.
       if (err.codigo === CODIGO_COMPROMISO) {
@@ -150,7 +184,7 @@ export function CheckoutPage() {
         if (actual.estado === 'completado') {
           limpiarLocal();
           sessionStorage.removeItem(clave);
-          navigate(`/pedidos/${actual.compraId}`);
+          navigate(`/pedidos/${actual.compraId}`, { state: { advertencias: actual.advertencias } });
         }
       } catch { /* Conservar el intento cuando tampoco responde la consulta. */ }
     } finally {
@@ -166,10 +200,11 @@ export function CheckoutPage() {
   if (items.length === 0) {
     return <p className="py-16 text-center text-neutral-600">Tu carrito está vacío.</p>;
   }
-  const listoParaConfirmar = intento.estado === 'pendiente' && direccionId && metodoPagoId && !confirmando && !items.some((item) => item.disponible === false);
+  const listoParaConfirmar = intento.estado === 'pendiente' && direccionId && metodoPagoId && !confirmando && !consultandoIntento && !items.some((item) => item.disponible === false);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+      {avisoIntento && <AvisoCheckoutInterrumpido onConsultar={consultarEstado} consultando={consultandoIntento} confirmando={confirmando} mensajeConsulta={mensajeConsulta} />}
       <div className="flex flex-col gap-6">
         <section>
           <h2 className="mb-3 text-lg font-bold text-neutral-900">1. Dirección de envío</h2>
@@ -245,7 +280,7 @@ export function CheckoutPage() {
           <span className="font-bold text-neutral-900">{formatCurrency(total)}</span>
         </div>
 
-        {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
+        {error && !avisoIntento && <p role="alert" className="mt-3 text-sm text-danger-600">{error}</p>}
         {items.some((item) => item.disponible === false) && <p role="alert" className="mt-3 text-sm text-danger-600">Hay productos sin disponibilidad. Revisá el carrito.</p>}
 
         <Button
@@ -254,11 +289,11 @@ export function CheckoutPage() {
           onClick={pedirConfirmacion}
           className="mt-4 w-full py-3"
         >
-          {confirmando ? 'Confirmando...' : 'Confirmar pedido'}
+          {confirmando ? 'Confirmando...' : avisoIntento ? 'Reintentar mismo pedido' : 'Confirmar pedido'}
         </Button>
       </aside>
 
-      {error && <Button variant="outline" disabled={confirmando} onClick={revisarCompra}>Revisar datos de compra</Button>}
+      {error && <Button variant="outline" disabled={confirmando || consultandoIntento} onClick={revisarCompra}>Revisar datos de compra</Button>}
       <CompromisoNoReventaModal
         abierto={pidiendoCompromiso}
         procesando={confirmando}

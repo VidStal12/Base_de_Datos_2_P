@@ -38,6 +38,12 @@ export function OrderDetailPage() {
         </div>
       )}
 
+      {location.state?.advertencias?.map((aviso) => (
+        <div key={aviso.codigo} role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          {aviso.mensaje}
+        </div>
+      ))}
+
       <div className="rounded-xl border border-neutral-200 bg-white p-6">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 pb-4">
           <div>

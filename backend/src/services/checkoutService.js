@@ -9,6 +9,7 @@ const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
 const intentos = require('./checkoutIntentoService');
 const reconciliacionMongo = require('./reconciliacionMongoService');
+const demo = require('./checkoutDemoService');
 
 // El tope por pedido de una cuenta con límites suaves: 403 con `codigo: LIMITE_MONTO`.
 function verificarTopeDeMonto(total, montoMaximo) {
@@ -75,6 +76,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
     throw err;
   }
 
+  await demo.pausar('before_transaction', { usuarioId, intentoId });
   const ejecutar = intentoId
     ? (operacion) => intentos.transaccion({ usuarioId, intentoId, datos }, operacion)
     : (operacion) => prisma.$transaction(operacion);
@@ -171,8 +173,16 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
     return { compra, pago };
   }).then(async (resultado) => {
     if (intentos.reutilizado(resultado)) return resultado;
+    await demo.pausar('after_commit_before_redis', { usuarioId, intentoId, compraId: resultado.compra.id });
     // Invalidar inmediatamente después del commit, antes de los reenvíos lentos.
-    await cartService.invalidarCache(usuarioId);
+    const cacheActualizada = await cartService.invalidarCache(usuarioId);
+    if (cacheActualizada === false) {
+      resultado.advertencias = [{
+        codigo: 'CARRITO_CACHE_PENDIENTE',
+        mensaje: 'Tu pedido quedó confirmado. Al confirmar la compra, no pudimos actualizar el carrito. No necesitás repetir la compra. Si todavía ves los productos comprados, entrá al checkout para actualizar el carrito.',
+      }];
+      await intentos.guardarAdvertencias(usuarioId, intentoId, resultado);
+    }
     // Fuera de la transacción a propósito: la compra ya está confirmada y es
     // irreversible en MySQL en este punto, esto solo actualiza las cachés de
     // lectura en Mongo (total_vendido Y cantidad, ver Producto.js — MySQL

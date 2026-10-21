@@ -2,6 +2,11 @@ import { checkoutApi } from '../api/cuenta';
 
 export const claveIntento = (usuarioId, productoId) => `tiendaya_checkout:${usuarioId}:${productoId ? `flash:${productoId}` : 'normal'}`;
 
+// Tras enviar una confirmación, un fallo de red o del servidor no demuestra
+// que hubo rollback: el pedido puede haberse confirmado antes de perder la respuesta.
+export const esResultadoCheckoutIncierto = (err) => err.codigo === 'CHECKOUT_INCIERTO'
+  || err.codigo === 'SIN_CONEXION' || err.status >= 500;
+
 // sessionStorage conserva el intento en una recarga; la sesión del servidor
 // comparte el mismo intento entre ventanas, sin carreras de localStorage.
 export async function cargarIntento(clave, preparar, token) {

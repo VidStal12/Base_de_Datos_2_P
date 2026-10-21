@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { cargar } = require('./redisHelpers');
 
-function escenario(flash = false) {
+function escenario(flash = false, fallo = null) {
   let pedidos = 0;
   let controles = 0;
   let completado = false;
@@ -17,6 +17,7 @@ function escenario(flash = false) {
     reutilizado: () => false,
   };
   const comprar = async (...args) => {
+    if (fallo) throw fallo;
     const datos = flash ? args[2] : args[0];
     assert.equal(datos.intentoId, 'intento-1');
     pedidos++;
@@ -36,6 +37,16 @@ function escenario(flash = false) {
   });
   return { enviar, pedidos: () => pedidos, controles: () => controles };
 }
+
+test('HTTP normal: MySQL inaccesible comunica resultado incierto y conserva la instrucción de consultar el intento', async () => {
+  const { ServicioNoDisponible } = require('../src/utils/resiliencia');
+  const e = escenario(false, new ServicioNoDisponible('mysql'));
+  const r = await e.enviar({ intentoId: 'intento-1' });
+  assert.equal(r.status, 503);
+  assert.equal(r.datos.codigo, 'CHECKOUT_INCIERTO');
+  assert.match(r.datos.error, /Conservamos el intento/);
+  assert.equal(e.pedidos(), 0);
+});
 for (const flash of [false, true]) {
   const nombre = flash ? 'flash' : 'normal';
   test(`HTTP ${nombre}: no se puede eludir la protección omitiendo el intento`, async () => {

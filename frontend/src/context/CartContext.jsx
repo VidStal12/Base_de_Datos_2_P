@@ -14,7 +14,12 @@ export function CartProvider({ children }) {
   const [items, setItems] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
-  const [mensaje, setMensaje] = useState('');
+  const [notificacion, setNotificacion] = useState(null);
+  const cerrarNotificacion = useCallback(() => setNotificacion(null), []);
+  const avisarError = useCallback((err) => {
+    setError(err.message);
+    setNotificacion({ mensaje: err.message, tipo: 'error' });
+  }, []);
 
   useEffect(() => {
     let vigente = true;
@@ -37,11 +42,11 @@ export function CartProvider({ children }) {
     carga.then((carrito) => {
       if (!vigente) return;
       setItems(carrito.items);
-      if (pendiente?.productoId) setMensaje('Listo, agregamos tu producto al carrito.');
-    }).catch((err) => { if (vigente) setError(err.message); })
+      if (pendiente?.productoId) setNotificacion({ mensaje: 'Listo, agregamos tu producto al carrito.', tipo: 'exito' });
+    }).catch((err) => { if (vigente) avisarError(err); })
       .finally(() => { if (vigente) setCargando(false); });
     return () => { vigente = false; };
-  }, [usuario, token, location.pathname]);
+  }, [usuario, token, location.pathname, avisarError]);
 
   const refrescar = useCallback(async (revisar = false) => {
     if (!token) return;
@@ -68,25 +73,26 @@ export function CartProvider({ children }) {
     try {
       const carrito = await carritoApi.agregar(producto.id, cantidad, token);
       setItems(carrito.items);
+      setNotificacion({ mensaje: 'Producto añadido al carrito.', tipo: 'exito' });
       return true;
-    } catch (err) { setError(err.message); return false; }
+    } catch (err) { avisarError(err); return false; }
   }
 
   async function actualizarCantidad(productoId, cantidad) {
     setError('');
     try { setItems((await carritoApi.actualizarCantidad(productoId, cantidad, token)).items); }
-    catch (err) { setError(err.message); }
+    catch (err) { avisarError(err); }
   }
 
   async function quitar(productoId) {
     setError('');
     try { setItems((await carritoApi.quitar(productoId, token)).items); }
-    catch (err) { setError(err.message); }
+    catch (err) { avisarError(err); }
   }
 
   async function vaciar() {
     try { await carritoApi.vaciar(token); setItems([]); }
-    catch (err) { setError(err.message); }
+    catch (err) { avisarError(err); }
   }
 
   function limpiarLocal() { setItems([]); }
@@ -96,7 +102,7 @@ export function CartProvider({ children }) {
   return (
     <CartContext.Provider value={value}>
       {children}
-      <Toast mensaje={mensaje} onCerrar={() => setMensaje('')} />
+      <Toast mensaje={notificacion?.mensaje} tipo={notificacion?.tipo} onCerrar={cerrarNotificacion} />
     </CartContext.Provider>
   );
 }

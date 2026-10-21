@@ -393,6 +393,8 @@ Las rutas de compra normal y flash requieren `intentoId`. La interfaz lo prepara
 
 Después de actualizar el proyecto, ejecutar desde `backend/` `npm run prisma:generate` y `npm run prisma:deploy`, y reiniciar el backend. Se agregan la versión del carrito y las tablas de intentos/sesiones sin borrar datos existentes.
 
+`npm run dev` regenera el cliente Prisma antes de iniciar para que refleje el esquema actual. Si al añadir al carrito aparece `Unknown argument id_usuario_id_producto`, el cliente generado está desactualizado: regenerarlo y reiniciar el backend. `npm run verificar:altaCarrito` prueba el alta mediante HTTP con una cuenta sintética, sin realizar compras, y restaura la cantidad anterior de su carrito.
+
 La reserva y la devolución flash son idempotentes. Las promociones reconfiguradas usan `oferta:{productoId}:stock:{revision}`; los reenvíos y compensaciones no consumen ni devuelven dos veces el mismo cupo. Un worker recupera compensaciones pendientes cada 30 segundos y cierra intentos abandonados tras 15 minutos, comprobando su estado bajo bloqueo de MySQL.
 
 Pruebas: `npm run test:checkout` y `npm run verificar:idempotencia` (esta última requiere las bases locales, crea datos sintéticos propios y los limpia al terminar). Detalles, límites y evidencia: [IA/CHECKOUT-IDEMPOTENCIA.md](IA/CHECKOUT-IDEMPOTENCIA.md).

@@ -321,3 +321,31 @@ Los seis contenedores son `tiendaya-mysql`, `tiendaya-mongo`, `tiendaya-redis`, 
 - **La primera petición tras la caída paga el descubrimiento** (hasta ~2,5 s con MySQL, ~1,3 s en el panel de fraude); después, el cortacircuitos la vuelve inmediata.
 - **La aplicación vuelve a usar una base unos segundos después de que su contenedor está sano** (de inmediato a ~25 s; el peor caso observado fue Cassandra, cuyo driver reconecta con espera creciente y a la que además se le da una ventana de 5 s del cortacircuitos). Nada hay que reiniciar.
 - **Los tiempos son de esta máquina** (Windows + Docker Desktop, donde un puerto publicado de un contenedor detenido rechaza conexiones al instante); donde las conexiones se cuelgan en vez de rechazarse, el tope de cada cliente es lo que acota la espera.
+
+## 8. Pausas para demostrar fallos reales y comunicación al comprador
+
+Desde el 2026-10-20, el checkout normal dispone de dos pausas asíncronas opcionales,
+fuera de la transacción: `before_transaction` y `after_commit_before_redis`.
+Permiten detener MySQL o Redis desde Docker en un punto identificable del flujo.
+La configuración, los pasos, las verificaciones y los límites están en
+[DEMO-FALLOS-CHECKOUT.md](DEMO-FALLOS-CHECKOUT.md).
+
+Cuando falla la invalidación de Redis tras confirmar MySQL, se conserva la compra
+y se devuelve `advertencias` con `CARRITO_CACHE_PENDIENTE`. La pantalla del pedido
+comunica que la compra está confirmada y que no debe repetirse. El aviso se guarda
+en el intento con mejor esfuerzo para recuperarlo al consultar o reenviar. Una
+caída de MySQL durante el checkout devuelve `CHECKOUT_INCIERTO`: se conserva el
+intento antes de volver a decidir una compra, porque una desconexión alrededor del
+COMMIT no demuestra un rollback.
+
+La interfaz del checkout normal muestra un aviso persistente ante una respuesta
+incierta, un error de red o un error de servidor durante la confirmación. Explica
+que conserva el intento y ofrece **Consultar estado**, que solo hace una lectura
+del intento existente. Si ya está completado, abre el pedido; si sigue pendiente
+o el servicio no responde, conserva el aviso y permite consultar nuevamente. El
+botón de confirmación pasa a **Reintentar mismo pedido**, usando el mismo intento.
+Este aviso funciona en el flujo normal, sin activar las pausas de demostración.
+
+Las pruebas automatizadas de estos cambios usan dobles. La demostración de esta
+sección con contenedores reales aún debe ejecutarse y adjuntarse como evidencia;
+el motor de Docker Desktop no estaba disponible durante esta implementación.

@@ -40,6 +40,12 @@ function escenario() {
         estado.intentos.set(i.id, i);
         return i;
       },
+      updateMany: async ({ where, data }) => {
+        const i = estado.intentos.get(where.id);
+        if (!i || i.id_usuario !== where.id_usuario || i.estado !== where.estado || i.compra_id !== where.compra_id) return { count: 0 };
+        estado.intentos.set(i.id, { ...i, ...data });
+        return { count: 1 };
+      },
       findMany: async () => [...estado.intentos.values()].filter((i) =>
         (i.estado === 'fallido' && !i.compensado) || (i.estado === 'pendiente' && i.actualizado_en < new Date(Date.now() - 15 * 60000))),
     },
@@ -231,4 +237,31 @@ test('el barrido recupera una reserva abandonada tras la caída del proceso', as
   await e.servicio.reconciliar();
   assert.equal((await e.servicio.consultar(7, i.intentoId)).estado, 'fallido');
   assert.equal(e.cupo(), 2);
+});
+
+test('el aviso post-commit se conserva al consultar y reenviar, y solo se guarda para el dueño y el pedido correcto', async () => {
+  const e = escenario();
+  const i = await e.servicio.preparar(7);
+  const args = { usuarioId: 7, intentoId: i.intentoId, datos };
+  await e.servicio.transaccion(args, () => e.comprar());
+  const r = { ...respuesta, advertencias: [{ codigo: 'CARRITO_CACHE_PENDIENTE', mensaje: 'Compra confirmada' }] };
+  await e.servicio.guardarAdvertencias(8, i.intentoId, r);
+  assert.equal((await e.servicio.consultar(7, i.intentoId)).advertencias.length, 0);
+  await e.servicio.guardarAdvertencias(7, i.intentoId, { ...r, compra: { id: 999 } });
+  assert.equal((await e.servicio.consultar(7, i.intentoId)).advertencias.length, 0);
+  await e.servicio.guardarAdvertencias(7, i.intentoId, r);
+  assert.equal((await e.servicio.consultar(7, i.intentoId)).advertencias[0].codigo, 'CARRITO_CACHE_PENDIENTE');
+  const repetida = await e.servicio.recuperar(7, i.intentoId, datos);
+  assert.equal(repetida.advertencias[0].codigo, 'CARRITO_CACHE_PENDIENTE');
+  assert.equal(e.estado().compras.length, 1);
+});
+
+test('fallar al guardar un aviso informativo no rechaza ni revierte la compra confirmada', async () => {
+  const e = escenario();
+  const i = await e.servicio.preparar(7);
+  await e.servicio.transaccion({ usuarioId: 7, intentoId: i.intentoId, datos }, () => e.comprar());
+  e.db.checkout_intento.updateMany = async () => { throw new Error('MySQL desconectado'); };
+  await e.servicio.guardarAdvertencias(7, i.intentoId, respuesta);
+  assert.equal((await e.servicio.consultar(7, i.intentoId)).estado, 'completado');
+  assert.equal(e.estado().compras.length, 1);
 });

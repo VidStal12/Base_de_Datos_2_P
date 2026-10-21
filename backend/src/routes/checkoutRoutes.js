@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { controlPedidos } = require('../middleware/controlPedidos');
 const { cuerpoDeError, responderError } = require('../utils/http');
 const intentos = require('../services/checkoutIntentoService');
+const { componenteCaido } = require('../utils/resiliencia');
 
 const router = express.Router();
 
@@ -51,10 +52,11 @@ router.post('/', requireAuth, recuperarConfirmado, controlPedidos, async (req, r
     res.locals.checkoutReutilizado = intentos.reutilizado(resultado);
     res.status(res.locals.checkoutReutilizado ? 200 : 201).json(resultado);
   } catch (err) {
-    if (!err.status) {
-      err.status = 503;
-      err.codigo = 'CHECKOUT_INCIERTO';
-      err.message = 'No pudimos verificar tu compra. Volvé a intentarlo para consultar su resultado.';
+    if (!err.status || ['mysql', 'desconocido'].includes(componenteCaido(err))) {
+      // La pérdida de conexión puede ocurrir al confirmar el COMMIT. No afirmar
+      // que falló ni crear otro intento sin consultar el resultado durable.
+      return res.status(503).json({ codigo: 'CHECKOUT_INCIERTO',
+        error: 'No pudimos verificar tu compra. Conservamos el intento: volvé a intentarlo para consultar su resultado sin duplicar el pedido.' });
     }
     res.status(err.status).json(cuerpoDeError(err));
   }
