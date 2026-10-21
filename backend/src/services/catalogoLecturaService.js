@@ -6,6 +6,7 @@ const Producto = require('../models/mongo/Producto');
 const { conectar } = require('../config/mongo');
 const { componenteCaido } = require('../utils/resiliencia');
 const { escaparRegex } = require('../utils/validation');
+const facetas = require('./facetasBusqueda');
 
 // Lecturas del catálogo que SOBREVIVEN a la caída de Mongo o de Elasticsearch
 // (IA/ENTREGA-3-CONSISTENCIA.md §7). Los dos guardan una copia de lo que el catálogo
@@ -37,55 +38,65 @@ async function conRespaldo(principal, respaldo, componente) {
   }
 }
 
-function contar(productos, clave) {
-  const cuentas = new Map();
-  for (const producto of productos) {
-    const nombre = clave(producto);
-    if (nombre) cuentas.set(nombre, (cuentas.get(nombre) || 0) + 1);
-  }
-  return [...cuentas.entries()].sort((a, b) => b[1] - a[1]).map(([nombre, cantidad]) => ({ nombre, cantidad }));
-}
-
-// Misma forma que la agregación de Elasticsearch: { nombreDelAtributo: [valores…] }, los 20
-// atributos y 30 valores más frecuentes.
-function facetasDe(productos) {
-  const porNombre = new Map();
-  for (const producto of productos) {
-    for (const { nombre, valor } of producto.atributos || []) {
-      if (!porNombre.has(nombre)) porNombre.set(nombre, new Map());
-      const valores = porNombre.get(nombre);
-      valores.set(valor, (valores.get(valor) || 0) + 1);
-    }
-  }
-  const masFrecuentes = (mapa, limite) => [...mapa.entries()].sort((a, b) => b[1] - a[1]).slice(0, limite);
-  const totales = new Map([...porNombre].map(([nombre, valores]) => [nombre, [...valores.values()].reduce((a, b) => a + b, 0)]));
-  return Object.fromEntries(masFrecuentes(totales, 20).map(([nombre]) => [nombre, masFrecuentes(porNombre.get(nombre), 30).map(([valor]) => valor)]));
-}
-
-// La misma respuesta que busquedaService.buscar(), armada con Mongo. `modo: 'basico'` le
-// avisa a la interfaz que la tolerancia a errores de tipeo no está activa.
+// La misma respuesta que busquedaService.buscar() (ver facetasBusqueda.js), armada con Mongo.
+// `modo: 'basico'` le avisa a la interfaz que la tolerancia a errores de tipeo no está activa.
+// A Mongo solo se le pide el TEXTO (más estado activo y vendedores suspendidos, que ya filtra
+// productoService.listar): categoría, precio y atributos se aplican en memoria porque las facetas
+// disyuntivas necesitan "todos los filtros menos el suyo" y el conjunto recortado no alcanza.
+// Es la misma cuenta que hacen las agregaciones del motor, así que la interfaz no nota la diferencia.
 async function buscarEnCatalogo(opciones) {
-  const productos = await productoService.listar({
-    q: opciones.q,
-    categoriaId: opciones.categoriaId,
-    subcategoriaId: opciones.subcategoriaId,
-    atributos: opciones.atributos,
-    precioMin: opciones.precioMin,
-    precioMax: opciones.precioMax,
-    ordenarPor: opciones.ordenarPor,
-  });
-  return {
-    resultados: productos.slice(0, 60),
-    total: productos.length,
-    facetas: facetasDe(productos),
-    categorias: contar(productos, (p) => p.subcategoria?.categoria),
-    subcategorias: contar(productos, (p) => p.subcategoria?.subcategoria),
-    modo: 'basico',
-  };
+  const filtros = facetas.normalizarConsulta(opciones);
+  const productos = await productoService.listar({ q: filtros.q });
+  return { ...facetas.desdeLista(productos, filtros), modo: 'basico' };
 }
 
-function buscar(opciones = {}) {
-  return conRespaldo(() => busquedaService.buscar(opciones), () => buscarEnCatalogo(opciones), 'elasticsearch');
+// El índice se actualiza al crear o editar un producto, pero NO al comprarlo: el stock y las ventas
+// que muestra una tarjeta pueden ir atrasados respecto de Mongo, que sí los descuenta en cada checkout
+// (checkoutService.js). Se vuelven a leer de Mongo solo para los productos de la página (a lo sumo 100,
+// una consulta) y se reemplazan en la respuesta. Sin Mongo se muestran los valores del índice: la
+// búsqueda no debe fallar por un dato que solo hace falta pulir.
+async function conExistenciasVigentes(respuesta) {
+  if (respuesta.modo === 'basico' || respuesta.resultados.length === 0) return respuesta; // el respaldo ya viene de Mongo
+  try {
+    await conectar();
+    const docs = await Producto.find({ producto_id: { $in: respuesta.resultados.map((p) => p.id) } })
+      .select('producto_id inventario.cantidad total_vendido')
+      .lean();
+    const vigentes = new Map(docs.map((doc) => [doc.producto_id, doc]));
+    return {
+      ...respuesta,
+      resultados: respuesta.resultados.map((p) => {
+        const vigente = vigentes.get(p.id);
+        if (!vigente) return p;
+        return {
+          ...p,
+          inventario: { ...p.inventario, cantidad: vigente.inventario?.cantidad ?? p.inventario.cantidad },
+          total_vendido: vigente.total_vendido ?? p.total_vendido,
+        };
+      }),
+    };
+  } catch (err) {
+    if (!componenteCaido(err)) console.error('No se pudo releer el stock de los resultados de la búsqueda:', err.message);
+    return respuesta;
+  }
+}
+
+// La portada y las categorías sin ningún otro filtro. Solo ahí un índice VACÍO es sospechoso: un
+// Elasticsearch recién creado, al que todavía no se le corrió `npm run busqueda:backfill`.
+function esNavegacionPura(opciones) {
+  const f = facetas.normalizarConsulta(opciones);
+  return !f.q && Object.keys(f.atributos).length === 0 && f.precioMin === undefined && f.precioMax === undefined && f.pagina === 1;
+}
+
+// La búsqueda y la navegación por categorías son UNA sola consulta (busquedaService.buscar). Con
+// Elasticsearch apagado la contesta Mongo (`modo: 'basico'`); con el índice vacío en la portada también,
+// para que la tienda no aparezca vacía hasta que alguien repueble el índice.
+async function buscar(opciones = {}) {
+  let respuesta = await conRespaldo(() => busquedaService.buscar(opciones), () => buscarEnCatalogo(opciones), 'elasticsearch');
+  if (respuesta.total === 0 && !respuesta.modo && esNavegacionPura(opciones)) {
+    respuesta = await buscarEnCatalogo(opciones).then((deMongo) => (deMongo.total > 0 ? deMongo : respuesta), () => respuesta);
+  }
+  return conExistenciasVigentes(respuesta);
 }
 
 // Sugerencias por prefijo contra Mongo: sin tolerancia a errores, pero escribir en la caja de

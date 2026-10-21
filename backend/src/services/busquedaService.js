@@ -1,33 +1,16 @@
 const { conCircuito, indice } = require('../config/elasticsearch');
 const { vendedoresSuspendidos } = require('./suspensionService');
+const facetas = require('./facetasBusqueda');
 
-// Mismo formato que ya manda el frontend a productoService.listar() — JSON
-// de {nombre: valor}, ver condicionesAtributos() ahí — un valor exacto por
-// atributo, todos exigidos a la vez. `nested` con dos `term` en el mismo
-// `must` mantiene nombre/valor pegados al MISMO elemento del array, igual
-// que ya hace $elemMatch en Mongo (ver config/elasticsearch.js, mapping).
-function filtrosAtributos(atributos) {
-  if (!atributos) return [];
-  let pares;
-  try {
-    pares = typeof atributos === 'string' ? JSON.parse(atributos) : atributos;
-  } catch {
-    return []; // JSON inválido en un endpoint público de solo lectura: se ignora, no se rompe la búsqueda
-  }
-  if (!pares || typeof pares !== 'object') return [];
-  return Object.entries(pares)
-    .filter(([nombre, valor]) => nombre && valor)
-    .map(([nombre, valor]) => ({
-      nested: {
-        path: 'atributos',
-        query: {
-          bool: {
-            must: [{ term: { 'atributos.nombre': nombre } }, { term: { 'atributos.valor': valor } }],
-          },
-        },
-      },
-    }));
-}
+// Un atributo elegido, como filtro: `nested` mantiene nombre/valor pegados al MISMO elemento del
+// array (igual que $elemMatch en Mongo, ver config/elasticsearch.js) y `terms` deja elegir varios
+// valores del mismo atributo (O entre ellos). Con `term` y un arreglo el motor responde 400.
+const clausulaAtributo = (nombre, valores) => ({
+  nested: {
+    path: 'atributos',
+    query: { bool: { filter: [{ term: { 'atributos.nombre': nombre } }, { terms: { 'atributos.valor': valores } }] } },
+  },
+});
 
 // Reacomoda el _source del índice a la MISMA forma que ya devuelve
 // productoService.obtener()/formatear() para lo que ProductCard.jsx
@@ -65,78 +48,173 @@ function aProducto(hit) {
 // productoService.listar(), esta es una vista pública de vitrina, no repite
 // la lógica de "vendedor ve sus propios inactivos" de GET /api/productos.
 //
-// `vendedorId`, `incluirInactivos` y `tamano` los usa el catálogo cuando se sirve
-// desde el índice porque Mongo está apagado (listarDesdeIndice, más abajo): el mismo
-// documento indexado tiene también los productos inactivos y el vendedor.
-async function buscar({ q, categoriaId, subcategoriaId, atributos, precioMin, precioMax, ordenarPor, vendedorId, incluirInactivos, tamano = 60 } = {}) {
-  // fuzziness:'AUTO' — tolerancia a errores de tipeo (requerimiento técnico
+// UNA sola consulta sirve para escribir un texto Y para navegar por categorías (sin texto es un
+// match_all): lo que se elige en la barra lateral (categoría, precio, atributos) va en `post_filter`,
+// que recorta los resultados pero NO las agregaciones. Cada agregación aplica entonces "todos los
+// filtros menos el suyo" (facetas disyuntivas): marcar Talla=M deja a Talla=L visible con su conteo.
+// En `query` queda solo lo que no es una faceta (texto, estado, vendedor y vendedores suspendidos)
+// porque eso sí tiene que alcanzar a TODAS las agregaciones: el total y los conteos nunca incluyen
+// productos ocultos (por eso las suspensiones NO van en post_filter ni se usa una agregación `global`).
+//
+// `vendedorId`, `incluirInactivos`, `conFacetas` y el tope de `tamano` los usa el catálogo cuando se
+// sirve desde el índice porque Mongo está apagado (listarDesdeIndice, más abajo): ahí no hacen falta
+// facetas y todos los filtros van directo a `query`.
+function construirPedido(filtros, { suspendidos = [], vendedorId, incluirInactivos = false, conFacetas = true } = {}) {
+  const { q, categoriaId, subcategoriaId, precioMin, precioMax, ordenarPor, pagina, tamano } = filtros;
+  const atributos = filtros.atributos || {};
+  const nombres = Object.keys(atributos);
+
+  // fuzziness:'AUTO': tolerancia a errores de tipeo (requerimiento técnico
   // de Entrega 3, ver PLAN-ELASTICSEARCH-BUSQUEDA.md §4). descripcion^2:
   // más peso que el nombre del vendedor, que solo debería desempatar.
   const must = q
     ? [{ multi_match: { query: q, fields: ['descripcion^2', 'vendedor_nombre'], fuzziness: 'AUTO' } }]
     : [{ match_all: {} }];
-
   const filter = incluirInactivos ? [] : [{ term: { estado: 'activo' } }];
   if (vendedorId) filter.push({ term: { vendedor_id: Number(vendedorId) } });
-  if (subcategoriaId) {
-    filter.push({ term: { subcategoria_id: String(subcategoriaId) } });
-  } else if (categoriaId) {
-    filter.push({ term: { categoria_id: String(categoriaId) } });
-  }
-  if (precioMin !== undefined || precioMax !== undefined) {
-    const rango = {};
-    if (precioMin !== undefined) rango.gte = Number(precioMin);
-    if (precioMax !== undefined) rango.lte = Number(precioMax);
-    filter.push({ range: { precio: rango } });
-  }
-  filter.push(...filtrosAtributos(atributos));
-
   // Los productos de un vendedor suspendido no se muestran mientras dure la suspensión
   // (ver productoService.listar): el índice no sabe de suspensiones, así que se excluyen
-  // al consultar — y las facetas y los conteos, que salen de esta misma consulta, los
+  // al consultar, y las facetas y los conteos, que salen de esta misma consulta, los
   // dejan fuera también. Vuelven solos al levantarse.
-  const suspendidos = await vendedoresSuspendidos();
-  const must_not = suspendidos.size > 0 && !incluirInactivos ? [{ terms: { vendedor_id: [...suspendidos] } }] : undefined;
+  const must_not = suspendidos.length > 0 && !incluirInactivos ? [{ terms: { vendedor_id: suspendidos } }] : undefined;
 
-  const respuesta = await conCircuito((cliente) => cliente.search({
-    index: indice(),
+  // Las tres familias de filtro de faceta. La subcategoría manda sobre la categoría (como siempre).
+  const deCategoria = subcategoriaId
+    ? { term: { subcategoria_id: subcategoriaId } }
+    : categoriaId ? { term: { categoria_id: categoriaId } } : null;
+  const rango = {};
+  if (precioMin !== undefined) rango.gte = precioMin;
+  if (precioMax !== undefined) rango.lte = precioMax;
+  const dePrecio = Object.keys(rango).length > 0 ? { range: { precio: rango } } : null;
+  const deAtributo = Object.fromEntries(nombres.map((nombre) => [nombre, clausulaAtributo(nombre, atributos[nombre])]));
+
+  // Todos los filtros de faceta MENOS los que se indican: la base de cada agregación.
+  const menos = ({ categoria = false, precio = false, atributo = null } = {}) => [
+    !categoria && deCategoria,
+    !precio && dePrecio,
+    ...nombres.filter((n) => n !== atributo).map((n) => deAtributo[n]),
+  ].filter(Boolean);
+  const comoFiltro = (clausulas) => (clausulas.length > 0 ? { bool: { filter: clausulas } } : { match_all: {} });
+  const todos = menos();
+
+  // Desempate fijo por producto_id: paginar no repite ni salta productos.
+  const sort = {
+    masVendidos: [{ total_vendido: 'desc' }, { producto_id: 'asc' }],
+    precioAsc: [{ precio: 'asc' }, { producto_id: 'asc' }],
+    precioDesc: [{ precio: 'desc' }, { producto_id: 'asc' }],
+  }[ordenarPor] ?? (q ? [{ _score: 'desc' }, { producto_id: 'asc' }] : [{ producto_id: 'asc' }]);
+  const base = { index: indice(), sort, from: (pagina - 1) * tamano, size: tamano, track_total_hits: true };
+
+  if (!conFacetas) return { ...base, query: { bool: { must, filter: [...filter, ...todos], must_not } } };
+
+  return {
+    ...base,
     query: { bool: { must, filter, must_not } },
-    sort: ordenarPor === 'masVendidos' ? [{ total_vendido: 'desc' }] : undefined,
-    size: tamano,
-    // Agregaciones (requerimiento técnico de Entrega 3): categoría/
-    // subcategoría son `terms` simples; atributos necesita una agregación
-    // `nested` (no se puede agregar directo sobre un campo nested) con una
-    // sub-agregación por nombre y otra por valor adentro — misma forma
-    // {nombre: [valores]} que ya espera FacetFilters en HomePage.jsx.
+    post_filter: todos.length > 0 ? { bool: { filter: todos } } : undefined,
     aggs: {
-      categorias: { terms: { field: 'categoria', size: 20 } },
-      subcategorias: { terms: { field: 'subcategoria', size: 20 } },
-      atributos: {
-        nested: { path: 'atributos' },
+      // Árbol categoría → subcategoría sobre los campos keyword que ya existen. Sin la categoría
+      // elegida (las hermanas no desaparecen) ni atributos (son de cada subcategoría). El precio
+      // se cuenta aparte dentro de cada nodo, así un nodo elegido sin resultados sigue en el árbol.
+      arbol: {
+        terms: { field: 'categoria_id', size: 100 },
         aggs: {
-          nombres: {
-            terms: { field: 'atributos.nombre', size: 20 },
-            aggs: { valores: { terms: { field: 'atributos.valor', size: 30 } } },
+          nombre: { terms: { field: 'categoria', size: 1 } },
+          ...(dePrecio && { con_precio: { filter: dePrecio } }),
+          subcategorias: {
+            terms: { field: 'subcategoria_id', size: 200 },
+            aggs: {
+              nombre: { terms: { field: 'subcategoria', size: 1 } },
+              ...(dePrecio && { con_precio: { filter: dePrecio } }),
+            },
           },
         },
       },
+      // Precio: categoría + atributos elegidos, SIN el rango de precio (para poder ampliarlo).
+      precio: {
+        filter: comoFiltro(menos({ precio: true })),
+        aggs: {
+          stats: { stats: { field: 'precio' } },
+          rangos: { range: { field: 'precio', ranges: facetas.RANGOS_PRECIO } },
+        },
+      },
+      // Atributos todavía sin elegir: con todos los filtros. Requiere una agregación `nested` (no se
+      // puede agregar directo sobre un campo nested); `exclude` deja afuera los que tienen bloque propio.
+      atributos: {
+        filter: comoFiltro(todos),
+        aggs: {
+          n: {
+            nested: { path: 'atributos' },
+            aggs: {
+              nombres: {
+                terms: { field: 'atributos.nombre', size: 20, ...(nombres.length > 0 && { exclude: nombres }) },
+                aggs: { valores: { terms: { field: 'atributos.valor', size: 30 } } },
+              },
+            },
+          },
+        },
+      },
+      // Un bloque por atributo elegido, con todos los filtros MENOS el suyo: así no colapsa a lo marcado.
+      // El nombre de la agregación es un índice (attr_0...): un nombre de atributo con "[", "]" o ">" la rompería.
+      ...Object.fromEntries(nombres.map((nombre, i) => [`attr_${i}`, {
+        filter: comoFiltro(menos({ atributo: nombre })),
+        aggs: {
+          n: {
+            nested: { path: 'atributos' },
+            aggs: { solo: { filter: { term: { 'atributos.nombre': nombre } }, aggs: { valores: { terms: { field: 'atributos.valor', size: 30 } } } } },
+          },
+        },
+      }])),
     },
+  };
+}
+
+// De la respuesta cruda del motor a las piezas neutrales de facetasBusqueda.armarRespuesta().
+function desdeElastic(respuesta, filtros) {
+  const ag = respuesta.aggregations ?? {};
+  const nombres = Object.keys(filtros.atributos || {});
+  const conPrecio = filtros.precioMin !== undefined || filtros.precioMax !== undefined;
+  const cantidad = (cubeta) => (conPrecio ? cubeta.con_precio?.doc_count ?? 0 : cubeta.doc_count);
+  const nombreDe = (cubeta) => cubeta.nombre?.buckets?.[0]?.key ?? 'Sin nombre';
+
+  const arbolCrudo = (ag.arbol?.buckets ?? []).map((c) => ({
+    id: String(c.key), nombre: nombreDe(c), texto: c.doc_count, cantidad: cantidad(c),
+    subcategorias: (c.subcategorias?.buckets ?? []).map((s) => ({ id: String(s.key), nombre: nombreDe(s), texto: s.doc_count, cantidad: cantidad(s) })),
   }));
 
-  const facetas = {};
-  for (const cubetaNombre of respuesta.aggregations?.atributos?.nombres?.buckets ?? []) {
-    facetas[cubetaNombre.key] = cubetaNombre.valores.buckets.map((v) => v.key);
+  const valoresPorAtributo = {};
+  nombres.forEach((nombre, i) => {
+    valoresPorAtributo[nombre] = (ag[`attr_${i}`]?.n?.solo?.valores?.buckets ?? []).map((v) => ({ valor: v.key, cantidad: v.doc_count }));
+  });
+  for (const cubeta of ag.atributos?.n?.nombres?.buckets ?? []) {
+    valoresPorAtributo[cubeta.key] = cubeta.valores.buckets.map((v) => ({ valor: v.key, cantidad: v.doc_count }));
   }
 
-  const total = typeof respuesta.hits.total === 'object' ? respuesta.hits.total.value : respuesta.hits.total;
-
-  return {
-    resultados: respuesta.hits.hits.map(aProducto),
-    total,
-    facetas,
-    categorias: (respuesta.aggregations?.categorias?.buckets ?? []).map((b) => ({ nombre: b.key, cantidad: b.doc_count })),
-    subcategorias: (respuesta.aggregations?.subcategorias?.buckets ?? []).map((b) => ({ nombre: b.key, cantidad: b.doc_count })),
+  // `stats` devuelve el precio como float de 32 bits (44.17 llega como 44.16999816894531): se redondea a centavos.
+  const precio = {
+    min: facetas.redondear(ag.precio?.stats?.min),
+    max: facetas.redondear(ag.precio?.stats?.max),
+    rangos: (ag.precio?.rangos?.buckets ?? [])
+      .filter((r) => r.doc_count > 0)
+      .map((r) => ({ desde: r.from ?? 0, hasta: r.to ?? null, cantidad: r.doc_count })),
   };
+
+  const total = typeof respuesta.hits.total === 'object' ? respuesta.hits.total.value : respuesta.hits.total;
+  return facetas.armarRespuesta({
+    total, pagina: filtros.pagina, tamano: filtros.tamano, resultados: respuesta.hits.hits.map(aProducto),
+    arbolCrudo, valoresPorAtributo, precio, filtros,
+  });
+}
+
+// `opciones` es lo que escribe quien llama a la URL pública: solo se leen los campos que normalizarConsulta()
+// conoce. Lo que cambia las reglas de visibilidad (`incluirInactivos`, `vendedorId`) o el costo (`conFacetas`)
+// va en el SEGUNDO argumento, que solo arman los llamadores internos: antes todo viajaba en el mismo objeto y
+// GET /api/busqueda?incluirInactivos=1 devolvía productos inactivos (y de vendedores suspendidos) a cualquiera.
+async function buscar(opciones = {}, { tamanoMaximo, vendedorId, incluirInactivos = false, conFacetas = true } = {}) {
+  const filtros = facetas.normalizarConsulta(opciones, { tamanoMaximo });
+  const suspendidos = await vendedoresSuspendidos();
+  const pedido = construirPedido(filtros, { suspendidos: [...suspendidos], vendedorId, incluirInactivos, conFacetas });
+  const respuesta = await conCircuito((cliente) => cliente.search(pedido));
+  return desdeElastic(respuesta, filtros);
 }
 
 // Autocompletado (ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §4 y §12) — usa el
@@ -193,10 +271,10 @@ async function sugerir(q) {
 const TAMANO_CATALOGO = 500;
 
 async function listarDesdeIndice({ categoriaId, subcategoriaId, q, vendedorId, atributos, precioMin, precioMax, ordenarPor, mostrarInactivos } = {}) {
-  const { resultados } = await buscar({
-    q, categoriaId, subcategoriaId, atributos, precioMin, precioMax, ordenarPor, vendedorId,
-    incluirInactivos: Boolean(mostrarInactivos), tamano: TAMANO_CATALOGO,
-  });
+  const { resultados } = await buscar(
+    { q, categoriaId, subcategoriaId, atributos, precioMin, precioMax, ordenarPor, tamano: TAMANO_CATALOGO },
+    { vendedorId, incluirInactivos: Boolean(mostrarInactivos), conFacetas: false, tamanoMaximo: TAMANO_CATALOGO },
+  );
   return resultados;
 }
 
@@ -211,11 +289,14 @@ async function obtenerDelIndice(id) {
 }
 
 // Mismo formato que categoriaService.listar(): [{ id, categoria, subcategorias: [...] }].
-// Solo aparecen las categorías que tienen al menos un producto indexado.
+// Solo aparecen las categorías que tienen al menos un producto ACTIVO indexado: el índice también guarda
+// los inactivos (para el panel del vendedor), y sin este filtro una categoría que solo tiene productos
+// pausados salía en el menú del respaldo.
 async function categoriasDelIndice() {
   const respuesta = await conCircuito((cliente) => cliente.search({
     index: indice(),
     size: 0,
+    query: { bool: { filter: [{ term: { estado: 'activo' } }] } },
     aggs: {
       categorias: {
         terms: { field: 'categoria_id', size: 100 },
@@ -263,4 +344,4 @@ async function publicacionDelIndice(productoIds) {
   );
 }
 
-module.exports = { buscar, sugerir, listarDesdeIndice, obtenerDelIndice, categoriasDelIndice, publicacionDelIndice };
+module.exports = { buscar, construirPedido, sugerir, listarDesdeIndice, obtenerDelIndice, categoriasDelIndice, publicacionDelIndice };

@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { productosApi, categoriasApi } from '../api/productos';
 import { busquedaApi } from '../api/busqueda';
 import { recomendacionesApi } from '../api/recomendaciones';
 import { useAuth } from '../context/AuthContext';
 import { ProductCard } from '../components/product/ProductCard';
+import { AttributeFacets } from '../components/search/AttributeFacets';
+import { CategoryTree } from '../components/search/CategoryTree';
+import { Migas } from '../components/search/Migas';
+import { Pagination } from '../components/search/Pagination';
+import { PriceFacet } from '../components/search/PriceFacet';
 import { Spinner } from '../components/common/Spinner';
 import { formatCurrency } from '../utils/format';
+import { aParametros, alternarAtributo, conCategoria, conOrden, conPagina, conPrecio, conSubcategoria, hayFiltros, leerFiltros, sinAtributos } from '../utils/filtrosBusqueda';
 
 // "Recomendado para vos" (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) —
 // distinto de las ofertas flash normales (/ofertas, configuradas a mano por
@@ -70,195 +75,138 @@ function RecomendacionesSection() {
   );
 }
 
-// Deriva las opciones de cada atributo a partir de los productos de la
-// subcategoría (sin aplicar todavía el filtro de atributos) — así las
-// opciones no van desapareciendo a medida que se elige una. Simplificación
-// deliberada: no recalcula conteos por opción restante como haría un sitio
-// real; ver la conversación de diseño en IA/ESTADO-PROYECTO.md.
-function calcularFacetas(productos) {
-  const mapa = {};
-  for (const p of productos) {
-    for (const a of p.atributos || []) {
-      if (!mapa[a.nombre]) mapa[a.nombre] = new Set();
-      mapa[a.nombre].add(a.valor);
-    }
-  }
-  return Object.fromEntries(Object.entries(mapa).map(([nombre, valores]) => [nombre, [...valores].sort()]));
-}
+const ORDENES = [
+  { valor: '', texto: 'Relevancia' },
+  { valor: 'masVendidos', texto: 'Más vendidos' },
+  { valor: 'precioAsc', texto: 'Precio: de menor a mayor' },
+  { valor: 'precioDesc', texto: 'Precio: de mayor a menor' },
+];
 
-function FacetFilters({ facetas, seleccionados, onToggle, onLimpiar }) {
-  const nombres = Object.keys(facetas);
-  if (nombres.length === 0) return null;
-  const hayFiltrosActivos = Object.keys(seleccionados).length > 0;
-
-  return (
-    <div className="flex flex-col gap-4 rounded-xl border border-neutral-200 bg-white p-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-neutral-800">Filtrar por</h2>
-        {hayFiltrosActivos && (
-          <button onClick={onLimpiar} className="text-xs font-medium text-brand-700 hover:underline">
-            Limpiar
-          </button>
-        )}
-      </div>
-      {nombres.map((nombre) => (
-        <div key={nombre}>
-          <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">{nombre}</h3>
-          <div className="flex flex-col gap-1">
-            {facetas[nombre].map((valor) => (
-              <label key={valor} className="flex items-center gap-2 text-sm text-neutral-700">
-                <input
-                  type="checkbox"
-                  checked={seleccionados[nombre] === valor}
-                  onChange={() => onToggle(nombre, valor)}
-                  className="rounded border-neutral-300 text-brand-600 focus:ring-brand-500"
-                />
-                {valor}
-              </label>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
+// La portada, la navegación por categorías y la búsqueda por texto son UNA sola pantalla y UNA sola consulta
+// (GET /api/busqueda, Elasticsearch): lo que se elige en la barra lateral — categoría, atributos, precio,
+// orden y página — vive en la URL (utils/filtrosBusqueda.js), así que el botón «atrás», un enlace copiado y
+// los enlaces del menú de categorías (/?categoriaId=…) funcionan sin estado aparte. La respuesta trae todo lo
+// que se dibuja: los productos de la página, el árbol de categorías con conteos y las facetas de atributo y de
+// precio, todas calculadas por el motor con agregaciones disyuntivas (cada faceta cuenta con los demás
+// filtros menos el suyo, así que marcar Talla M no esconde a Talla L ni a las otras categorías).
 export function HomePage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const q = searchParams.get('q') || '';
-  const categoriaId = searchParams.get('categoriaId') || '';
-  const subcategoriaId = searchParams.get('subcategoriaId') || '';
+  const [searchParams, setSearchParams] = useSearchParams();
+  const consulta = searchParams.toString();
+  const filtros = useMemo(() => leerFiltros(new URLSearchParams(consulta)), [consulta]);
 
-  const [productos, setProductos] = useState([]);
-  // true cuando el buscador avanzado (Elasticsearch) no está disponible y el servidor
-  // respondió con una búsqueda básica sobre el catálogo (ver catalogoLecturaService.js).
-  const [busquedaBasica, setBusquedaBasica] = useState(false);
-  const [categorias, setCategorias] = useState([]);
+  const [respuesta, setRespuesta] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
 
-  const [facetas, setFacetas] = useState({});
-  const [atributosSeleccionados, setAtributosSeleccionados] = useState({});
-
-  // Precio/orden: a diferencia de los atributos, no dependen de estar dentro
-  // de una subcategoría (el precio existe para cualquier producto) — por eso
-  // no viven en el sidebar de FacetFilters, que sí es exclusivo de esa vista.
-  const [precioMinInput, setPrecioMinInput] = useState('');
-  const [precioMaxInput, setPrecioMaxInput] = useState('');
-  const [precioMin, setPrecioMin] = useState('');
-  const [precioMax, setPrecioMax] = useState('');
-  const [ordenarPor, setOrdenarPor] = useState('');
-
-  // Opciones de filtro: de la subcategoría completa, sin el filtro de
-  // atributos todavía aplicado (ver calcularFacetas). Se resetea la selección
-  // al cambiar de subcategoría porque los atributos de una no aplican a otra.
-  // Con texto de búsqueda activo (q), las facetas salen de la respuesta de
-  // busquedaApi.buscar() en el otro efecto — este no las toca, para que no
-  // compitan por el mismo estado.
+  // Se conserva la respuesta anterior mientras llega la nueva: la barra lateral no parpadea al elegir algo.
+  // La bandera `vigente` descarta una respuesta que llega tarde, cuando ya se pidió otra.
   useEffect(() => {
-    setAtributosSeleccionados({});
-    if (q) return;
-    if (!subcategoriaId) {
-      setFacetas({});
-      return;
-    }
-    productosApi
-      .listar({ subcategoriaId })
-      .then((base) => setFacetas(calcularFacetas(base)))
-      .catch(() => setFacetas({}));
-  }, [subcategoriaId, q]);
-
-  // Con texto de búsqueda (q): Elasticsearch — tolerancia ortográfica,
-  // relevancia y facetas calculadas con una agregación real (ver
-  // IA/PLAN-ELASTICSEARCH-BUSQUEDA.md). Sin texto: el catálogo normal contra
-  // Mongo, exactamente como antes — ese camino no se toca.
-  useEffect(() => {
+    let vigente = true;
     setCargando(true);
     setError('');
-    const filtros = { categoriaId, subcategoriaId };
-    if (Object.keys(atributosSeleccionados).length > 0) {
-      filtros.atributos = JSON.stringify(atributosSeleccionados);
-    }
-    if (precioMin !== '') filtros.precioMin = precioMin;
-    if (precioMax !== '') filtros.precioMax = precioMax;
-    if (ordenarPor) filtros.ordenarPor = ordenarPor;
+    busquedaApi
+      .buscar(aParametros(filtros))
+      .then((r) => {
+        if (vigente) setRespuesta(r);
+      })
+      .catch((err) => {
+        if (vigente) setError(err.message || 'No se pudo cargar el catálogo.');
+      })
+      .finally(() => {
+        if (vigente) setCargando(false);
+      });
+    return () => {
+      vigente = false;
+    };
+  }, [filtros]);
 
-    if (q) {
-      busquedaApi
-        .buscar({ ...filtros, q })
-        .then((resultado) => {
-          setProductos(resultado.resultados);
-          setFacetas(resultado.facetas);
-          setBusquedaBasica(resultado.modo === 'basico');
-        })
-        .catch(() => setError('No se pudo buscar. ¿Está corriendo el backend?'))
-        .finally(() => setCargando(false));
-    } else {
-      setBusquedaBasica(false);
-      productosApi
-        .listar(filtros)
-        .then(setProductos)
-        .catch(() => setError('No se pudo cargar el catálogo. ¿Está corriendo el backend?'))
-        .finally(() => setCargando(false));
-    }
-  }, [q, categoriaId, subcategoriaId, atributosSeleccionados, precioMin, precioMax, ordenarPor]);
-
+  // Un enlace con una página que no existe (?pagina=99) vuelve a la última, sin dejar una pantalla vacía.
   useEffect(() => {
-    categoriasApi.listar().then(setCategorias).catch(() => {});
-  }, []);
+    if (respuesta && respuesta.total > 0 && filtros.pagina > respuesta.paginas) {
+      setSearchParams(aParametros(conPagina(filtros, respuesta.paginas)), { replace: true });
+    }
+  }, [respuesta, filtros, setSearchParams]);
 
-  function toggleAtributo(nombre, valor) {
-    setAtributosSeleccionados((prev) => {
-      if (prev[nombre] === valor) {
-        const { [nombre]: _quitado, ...resto } = prev;
-        return resto;
-      }
-      return { ...prev, [nombre]: valor };
-    });
-  }
+  const cambiar = (nuevos) => setSearchParams(aParametros(nuevos));
+  // Elegir categoría o subcategoría cambia de «lugar»: en el celular el panel se pliega para dejar ver los
+  // resultados. Marcar atributos o precio no lo pliega — suelen ser varios clics seguidos.
+  const elegirCategoria = (id) => {
+    if (id === filtros.categoriaId && !filtros.subcategoriaId) return; // ya está ahí
+    setFiltrosAbiertos(false);
+    cambiar(conCategoria(filtros, id));
+  };
+  const elegirSubcategoria = (id) => {
+    setFiltrosAbiertos(false);
+    cambiar(conSubcategoria(filtros, id));
+  };
+  const irAPagina = (n) => {
+    cambiar(conPagina(filtros, n));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
-  function aplicarPrecio(e) {
-    e.preventDefault();
-    setPrecioMin(precioMinInput);
-    setPrecioMax(precioMaxInput);
-  }
+  const resultados = respuesta?.resultados ?? [];
+  const portada = !hayFiltros(filtros) && filtros.pagina === 1;
+  const desde = respuesta && respuesta.total > 0 ? (respuesta.pagina - 1) * respuesta.tamano + 1 : 0;
+  const hasta = desde > 0 ? desde + resultados.length - 1 : 0;
+  const titulo = filtros.q ? `Resultados para "${filtros.q}"` : respuesta?.ruta.at(-1)?.nombre ?? 'Todos los productos';
 
-  function limpiarPrecio() {
-    setPrecioMinInput('');
-    setPrecioMaxInput('');
-    setPrecioMin('');
-    setPrecioMax('');
-  }
-
-  // "Quitar filtros" tiene que limpiar TODO, no solo lo que vive en la URL
-  // (q/categoriaId/subcategoriaId) — precio y orden son estado local de esta
-  // página, un <Link to="/"> por sí solo los dejaría pegados.
-  function quitarTodosLosFiltros() {
-    limpiarPrecio();
-    setOrdenarPor('');
-    navigate('/');
-  }
-
-  const categoriaActiva = categorias.find((c) => String(c.id) === categoriaId);
-  const hayFiltro = Boolean(q || categoriaId || subcategoriaId || precioMin !== '' || precioMax !== '' || ordenarPor);
-  const mostrarFacetas = (Boolean(subcategoriaId) || Boolean(q)) && Object.keys(facetas).length > 0;
+  // Los atributos son de cada subcategoría («Talla» de camisetas y de zapatos no se mezclan): se ofrecen cuando
+  // los resultados caen en UNA. Si hay varias, se invita a elegir.
+  const subcategoriasConResultados = respuesta
+    ? respuesta.arbol
+        .filter((c) => !filtros.categoriaId || c.id === filtros.categoriaId)
+        .flatMap((c) => c.subcategorias)
+        .filter((s) => s.cantidad > 0).length
+    : 0;
+  const pedirSubcategoria = respuesta && respuesta.atributos.length === 0 && !filtros.subcategoriaId && subcategoriasConResultados > 1;
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-      {mostrarFacetas && (
-        <aside className="w-full shrink-0 lg:w-56">
-          <FacetFilters
-            facetas={facetas}
-            seleccionados={atributosSeleccionados}
-            onToggle={toggleAtributo}
-            onLimpiar={() => setAtributosSeleccionados({})}
-          />
-        </aside>
-      )}
+      <aside className="w-full shrink-0 lg:w-64">
+        <button
+          type="button"
+          onClick={() => setFiltrosAbiertos((abierto) => !abierto)}
+          aria-expanded={filtrosAbiertos}
+          className="w-full rounded-lg border border-neutral-300 bg-white px-4 py-2.5 text-sm font-semibold text-neutral-800 lg:hidden"
+        >
+          {filtrosAbiertos ? 'Ocultar categorías y filtros' : 'Categorías y filtros'}
+        </button>
+        <div className={`${filtrosAbiertos ? 'flex' : 'hidden'} mt-3 flex-col gap-4 lg:mt-0 lg:flex`}>
+          {respuesta && (
+            <>
+              <CategoryTree
+                arbol={respuesta.arbol}
+                onCategoria={elegirCategoria}
+                onSubcategoria={elegirSubcategoria}
+                onTodas={() => cambiar(conCategoria(filtros, ''))}
+              />
+              <AttributeFacets
+                atributos={respuesta.atributos}
+                onToggle={(nombre, valor) => cambiar(alternarAtributo(filtros, nombre, valor))}
+                onLimpiar={() => cambiar(sinAtributos(filtros))}
+              />
+              {pedirSubcategoria && (
+                <p role="note" className="rounded-xl border border-dashed border-neutral-300 bg-white p-4 text-xs text-neutral-600">
+                  Elegí una subcategoría para filtrar por sus atributos (talla, color, almacenamiento…).
+                </p>
+              )}
+              <PriceFacet
+                key={`${filtros.precioMin}|${filtros.precioMax}`}
+                precio={respuesta.precio}
+                precioMin={filtros.precioMin}
+                precioMax={filtros.precioMax}
+                onAplicar={(min, max) => cambiar(conPrecio(filtros, min, max))}
+                onQuitar={() => cambiar(conPrecio(filtros, '', ''))}
+              />
+            </>
+          )}
+        </div>
+      </aside>
 
       <div className="flex min-w-0 flex-1 flex-col gap-6">
-        {!hayFiltro && (
+        {portada && (
           <>
             <section className="overflow-hidden rounded-2xl bg-gradient-to-r from-brand-700 to-brand-500 px-8 py-12 text-white sm:py-16">
               <h1 className="text-2xl font-bold sm:text-4xl">Todo lo que buscás, a un clic.</h1>
@@ -270,85 +218,72 @@ export function HomePage() {
           </>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-neutral-800">
-            {q ? `Resultados para "${q}"` : categoriaActiva ? categoriaActiva.categoria : 'Todos los productos'}
-          </h2>
-          {hayFiltro && (
-            <button onClick={quitarTodosLosFiltros} className="text-sm font-medium text-brand-700 hover:underline">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-neutral-800">{titulo}</h2>
+            {respuesta && (
+              <Migas
+                ruta={respuesta.ruta}
+                onTodas={() => cambiar(conCategoria(filtros, ''))}
+                onCategoria={(id) => cambiar(conCategoria(filtros, id))}
+              />
+            )}
+          </div>
+          {hayFiltros(filtros) && (
+            <button type="button" onClick={() => navigate('/')} className="text-sm font-medium text-brand-700 hover:underline">
               Quitar filtros
             </button>
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white p-3">
-          <form onSubmit={aplicarPrecio} className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-neutral-600">Precio</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="Mín"
-              value={precioMinInput}
-              onChange={(e) => setPrecioMinInput(e.target.value)}
-              className="w-20 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
-            />
-            <span className="text-neutral-400">–</span>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="Máx"
-              value={precioMaxInput}
-              onChange={(e) => setPrecioMaxInput(e.target.value)}
-              className="w-20 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
-            />
-            <button type="submit" className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50">
-              Aplicar
-            </button>
-            {(precioMin !== '' || precioMax !== '') && (
-              <button type="button" onClick={limpiarPrecio} className="text-xs font-medium text-brand-700 hover:underline">
-                Quitar
-              </button>
-            )}
-          </form>
-
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-xs font-semibold text-neutral-600">Ordenar</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-white p-3">
+          <p aria-live="polite" className="text-sm text-neutral-600">
+            {respuesta ? (respuesta.total > 0 ? `Mostrando ${desde}–${hasta} de ${respuesta.total}` : 'Sin resultados') : ''}
+          </p>
+          <div className="flex items-center gap-2">
+            <label htmlFor="orden" className="text-xs font-semibold text-neutral-600">
+              Ordenar
+            </label>
             <select
-              value={ordenarPor}
-              onChange={(e) => setOrdenarPor(e.target.value)}
+              id="orden"
+              value={filtros.ordenarPor}
+              onChange={(e) => cambiar(conOrden(filtros, e.target.value))}
               className="rounded-lg border border-neutral-300 px-2 py-1.5 text-sm"
             >
-              <option value="">Relevancia</option>
-              <option value="masVendidos">Más vendidos</option>
+              {ORDENES.map((orden) => (
+                <option key={orden.valor} value={orden.valor}>
+                  {orden.texto}
+                </option>
+              ))}
             </select>
           </div>
         </div>
 
-        {q && busquedaBasica && (
+        {filtros.q && respuesta?.modo === 'basico' && (
           <p role="note" className="rounded-lg bg-warning-500/10 p-3 text-sm text-neutral-800">
             Búsqueda básica: el buscador avanzado no está disponible ahora, así que no se corrigen errores de tipeo.
           </p>
         )}
 
-        {cargando && <Spinner />}
-
         {error && <p className="rounded-lg bg-danger-500/10 p-4 text-sm text-danger-600">{error}</p>}
 
-        {!cargando && !error && productos.length === 0 && (
+        {cargando && !respuesta && <Spinner />}
+
+        {respuesta && respuesta.total === 0 && !error && (
           <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-neutral-500">
             No encontramos productos que coincidan con tu búsqueda.
           </p>
         )}
 
-        {!cargando && !error && productos.length > 0 && (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {productos.map((producto) => (
+        {resultados.length > 0 && (
+          <div aria-busy={cargando} className={`grid grid-cols-2 gap-4 transition-opacity sm:grid-cols-3 xl:grid-cols-4 ${cargando ? 'opacity-60' : ''}`}>
+            {resultados.map((producto) => (
               <ProductCard key={producto.id} producto={producto} />
             ))}
           </div>
         )}
+
+        {respuesta && <Pagination pagina={respuesta.pagina} paginas={respuesta.paginas} onCambiar={irAPagina} />}
       </div>
     </div>
   );

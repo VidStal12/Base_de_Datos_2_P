@@ -407,6 +407,17 @@ Cada producto le pertenece a un vendedor (`producto.id_vendedor`). Un `vendedor`
 
 `?q=` busca por texto solo en `descripcion` (contains, sin acentos/typos) — para eso está `?atributos=` aparte: filtrado facetado exacto sobre los valores de atributo (`{"RAM":"16GB","Color":"Negro"}`, todos exigidos a la vez). Ninguno de los dos es el buscador de texto libre con tolerancia ortográfica que pide el PRD para Entrega 3 (Elasticsearch) — son cosas distintas que conviene no confundir.
 
+**Buscador con facetas (Entrega 3):** `GET /api/busqueda` (público) es la consulta que usa la portada: busca por texto con tolerancia a errores de tipeo y, sin `q`, navega por categorías. Parámetros: `q`, `categoriaId`, `subcategoriaId`, `atributos` (JSON `{"Talla":["M","L"]}`), `precioMin`, `precioMax`, `ordenarPor` (`masVendidos`, `precioAsc`, `precioDesc`), `pagina` y `tamano` (60 por defecto, 100 como máximo). Devuelve los productos de la página y, calculados por Elasticsearch con agregaciones, el árbol de categorías con conteos, los atributos con conteos, las cubetas de precio y las migas de pan. Las facetas son disyuntivas: marcar `Talla=M` no esconde a `Talla=L`, y se pueden marcar varias tallas a la vez. Con Elasticsearch apagado la contesta Mongo con la misma forma (`"modo": "basico"`, sin tolerancia a errores de tipeo). Diseño y evidencia: [IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §15](IA/PLAN-ELASTICSEARCH-BUSQUEDA.md). Pruebas: `npm run test:busqueda` y `npm run verificar:busqueda` (esta última necesita las bases locales y el índice poblado con `npm run busqueda:backfill`).
+
+```bash
+# un error de tipeo a propósito ("camiceta") igual encuentra las camisetas
+curl -s "http://localhost:3000/api/busqueda?q=camiceta"
+
+# camisetas tallas M o L, de menor a mayor precio (SUB_ID: el id de una subcategoría)
+curl -s -G "http://localhost:3000/api/busqueda" --data-urlencode "subcategoriaId=$SUB_ID" \
+  --data-urlencode 'atributos={"Talla":["M","L"]}' --data-urlencode "ordenarPor=precioAsc"
+```
+
 **Pantallas de vendedor** (`frontend/src/pages/seller/`): con sesión `vendedor`/`administrador` aparece "Mi tienda" en el header → `/vendedor` lista solo los productos propios. El formulario de alta (`/vendedor/productos/nuevo`) deja crear categoría → subcategoría → atributo en el momento si no existen todavía (sin salir del formulario), con los inputs de valor de atributo generados dinámicamente según la subcategoría elegida. Al editar (`/vendedor/productos/:id/editar`) la categoría/subcategoría quedan fijas — recategorizar no está soportado, hay que publicar un producto nuevo — pero descripción, imagen, estado, precio, stock y valores de atributo sí se pueden corregir.
 
 **Panel de administrador** (`frontend/src/pages/admin/`): con sesión `administrador` aparece "Panel admin" en el header → `/admin` lista el catálogo completo de **todos** los vendedores (filtro por categoría + búsqueda), con acceso de edición a cualquier producto — reutiliza el mismo formulario del panel de vendedor. También muestra "Productos más editados" (agregación sobre el historial de eventos, ver ADR-003 §3.4). El botón "Sincronizar con MongoDB" que existía acá se quitó el 2026-08-30 junto con las tablas relacionales que sincronizaba — ver [ADR-002 §3.4](IA/ADR-002-migracion-catalogo-documental.md#34-actualización-2026-08-30-se-borra-el-catálogo-relacional-vestigial).
@@ -506,6 +517,8 @@ backend/
     verificarCompromisoReventa.js  Evidencia del compromiso de no reventa de las cuentas que pueden vender
     verificarBloqueoCuentas.js  Evidencia de la suspensión temporal por fraude: Redis (TTL) + MySQL + Neo4j reales (Entrega 2)
     verificarRespuestaEscalonada.js  Evidencia de la respuesta escalonada, el tope de pedidos por hora y el vendedor suspendido que se oculta: Redis, MySQL, Mongo, Elasticsearch y Neo4j reales
+    backfillBusqueda.js       Reindexa el catálogo de Mongo en Elasticsearch (Entrega 3)
+    verificarBusqueda.js      Evidencia del buscador contra el catálogo real: tolerancia a tipeos, autocompletado, facetas disyuntivas, paginación y paridad entre el motor y el respaldo en Mongo (Entrega 3)
     lib/datosPrueba.js        Cuentas, direcciones, métodos de pago y productos sintéticos compartidos por los scripts de verificación
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
@@ -534,6 +547,7 @@ frontend/
     components/checkout/     Ventanas de las tres pantallas de compra: el compromiso de no reventa (cuentas que pueden vender) y la contraseña de una cuenta bajo vigilancia
     components/common/       UI común (botón, campos, spinner…) y `Modal`, el armazón accesible de las ventanas de compra
     components/admin/        Ficha de usuario compartida por los paneles de fraude y de cuentas bloqueadas
+    components/search/       Barra lateral del catálogo: árbol de categorías, atributos, precio, paginación y migas de pan (Entrega 3)
     pages/                 Una por ruta (catálogo, producto, carrito, checkout, pedidos, cuenta, oferta flash, recomendaciones, términos de servicio...)
     pages/seller/            Panel de vendedor (alta/edición de productos, incluida la oferta flash)
     pages/admin/             Panel de administrador (catálogo de todos los vendedores, ventas por intervalos, señales de fraude, cuentas bloqueadas)

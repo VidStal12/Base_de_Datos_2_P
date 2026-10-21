@@ -72,7 +72,7 @@ app.get('/', (req, res) => {
       'POST /api/ofertas/:productoId/comprar (requiere token — {intentoId, cantidad, direccionId, metodoPagoId, precioEsperado?, aceptaNoReventa?}, compra idempotente al precio de oferta; mismas reglas de producto propio y de compromiso de no reventa que el checkout)',
       'GET /api/recomendaciones (requiere token — analiza el historial de compras del usuario y encuentra productos similares de otros vendedores, ver IA/ENTREGA-2-PLAN.md §4.5)',
       'POST /api/recomendaciones/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId, aceptaNoReventa?}, compra al precio recomendado, cupo personal limitado; mismas reglas de producto propio y de compromiso de no reventa que el checkout)',
-      'GET /api/busqueda (Elasticsearch — ?q=, ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos; tolerancia ortográfica + facetas agregadas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md)',
+      'GET /api/busqueda (Elasticsearch — búsqueda Y navegación por categorías en una sola consulta; ?q= (vacío = navegar), ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON {nombre: valor | [valores]}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos|precioAsc|precioDesc, ?pagina=, ?tamano= (hasta 100); responde resultados + árbol de categorías con conteos + facetas de atributos y de precio calculadas con agregaciones disyuntivas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §15)',
       'GET /api/busqueda/sugerencias?q= (autocompletado — completion suggester con tolerancia a errores, solo productos activos)',
     ],
   });
