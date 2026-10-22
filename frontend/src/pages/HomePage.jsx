@@ -80,7 +80,9 @@ function SugeridosSinResultados({ sugeridos, origen, termino }) {
       ? 'Basado en lo que sueles comprar'
       : origen === 'busquedaReciente'
         ? `Basado en tu búsqueda reciente de "${termino}"`
-        : 'Los más vendidos';
+        : origen === 'productoVisto'
+          ? 'Lo último que viste'
+          : 'Los más vendidos';
 
   return (
     <section className="flex flex-col gap-3">

@@ -92,58 +92,81 @@ function esNavegacionPura(opciones) {
 
 const CANTIDAD_SUGERIDOS = 6;
 
-// Última búsqueda de texto que SÍ encontró algo, por usuario (Redis, mismo patrón que
-// carrito/oferta). Guarda hasta 5 términos recientes con 30 días de TTL.
-const CLAVE_BUSQUEDAS_RECIENTES = (usuarioId) => `busquedas:${usuarioId}`;
-const MAX_BUSQUEDAS_GUARDADAS = 5;
-const TTL_BUSQUEDAS_SEGUNDOS = 60 * 60 * 24 * 30;
+// Actividad reciente del usuario — una búsqueda que SÍ encontró algo, o un producto que
+// abrió para ver su detalle — en Redis, mismo patrón que carrito/oferta: un dato de bajo
+// costo si se pierde, no hace falta persistirlo en MySQL. Guarda hasta 5 entradas con 30
+// días de TTL en UNA sola lista (no una por tipo), para que "lo último que hizo" sea lo
+// último de verdad y no siempre lo último que buscó.
+const CLAVE_ACTIVIDAD_RECIENTE = (usuarioId) => `actividad:${usuarioId}`;
+const MAX_ACTIVIDADES_GUARDADAS = 5;
+const TTL_ACTIVIDAD_SEGUNDOS = 60 * 60 * 24 * 30;
 
-async function registrarBusquedaExitosa(usuarioId, termino) {
+async function registrarActividad(usuarioId, tipo, valor) {
   try {
     const redis = await conectarRedis();
-    const clave = CLAVE_BUSQUEDAS_RECIENTES(usuarioId);
-    await redis.lrem(clave, 0, termino);
-    await redis.lpush(clave, termino);
-    await redis.ltrim(clave, 0, MAX_BUSQUEDAS_GUARDADAS - 1);
-    await redis.expire(clave, TTL_BUSQUEDAS_SEGUNDOS);
-    console.log('[DEBUG] guardado en Redis:', clave, '=', termino); // TEMPORAL, borrar despues
+    const clave = CLAVE_ACTIVIDAD_RECIENTE(usuarioId);
+    const entrada = JSON.stringify({ tipo, valor });
+    await redis.lrem(clave, 0, entrada);
+    await redis.lpush(clave, entrada);
+    await redis.ltrim(clave, 0, MAX_ACTIVIDADES_GUARDADAS - 1);
+    await redis.expire(clave, TTL_ACTIVIDAD_SEGUNDOS);
   } catch (err) {
-    console.error('[DEBUG] fallo al registrar busqueda reciente:', err.message); // TEMPORAL, borrar despues
+    console.error('No se pudo registrar la actividad reciente:', err.message);
   }
 }
 
-async function obtenerUltimaBusquedaExitosa(usuarioId) {
+async function obtenerUltimaActividad(usuarioId) {
   try {
     const redis = await conectarRedis();
-    const clave = CLAVE_BUSQUEDAS_RECIENTES(usuarioId);
-    const [masReciente] = await redis.lrange(clave, 0, 0);
-    console.log('[DEBUG] leido de Redis:', clave, '->', masReciente); // TEMPORAL, borrar despues
-    return masReciente || null;
+    const [masReciente] = await redis.lrange(CLAVE_ACTIVIDAD_RECIENTE(usuarioId), 0, 0);
+    return masReciente ? JSON.parse(masReciente) : null;
   } catch (err) {
-    console.error('[DEBUG] fallo al leer busqueda reciente:', err.message); // TEMPORAL, borrar despues
+    console.error('No se pudo leer la actividad reciente:', err.message);
     return null;
   }
 }
 
-// Reintento con la última búsqueda que SÍ le funcionó a este usuario. Usa conRespaldo
-// directamente (no buscar()) para no volver a entrar a sugeridosSinResultados si ese término
-// guardado ya no encuentra nada — evitaría una recursión contra el mismo valor.
-async function intentarBusquedaReciente(usuarioId) {
-  const termino = await obtenerUltimaBusquedaExitosa(usuarioId);
-  if (!termino) return null;
-  const resultado = await conRespaldo(
-    () => busquedaService.buscar({ q: termino }),
-    () => buscarEnCatalogo({ q: termino }),
-    'elasticsearch'
-  );
-  console.log('[DEBUG] reintento con termino reciente:', termino, '-> total:', resultado.total); // TEMPORAL, borrar despues
-  if (resultado.total > 0) {
-    return {
-      sugeridos: resultado.resultados.slice(0, CANTIDAD_SUGERIDOS),
-      origenSugerencia: 'busquedaReciente',
-      terminoBusquedaReciente: termino,
-    };
+// Se llama desde productoRoutes.js (GET /:id) cada vez que alguien logueado ve el detalle
+// de un producto que sí le quedó visible (no uno oculto por suspensión del vendedor).
+function registrarVistaProducto(usuarioId, productoId) {
+  if (!usuarioId) return;
+  registrarActividad(usuarioId, 'producto', productoId);
+}
+
+// Reintento con la última actividad del usuario. Usa conRespaldo/obtener directamente
+// (no buscar()) para no volver a entrar a sugeridosSinResultados si esa actividad vieja ya
+// no encuentra nada — evitaría una recursión contra el mismo valor.
+async function intentarActividadReciente(usuarioId) {
+  const actividad = await obtenerUltimaActividad(usuarioId);
+  if (!actividad) return null;
+
+  if (actividad.tipo === 'busqueda') {
+    const resultado = await conRespaldo(
+      () => busquedaService.buscar({ q: actividad.valor }),
+      () => buscarEnCatalogo({ q: actividad.valor }),
+      'elasticsearch'
+    );
+    if (resultado.total > 0) {
+      return {
+        sugeridos: resultado.resultados.slice(0, CANTIDAD_SUGERIDOS),
+        origenSugerencia: 'busquedaReciente',
+        terminoBusquedaReciente: actividad.valor,
+      };
+    }
+    return null;
   }
+
+  if (actividad.tipo === 'producto') {
+    try {
+      const producto = await obtener(actividad.valor);
+      const oculto = await productoService.vendedorOculto(producto.vendedor_id);
+      if (!oculto) return { sugeridos: [producto], origenSugerencia: 'productoVisto' };
+    } catch {
+      // el producto ya no existe, o su vendedor quedó suspendido: seguimos a la siguiente capa
+    }
+    return null;
+  }
+
   return null;
 }
 
@@ -151,16 +174,19 @@ async function intentarBusquedaReciente(usuarioId) {
 // directamente porque lo escrito no tiene relación con el catálogo — "asadasdasd"), en vez
 // de una página vacía se ofrece lo que probablemente le interese a quien pregunta, mismo
 // criterio que cualquier tienda grande (Amazon, Temu) ante una búsqueda sin resultados:
-//   1) si hay sesión, repetir la última búsqueda de texto que SÍ le dio resultados antes;
-//   2) si no hay búsqueda reciente que reutilizar, sus recomendaciones por historial de
+//   1) si hay sesión, repetir su última actividad (una búsqueda que sí dio resultados, o el
+//      último producto que vio el detalle) — lo que haya pasado más reciente de las dos;
+//   2) si no hay actividad reciente que reutilizar, sus recomendaciones por historial de
 //      compras (tendenciaService, ya construido para Entrega 2);
 //   3) si no hay sesión, o nada de lo anterior encontró algo, los más vendidos del catálogo.
+// Que esto falle (Mongo/MySQL/Redis caídos) no debe tumbar la búsqueda: sin sugerencias, la
+// respuesta sigue siendo la de cero resultados tal cual. Distinto del caso de esNavegacionPura
+// (índice vacío en la portada): acá sí hubo texto para comparar contra el catálogo, y nada calzó.
 async function sugeridosSinResultados(usuarioId) {
-  console.log('[DEBUG] sugeridosSinResultados, usuarioId =', usuarioId); // TEMPORAL, borrar despues
   try {
     if (usuarioId) {
-      const porBusquedaReciente = await intentarBusquedaReciente(usuarioId);
-      if (porBusquedaReciente) return porBusquedaReciente;
+      const porActividadReciente = await intentarActividadReciente(usuarioId);
+      if (porActividadReciente) return porActividadReciente;
 
       const { productos } = await tendenciaService.recomendar(usuarioId);
       if (productos.length > 0) return { sugeridos: productos, origenSugerencia: 'historial' };
@@ -182,9 +208,8 @@ async function buscar(opciones = {}, usuarioId) {
   if (respuesta.total === 0 && !respuesta.modo && esNavegacionPura(opciones)) {
     respuesta = await buscarEnCatalogo(opciones).then((deMongo) => (deMongo.total > 0 ? deMongo : respuesta), () => respuesta);
   }
-  console.log('[DEBUG] buscar(): usuarioId =', usuarioId, ', q =', opciones.q, ', total =', respuesta.total); // TEMPORAL, borrar despues
   if (respuesta.total > 0 && usuarioId && opciones.q && opciones.q.trim()) {
-    registrarBusquedaExitosa(usuarioId, opciones.q.trim());
+    registrarActividad(usuarioId, 'busqueda', opciones.q.trim());
   }
   if (respuesta.total === 0 && opciones.q) {
     respuesta = { ...respuesta, ...(await sugeridosSinResultados(usuarioId)) };
@@ -231,4 +256,4 @@ function categorias() {
   return conRespaldo(() => categoriaService.listar(), () => busquedaService.categoriasDelIndice(), 'mongo');
 }
 
-module.exports = { buscar, sugerir, listar, obtener, categorias };
+module.exports = { buscar, sugerir, listar, obtener, categorias, registrarVistaProducto };
