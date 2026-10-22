@@ -2,8 +2,10 @@ const busquedaService = require('./busquedaService');
 const productoService = require('./productoService');
 const categoriaService = require('./categoriaService');
 const suspension = require('./suspensionService');
+const tendenciaService = require('./tendenciaService');
 const Producto = require('../models/mongo/Producto');
 const { conectar } = require('../config/mongo');
+const { conectar: conectarRedis } = require('../config/redis');
 const { componenteCaido } = require('../utils/resiliencia');
 const { escaparRegex } = require('../utils/validation');
 const facetas = require('./facetasBusqueda');
@@ -88,13 +90,104 @@ function esNavegacionPura(opciones) {
   return !f.q && Object.keys(f.atributos).length === 0 && f.precioMin === undefined && f.precioMax === undefined && f.pagina === 1;
 }
 
+const CANTIDAD_SUGERIDOS = 6;
+
+// Última búsqueda de texto que SÍ encontró algo, por usuario (Redis, mismo patrón que
+// carrito/oferta). Guarda hasta 5 términos recientes con 30 días de TTL.
+const CLAVE_BUSQUEDAS_RECIENTES = (usuarioId) => `busquedas:${usuarioId}`;
+const MAX_BUSQUEDAS_GUARDADAS = 5;
+const TTL_BUSQUEDAS_SEGUNDOS = 60 * 60 * 24 * 30;
+
+async function registrarBusquedaExitosa(usuarioId, termino) {
+  try {
+    const redis = await conectarRedis();
+    const clave = CLAVE_BUSQUEDAS_RECIENTES(usuarioId);
+    await redis.lrem(clave, 0, termino);
+    await redis.lpush(clave, termino);
+    await redis.ltrim(clave, 0, MAX_BUSQUEDAS_GUARDADAS - 1);
+    await redis.expire(clave, TTL_BUSQUEDAS_SEGUNDOS);
+    console.log('[DEBUG] guardado en Redis:', clave, '=', termino); // TEMPORAL, borrar despues
+  } catch (err) {
+    console.error('[DEBUG] fallo al registrar busqueda reciente:', err.message); // TEMPORAL, borrar despues
+  }
+}
+
+async function obtenerUltimaBusquedaExitosa(usuarioId) {
+  try {
+    const redis = await conectarRedis();
+    const clave = CLAVE_BUSQUEDAS_RECIENTES(usuarioId);
+    const [masReciente] = await redis.lrange(clave, 0, 0);
+    console.log('[DEBUG] leido de Redis:', clave, '->', masReciente); // TEMPORAL, borrar despues
+    return masReciente || null;
+  } catch (err) {
+    console.error('[DEBUG] fallo al leer busqueda reciente:', err.message); // TEMPORAL, borrar despues
+    return null;
+  }
+}
+
+// Reintento con la última búsqueda que SÍ le funcionó a este usuario. Usa conRespaldo
+// directamente (no buscar()) para no volver a entrar a sugeridosSinResultados si ese término
+// guardado ya no encuentra nada — evitaría una recursión contra el mismo valor.
+async function intentarBusquedaReciente(usuarioId) {
+  const termino = await obtenerUltimaBusquedaExitosa(usuarioId);
+  if (!termino) return null;
+  const resultado = await conRespaldo(
+    () => busquedaService.buscar({ q: termino }),
+    () => buscarEnCatalogo({ q: termino }),
+    'elasticsearch'
+  );
+  console.log('[DEBUG] reintento con termino reciente:', termino, '-> total:', resultado.total); // TEMPORAL, borrar despues
+  if (resultado.total > 0) {
+    return {
+      sugeridos: resultado.resultados.slice(0, CANTIDAD_SUGERIDOS),
+      origenSugerencia: 'busquedaReciente',
+      terminoBusquedaReciente: termino,
+    };
+  }
+  return null;
+}
+
+// Cuando la búsqueda de TEXTO no encuentra NADA (ni con tolerancia a errores de tipeo, o
+// directamente porque lo escrito no tiene relación con el catálogo — "asadasdasd"), en vez
+// de una página vacía se ofrece lo que probablemente le interese a quien pregunta, mismo
+// criterio que cualquier tienda grande (Amazon, Temu) ante una búsqueda sin resultados:
+//   1) si hay sesión, repetir la última búsqueda de texto que SÍ le dio resultados antes;
+//   2) si no hay búsqueda reciente que reutilizar, sus recomendaciones por historial de
+//      compras (tendenciaService, ya construido para Entrega 2);
+//   3) si no hay sesión, o nada de lo anterior encontró algo, los más vendidos del catálogo.
+async function sugeridosSinResultados(usuarioId) {
+  console.log('[DEBUG] sugeridosSinResultados, usuarioId =', usuarioId); // TEMPORAL, borrar despues
+  try {
+    if (usuarioId) {
+      const porBusquedaReciente = await intentarBusquedaReciente(usuarioId);
+      if (porBusquedaReciente) return porBusquedaReciente;
+
+      const { productos } = await tendenciaService.recomendar(usuarioId);
+      if (productos.length > 0) return { sugeridos: productos, origenSugerencia: 'historial' };
+    }
+    const { resultados } = await buscar({ ordenarPor: 'masVendidos' });
+    return resultados.length > 0 ? { sugeridos: resultados.slice(0, CANTIDAD_SUGERIDOS), origenSugerencia: 'tendencia' } : {};
+  } catch (err) {
+    console.error('No se pudieron calcular sugeridosSinResultados:', err.message);
+    return {};
+  }
+}
+
 // La búsqueda y la navegación por categorías son UNA sola consulta (busquedaService.buscar). Con
 // Elasticsearch apagado la contesta Mongo (`modo: 'basico'`); con el índice vacío en la portada también,
-// para que la tienda no aparezca vacía hasta que alguien repueble el índice.
-async function buscar(opciones = {}) {
+// para que la tienda no aparezca vacía hasta que alguien repueble el índice. `usuarioId` es opcional
+// (viene de optionalAuth en la ruta): sin sesión, sugeridosSinResultados salta directo a más vendidos.
+async function buscar(opciones = {}, usuarioId) {
   let respuesta = await conRespaldo(() => busquedaService.buscar(opciones), () => buscarEnCatalogo(opciones), 'elasticsearch');
   if (respuesta.total === 0 && !respuesta.modo && esNavegacionPura(opciones)) {
     respuesta = await buscarEnCatalogo(opciones).then((deMongo) => (deMongo.total > 0 ? deMongo : respuesta), () => respuesta);
+  }
+  console.log('[DEBUG] buscar(): usuarioId =', usuarioId, ', q =', opciones.q, ', total =', respuesta.total); // TEMPORAL, borrar despues
+  if (respuesta.total > 0 && usuarioId && opciones.q && opciones.q.trim()) {
+    registrarBusquedaExitosa(usuarioId, opciones.q.trim());
+  }
+  if (respuesta.total === 0 && opciones.q) {
+    respuesta = { ...respuesta, ...(await sugeridosSinResultados(usuarioId)) };
   }
   return conExistenciasVigentes(respuesta);
 }

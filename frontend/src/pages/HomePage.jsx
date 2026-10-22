@@ -13,13 +13,32 @@ import { Spinner } from '../components/common/Spinner';
 import { formatCurrency } from '../utils/format';
 import { aParametros, alternarAtributo, conCategoria, conOrden, conPagina, conPrecio, conSubcategoria, hayFiltros, leerFiltros, sinAtributos } from '../utils/filtrosBusqueda';
 
-// "Recomendado para vos" (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) —
-// distinto de las ofertas flash normales (/ofertas, configuradas a mano por
-// un vendedor sobre SU producto): esto analiza el historial de compras del
-// usuario y encuentra productos similares de OTROS vendedores, sin que nadie
-// lo configure. Solo se muestra si hay sesión iniciada Y el análisis
-// encontró algo — un comprador sin historial, o cuyo historial no tiene
-// competencia real en el catálogo, simplemente no ve esta sección.
+function TarjetaConDescuento({ producto }) {
+  return (
+    <Link
+      to={`/recomendaciones/${producto.id}/comprar`}
+      className="flex flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white transition-shadow hover:shadow-lg"
+    >
+      <div className="aspect-square overflow-hidden bg-neutral-100">
+        <img
+          src={producto.imagen_url || 'https://placehold.co/400x400?text=TiendaYa'}
+          alt={producto.descripcion}
+          loading="lazy"
+          className="size-full object-cover"
+        />
+      </div>
+      <div className="flex flex-1 flex-col gap-1 p-3">
+        <p className="line-clamp-2 text-sm font-medium text-neutral-800">{producto.descripcion}</p>
+        <p className="text-xs text-neutral-500">{producto.vendedor_nombre}</p>
+        <div className="mt-auto flex items-baseline gap-2">
+          <span className="font-bold text-neutral-900">{formatCurrency(producto.precio_recomendado)}</span>
+          <span className="text-xs text-neutral-500 line-through">{formatCurrency(producto.precio_normal)}</span>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
 function RecomendacionesSection() {
   const { usuario, token } = useAuth();
   const [datos, setDatos] = useState(null);
@@ -47,29 +66,29 @@ function RecomendacionesSection() {
       </p>
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {datos.productos.map((p) => (
-          <Link
-            key={p.id}
-            to={`/recomendaciones/${p.id}/comprar`}
-            className="flex flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white transition-shadow hover:shadow-lg"
-          >
-            <div className="aspect-square overflow-hidden bg-neutral-100">
-              <img
-                src={p.imagen_url || 'https://placehold.co/400x400?text=TiendaYa'}
-                alt={p.descripcion}
-                loading="lazy"
-                className="size-full object-cover"
-              />
-            </div>
-            <div className="flex flex-1 flex-col gap-1 p-3">
-              <p className="line-clamp-2 text-sm font-medium text-neutral-800">{p.descripcion}</p>
-              <p className="text-xs text-neutral-500">{p.vendedor_nombre}</p>
-              <div className="mt-auto flex items-baseline gap-2">
-                <span className="font-bold text-neutral-900">{formatCurrency(p.precio_recomendado)}</span>
-                <span className="text-xs text-neutral-500 line-through">{formatCurrency(p.precio_normal)}</span>
-              </div>
-            </div>
-          </Link>
+          <TarjetaConDescuento key={p.id} producto={p} />
         ))}
+      </div>
+    </section>
+  );
+}
+
+function SugeridosSinResultados({ sugeridos, origen, termino }) {
+  if (!sugeridos || sugeridos.length === 0) return null;
+  const titulo =
+    origen === 'historial'
+      ? 'Basado en lo que sueles comprar'
+      : origen === 'busquedaReciente'
+        ? `Basado en tu búsqueda reciente de "${termino}"`
+        : 'Los más vendidos';
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h3 className="text-base font-semibold text-neutral-800">{titulo}</h3>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        {origen === 'historial'
+          ? sugeridos.map((p) => <TarjetaConDescuento key={p.id} producto={p} />)
+          : sugeridos.map((p) => <ProductCard key={p.id} producto={p} />)}
       </div>
     </section>
   );
@@ -82,32 +101,24 @@ const ORDENES = [
   { valor: 'precioDesc', texto: 'Precio: de mayor a menor' },
 ];
 
-// La portada, la navegación por categorías y la búsqueda por texto son UNA sola pantalla y UNA sola consulta
-// (GET /api/busqueda, Elasticsearch): lo que se elige en la barra lateral — categoría, atributos, precio,
-// orden y página — vive en la URL (utils/filtrosBusqueda.js), así que el botón «atrás», un enlace copiado y
-// los enlaces del menú de categorías (/?categoriaId=…) funcionan sin estado aparte. La respuesta trae todo lo
-// que se dibuja: los productos de la página, el árbol de categorías con conteos y las facetas de atributo y de
-// precio, todas calculadas por el motor con agregaciones disyuntivas (cada faceta cuenta con los demás
-// filtros menos el suyo, así que marcar Talla M no esconde a Talla L ni a las otras categorías).
 export function HomePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const consulta = searchParams.toString();
   const filtros = useMemo(() => leerFiltros(new URLSearchParams(consulta)), [consulta]);
+  const { token } = useAuth();
 
   const [respuesta, setRespuesta] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
 
-  // Se conserva la respuesta anterior mientras llega la nueva: la barra lateral no parpadea al elegir algo.
-  // La bandera `vigente` descarta una respuesta que llega tarde, cuando ya se pidió otra.
   useEffect(() => {
     let vigente = true;
     setCargando(true);
     setError('');
     busquedaApi
-      .buscar(aParametros(filtros))
+      .buscar(aParametros(filtros), token)
       .then((r) => {
         if (vigente) setRespuesta(r);
       })
@@ -120,9 +131,8 @@ export function HomePage() {
     return () => {
       vigente = false;
     };
-  }, [filtros]);
+  }, [filtros, token]);
 
-  // Un enlace con una página que no existe (?pagina=99) vuelve a la última, sin dejar una pantalla vacía.
   useEffect(() => {
     if (respuesta && respuesta.total > 0 && filtros.pagina > respuesta.paginas) {
       setSearchParams(aParametros(conPagina(filtros, respuesta.paginas)), { replace: true });
@@ -130,10 +140,8 @@ export function HomePage() {
   }, [respuesta, filtros, setSearchParams]);
 
   const cambiar = (nuevos) => setSearchParams(aParametros(nuevos));
-  // Elegir categoría o subcategoría cambia de «lugar»: en el celular el panel se pliega para dejar ver los
-  // resultados. Marcar atributos o precio no lo pliega — suelen ser varios clics seguidos.
   const elegirCategoria = (id) => {
-    if (id === filtros.categoriaId && !filtros.subcategoriaId) return; // ya está ahí
+    if (id === filtros.categoriaId && !filtros.subcategoriaId) return;
     setFiltrosAbiertos(false);
     cambiar(conCategoria(filtros, id));
   };
@@ -152,8 +160,6 @@ export function HomePage() {
   const hasta = desde > 0 ? desde + resultados.length - 1 : 0;
   const titulo = filtros.q ? `Resultados para "${filtros.q}"` : respuesta?.ruta.at(-1)?.nombre ?? 'Todos los productos';
 
-  // Los atributos son de cada subcategoría («Talla» de camisetas y de zapatos no se mezclan): se ofrecen cuando
-  // los resultados caen en UNA. Si hay varias, se invita a elegir.
   const subcategoriasConResultados = respuesta
     ? respuesta.arbol
         .filter((c) => !filtros.categoriaId || c.id === filtros.categoriaId)
@@ -270,9 +276,16 @@ export function HomePage() {
         {cargando && !respuesta && <Spinner />}
 
         {respuesta && respuesta.total === 0 && !error && (
-          <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-neutral-500">
-            No encontramos productos que coincidan con tu búsqueda.
-          </p>
+          <div className="flex flex-col gap-6">
+            <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-neutral-500">
+              No encontramos productos que coincidan con tu búsqueda.
+            </p>
+            <SugeridosSinResultados
+              sugeridos={respuesta.sugeridos}
+              origen={respuesta.origenSugerencia}
+              termino={respuesta.terminoBusquedaReciente}
+            />
+          </div>
         )}
 
         {resultados.length > 0 && (
