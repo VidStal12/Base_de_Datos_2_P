@@ -6,7 +6,7 @@ const tendenciaService = require('./tendenciaService');
 const Producto = require('../models/mongo/Producto');
 const { conectar } = require('../config/mongo');
 const { conectar: conectarRedis } = require('../config/redis');
-const { componenteCaido } = require('../utils/resiliencia');
+const { componenteCaido, registrarFallo } = require('../utils/resiliencia');
 const { escaparRegex } = require('../utils/validation');
 const facetas = require('./facetasBusqueda');
 
@@ -111,7 +111,8 @@ async function registrarActividad(usuarioId, tipo, valor) {
     await redis.ltrim(clave, 0, MAX_ACTIVIDADES_GUARDADAS - 1);
     await redis.expire(clave, TTL_ACTIVIDAD_SEGUNDOS);
   } catch (err) {
-    console.error('No se pudo registrar la actividad reciente:', err.message);
+    // registrarFallo avisa UNA vez por caída (no una línea por petición mientras Redis está apagado).
+    registrarFallo('No se pudo registrar la actividad reciente', err);
   }
 }
 
@@ -121,7 +122,7 @@ async function obtenerUltimaActividad(usuarioId) {
     const [masReciente] = await redis.lrange(CLAVE_ACTIVIDAD_RECIENTE(usuarioId), 0, 0);
     return masReciente ? JSON.parse(masReciente) : null;
   } catch (err) {
-    console.error('No se pudo leer la actividad reciente:', err.message);
+    registrarFallo('No se pudo leer la actividad reciente', err);
     return null;
   }
 }
@@ -147,8 +148,11 @@ async function intentarActividadReciente(usuarioId) {
       'elasticsearch'
     );
     if (resultado.total > 0) {
+      // Vienen del índice, que no se entera de las ventas: igual que en los resultados de la búsqueda, el
+      // stock de cada tarjeta se relee de Mongo (conExistenciasVigentes) para no mostrar «En stock» de más.
+      const { resultados } = await conExistenciasVigentes({ ...resultado, resultados: resultado.resultados.slice(0, CANTIDAD_SUGERIDOS) });
       return {
-        sugeridos: resultado.resultados.slice(0, CANTIDAD_SUGERIDOS),
+        sugeridos: resultados,
         origenSugerencia: 'busquedaReciente',
         terminoBusquedaReciente: actividad.valor,
       };
@@ -160,7 +164,10 @@ async function intentarActividadReciente(usuarioId) {
     try {
       const producto = await obtener(actividad.valor);
       const oculto = await productoService.vendedorOculto(producto.vendedor_id);
-      if (!oculto) return { sugeridos: [producto], origenSugerencia: 'productoVisto' };
+      // Solo un producto ACTIVO: el detalle se abre por URL directa aunque el producto esté pausado,
+      // pero la vitrina (y esta sugerencia, que invita a comprarlo) solo ofrece lo que hoy se vende.
+      // Se mira acá y no solo al registrar la vista, porque pudo pausarse después de que el usuario lo vio.
+      if (!oculto && producto.estado === 'activo') return { sugeridos: [producto], origenSugerencia: 'productoVisto' };
     } catch {
       // el producto ya no existe, o su vendedor quedó suspendido: seguimos a la siguiente capa
     }
@@ -194,7 +201,7 @@ async function sugeridosSinResultados(usuarioId) {
     const { resultados } = await buscar({ ordenarPor: 'masVendidos' });
     return resultados.length > 0 ? { sugeridos: resultados.slice(0, CANTIDAD_SUGERIDOS), origenSugerencia: 'tendencia' } : {};
   } catch (err) {
-    console.error('No se pudieron calcular sugeridosSinResultados:', err.message);
+    registrarFallo('No se pudieron calcular sugeridosSinResultados', err);
     return {};
   }
 }
@@ -204,14 +211,17 @@ async function sugeridosSinResultados(usuarioId) {
 // para que la tienda no aparezca vacía hasta que alguien repueble el índice. `usuarioId` es opcional
 // (viene de optionalAuth en la ruta): sin sesión, sugeridosSinResultados salta directo a más vendidos.
 async function buscar(opciones = {}, usuarioId) {
+  // `opciones` es req.query SIN validar: ?q=a&q=b llega como arreglo. El texto que se usa acá es el mismo que
+  // normalizarConsulta le pasa al motor (cadena recortada, de a lo sumo 200 caracteres), nunca el valor crudo.
+  const { q } = facetas.normalizarConsulta(opciones);
   let respuesta = await conRespaldo(() => busquedaService.buscar(opciones), () => buscarEnCatalogo(opciones), 'elasticsearch');
   if (respuesta.total === 0 && !respuesta.modo && esNavegacionPura(opciones)) {
     respuesta = await buscarEnCatalogo(opciones).then((deMongo) => (deMongo.total > 0 ? deMongo : respuesta), () => respuesta);
   }
-  if (respuesta.total > 0 && usuarioId && opciones.q && opciones.q.trim()) {
-    registrarActividad(usuarioId, 'busqueda', opciones.q.trim());
+  if (respuesta.total > 0 && usuarioId && q) {
+    registrarActividad(usuarioId, 'busqueda', q);
   }
-  if (respuesta.total === 0 && opciones.q) {
+  if (respuesta.total === 0 && q) {
     respuesta = { ...respuesta, ...(await sugeridosSinResultados(usuarioId)) };
   }
   return conExistenciasVigentes(respuesta);

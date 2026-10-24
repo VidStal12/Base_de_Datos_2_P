@@ -147,7 +147,7 @@ Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await 
 |---|---|---|---|
 | **Sinónimos en Elasticsearch** | `PUT _synonyms/…` + filtro `synonym_graph` actualizable (probado: con 9 reglas, 11 de 12 consultas coloquiales resuelven; una regla nueva actúa al instante, sin reindexar); vocabulario local: playera = camiseta, chumpa = chaqueta | ~3 | Lo sugirió el catedrático. La primera vez hay que recrear el índice (`analysis` es estático; es copia derivada: borrar + `busqueda:backfill`) |
 | Respaldo semántico para «0 resultados» | Si BM25 no encuentra nada («celualr», que los sinónimos no arreglan), consultar kNN con el vector de la consulta | ~3 | Idea inesperada pero barata |
-| **Historial de búsqueda** («lo relacionado con lo que buscó antes») | Redis `historial:{uid}:busquedas` (lista de 20, TTL 30 días, `{q, topId}`) y `…:vistos`; captura con `optionalAuth`; `GET /api/recomendaciones/relacionadas` usa 3 búsquedas + 3 vistos con peso por recencia y los vectores ya guardados; sin historial o bajo τ → `{productos: []}` y la UI no pinta nada. UI: «Porque buscaste «camiseta de algodón»» + «Borrar historial» | 6–8 | Es el concepto del equipo, aprobado en el audio |
+| **Historial de búsqueda** («lo relacionado con lo que buscó antes») | **Ya hay una versión simple**, hecha por Jose (`2eee964`, `4241955`; [PLAN-ELASTICSEARCH-BUSQUEDA.md §16](PLAN-ELASTICSEARCH-BUSQUEDA.md)): Redis `actividad:{uid}` (5 entradas, 30 días: búsquedas que sí funcionaron y productos activos vistos) y, cuando un texto no encuentra nada, `sugeridos` (última actividad → historial de compras → más vendidos). **Falta respecto al diseño:** usar los vectores ya guardados (hoy repite la búsqueda por texto), una franja «Porque buscaste «camiseta de algodón»» fuera del caso «sin resultados» y «Borrar historial» | 2–3 (lo que falta) | Es el concepto del equipo, aprobado en el audio; el catedrático dijo que a quien no tenga historial no se le muestre nada y hoy la última capa muestra los más vendidos (confirmar) |
 | `descripcion_larga` | Ver §3.5 (variante C) | ~7 | Declarar los textos como sintéticos |
 | **Señal de fraude por direcciones** | Ver abajo | 10–14 | Idea del catedrático («bastante chilero») |
 
@@ -220,6 +220,7 @@ Bien hecho hoy: pedidos, direcciones, métodos de pago e intentos de checkout fi
 | Suspensión (`bloqueoService`, `candadoRedis`) | `rd_candados_w` | mismas llaves + `DEL`, `EVAL`, `EVALSHA` | `GET carrito:1` → NOPERM |
 | Carrito (`cartService`) | `rd_carrito` | `carrito:*` lectura/escritura + Lua, sin `@dangerous` ni `SCAN` | `GET bloqueo:7`, `FLUSHALL`, `KEYS *`, `INFO` → NOPERM |
 | Ofertas, cupos, recomendaciones, reautenticación, checkout | `rd_ofertas` | `oferta:*`, `checkout:reserva:*`, `limite:pedidos:*`, `reauth:intentos:*`, `recomendaciones:*` + Lua con `+time` | `SET bloqueo:7` → NOPERM |
+| Catálogo y búsqueda (`catalogoLecturaService`: actividad reciente del usuario) | `rd_actividad` | `actividad:*`: `LRANGE`, `LPUSH`, `LREM`, `LTRIM`, `EXPIRE` (clave nueva desde 2026-10-22, ver PLAN-ELASTICSEARCH-BUSQUEDA.md §16) | `GET carrito:1` → NOPERM |
 | Scripts `verificar*`/`backfill*` | `rd_admin` (el usuario `default` queda apagado) | todo | — |
 | API de catálogo, reseñas y checkout | Mongo `tiendaya_app` | `productos`, `categorias`, `subcategorias`, `resenas` lectura/escritura; `producto_eventos`: `find` e `insert` | update/delete de un evento, `dropDatabase` → «not authorized» |
 | Reportes y verificación | Mongo `tiendaya_lectura` (`read`) | todo `tiendaya` | insert, `createUser` → not authorized |
@@ -388,7 +389,7 @@ Con dos integrantes: A = arquitectura, decisiones y retrospectiva; B = demos, ve
 |---|---|---|
 | **Piso** | V: MVP de §3.8 · S: huecos de API 1–4 + Redis ACL + pruebas + `verificar:acceso` (§4.4, pasos 1, 2 y 5) · C: diagrama (V1, V2a/b, V3 simple), retrospectiva de 15 filas, 14 diapositivas + 2 demos + 1 video | ≈ 60–65 |
 | **Completo** | Piso + Mongo RBAC y ADR-007 (§4.4, pasos 3–4) + sinónimos (3 h) + prueba de deriva del diagrama + 3 videos + 3 ADR «propuesta» | ≈ 80–90 |
-| *Stretch* | Historial de búsqueda, señal por direcciones (+ IP como corroborador), `descripcion_larga`, política `acl_regla` + `/admin/permisos`, seguridad en Elasticsearch/Cassandra/Neo4j/MySQL | +40–55 |
+| *Stretch* | Historial de búsqueda con vectores y «borrar historial» (la versión simple ya existe), señal por direcciones (+ IP como corroborador), `descripcion_larga`, política `acl_regla` + `/admin/permisos`, seguridad en Elasticsearch/Cassandra/Neo4j/MySQL | +40–55 |
 
 **Si faltan manos (escenario A con dos personas), recortar en este orden:** (1) Mongo RBAC pasa a *stretch* (Redis ACL ya cumple «al menos un componente NoSQL»); (2) sinónimos fuera; (3) sin prueba de deriva; (4) 12 diapositivas y un solo video; (5) del diagrama, sólo V1 y V2 + una V3 mínima. Lo que **no** se recorta: línea base vs kNN medida, huecos de API arreglados con su prueba, la demo de acceso denegado y la tabla de la retrospectiva.
 

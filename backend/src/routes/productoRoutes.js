@@ -35,8 +35,9 @@ router.get('/estadisticas/ediciones', async (req, res) => {
 // solo al levantarse. Un administrador sí lo ve — el panel necesita poder abrirlo —,
 // y por eso la ruta mira el token (optionalAuth) sin exigirlo; igual que en el listado,
 // a él se le marca como oculto para que la pantalla lo diga. Si quien pregunta tiene
-// sesión y el producto sí le quedó visible, se registra como su actividad reciente
-// (catalogoLecturaService.js) para poder sugerírselo si después busca algo sin sentido.
+// sesión y el producto sí le quedó visible Y está activo, se registra como su actividad
+// reciente (catalogoLecturaService.js) para poder sugerírselo si después busca algo sin
+// sentido; uno pausado (inactivo) se abre por su URL pero no queda como «lo último que viste».
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const producto = await catalogoLectura.obtener(Number(req.params.id));
@@ -44,7 +45,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
     if (oculto && req.usuario?.rol !== 'administrador') {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
-    if (!oculto) catalogoLectura.registrarVistaProducto(req.usuario?.id_usuario, producto.id);
+    if (!oculto && producto.estado === 'activo') catalogoLectura.registrarVistaProducto(req.usuario?.id_usuario, producto.id);
     res.json(oculto ? { ...producto, vendedor_suspendido: true } : producto);
   } catch (err) {
     responderError(res, err, 404);

@@ -13,6 +13,8 @@ import { Spinner } from '../components/common/Spinner';
 import { formatCurrency } from '../utils/format';
 import { aParametros, alternarAtributo, conCategoria, conOrden, conPagina, conPrecio, conSubcategoria, hayFiltros, leerFiltros, sinAtributos } from '../utils/filtrosBusqueda';
 
+// Tarjeta de un producto recomendado por historial de compras: lleva al flujo de compra con descuento
+// (/recomendaciones/:id/comprar) y muestra el precio recomendado junto al normal tachado.
 function TarjetaConDescuento({ producto }) {
   return (
     <Link
@@ -39,6 +41,13 @@ function TarjetaConDescuento({ producto }) {
   );
 }
 
+// "Recomendado para vos" (Entrega 2, ver IA/ENTREGA-2-PLAN.md §4.5) —
+// distinto de las ofertas flash normales (/ofertas, configuradas a mano por
+// un vendedor sobre SU producto): esto analiza el historial de compras del
+// usuario y encuentra productos similares de OTROS vendedores, sin que nadie
+// lo configure. Solo se muestra si hay sesión iniciada Y el análisis
+// encontró algo — un comprador sin historial, o cuyo historial no tiene
+// competencia real en el catálogo, simplemente no ve esta sección.
 function RecomendacionesSection() {
   const { usuario, token } = useAuth();
   const [datos, setDatos] = useState(null);
@@ -73,6 +82,10 @@ function RecomendacionesSection() {
   );
 }
 
+// Lo que se ofrece cuando un TEXTO no encuentra nada (GET /api/busqueda, ver catalogoLecturaService.js). `origen` dice
+// de dónde salió: 'busquedaReciente' (la última búsqueda del usuario que sí dio resultados, `termino`),
+// 'productoVisto' (lo último que abrió), 'historial' (sus compras: tarjetas con descuento) o 'tendencia' (los más
+// vendidos, también para quien no inició sesión). Sin sugerencias no se dibuja nada.
 function SugeridosSinResultados({ sugeridos, origen, termino }) {
   if (!sugeridos || sugeridos.length === 0) return null;
   const titulo =
@@ -103,6 +116,13 @@ const ORDENES = [
   { valor: 'precioDesc', texto: 'Precio: de mayor a menor' },
 ];
 
+// La portada, la navegación por categorías y la búsqueda por texto son UNA sola pantalla y UNA sola consulta
+// (GET /api/busqueda, Elasticsearch): lo que se elige en la barra lateral — categoría, atributos, precio,
+// orden y página — vive en la URL (utils/filtrosBusqueda.js), así que el botón «atrás», un enlace copiado y
+// los enlaces del menú de categorías (/?categoriaId=…) funcionan sin estado aparte. La respuesta trae todo lo
+// que se dibuja: los productos de la página, el árbol de categorías con conteos y las facetas de atributo y de
+// precio, todas calculadas por el motor con agregaciones disyuntivas (cada faceta cuenta con los demás
+// filtros menos el suyo, así que marcar Talla M no esconde a Talla L ni a las otras categorías).
 export function HomePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -115,6 +135,10 @@ export function HomePage() {
   const [error, setError] = useState('');
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
 
+  // Se conserva la respuesta anterior mientras llega la nueva: la barra lateral no parpadea al elegir algo.
+  // La bandera `vigente` descarta una respuesta que llega tarde, cuando ya se pidió otra. El token es opcional:
+  // sin sesión es la misma búsqueda pública; con sesión, el servidor puede personalizar las sugerencias de un
+  // texto sin resultados (por eso la consulta se repite al iniciar o cerrar sesión).
   useEffect(() => {
     let vigente = true;
     setCargando(true);
@@ -135,6 +159,7 @@ export function HomePage() {
     };
   }, [filtros, token]);
 
+  // Un enlace con una página que no existe (?pagina=99) vuelve a la última, sin dejar una pantalla vacía.
   useEffect(() => {
     if (respuesta && respuesta.total > 0 && filtros.pagina > respuesta.paginas) {
       setSearchParams(aParametros(conPagina(filtros, respuesta.paginas)), { replace: true });
@@ -142,8 +167,10 @@ export function HomePage() {
   }, [respuesta, filtros, setSearchParams]);
 
   const cambiar = (nuevos) => setSearchParams(aParametros(nuevos));
+  // Elegir categoría o subcategoría cambia de «lugar»: en el celular el panel se pliega para dejar ver los
+  // resultados. Marcar atributos o precio no lo pliega — suelen ser varios clics seguidos.
   const elegirCategoria = (id) => {
-    if (id === filtros.categoriaId && !filtros.subcategoriaId) return;
+    if (id === filtros.categoriaId && !filtros.subcategoriaId) return; // ya está ahí
     setFiltrosAbiertos(false);
     cambiar(conCategoria(filtros, id));
   };
@@ -162,6 +189,8 @@ export function HomePage() {
   const hasta = desde > 0 ? desde + resultados.length - 1 : 0;
   const titulo = filtros.q ? `Resultados para "${filtros.q}"` : respuesta?.ruta.at(-1)?.nombre ?? 'Todos los productos';
 
+  // Los atributos son de cada subcategoría («Talla» de camisetas y de zapatos no se mezclan): se ofrecen cuando
+  // los resultados caen en UNA. Si hay varias, se invita a elegir.
   const subcategoriasConResultados = respuesta
     ? respuesta.arbol
         .filter((c) => !filtros.categoriaId || c.id === filtros.categoriaId)

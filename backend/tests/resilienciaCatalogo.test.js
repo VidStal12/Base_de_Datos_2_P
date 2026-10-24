@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { cargar } = require('./redisHelpers');
-const { ServicioNoDisponible } = require('../src/utils/resiliencia');
+const resiliencia = require('../src/utils/resiliencia');
+const { ServicioNoDisponible } = resiliencia;
 
 // catalogoLecturaService: el catálogo se sigue sirviendo cuando se apaga Mongo o
 // Elasticsearch, porque cada uno guarda una copia de lo que el otro muestra
@@ -23,7 +24,9 @@ const PRODUCTOS = [
   { id: 3, descripcion: 'Taza', total_vendido: 1, inventario: { precio: 15, cantidad: 9 }, subcategoria: { id: VAJILLA, subcategoria: 'Vajilla', categoria_id: HOGAR, categoria: 'Hogar' }, atributos: [] },
 ];
 
-function servicio({ busqueda = {}, producto = {}, categoria = {}, suspendidos = [], docs = [], existencias = [], mongoCaido = false } = {}) {
+// `actividad` precarga la lista de actividad reciente de Redis por usuario ({ 7: [{ tipo, valor }, …] }, la más
+// reciente primero); `tendencia` es el historial de compras (tendenciaService.recomendar); `redisCaido` apaga Redis.
+function servicio({ busqueda = {}, producto = {}, categoria = {}, tendencia = {}, actividad = {}, suspendidos = [], docs = [], existencias = [], mongoCaido = false, redisCaido = false } = {}) {
   const llamadas = [];
   const registrar = (nombre, respuesta) => async (...args) => {
     llamadas.push(nombre);
@@ -47,6 +50,17 @@ function servicio({ busqueda = {}, producto = {}, categoria = {}, suspendidos = 
       }),
     }),
   };
+  // Un Redis de mentira que sabe lo justo de listas (lrem, lpush, ltrim, lrange, expire) para la actividad reciente.
+  const listas = new Map(Object.entries(actividad).map(([id, entradas]) => [`actividad:${id}`, entradas.map((e) => JSON.stringify(e))]));
+  const ttl = new Map();
+  const redis = {
+    lrem: async (clave, _cuantos, valor) => { listas.set(clave, (listas.get(clave) ?? []).filter((v) => v !== valor)); },
+    lpush: async (clave, valor) => { listas.set(clave, [valor, ...(listas.get(clave) ?? [])]); },
+    ltrim: async (clave, desde, hasta) => { listas.set(clave, (listas.get(clave) ?? []).slice(desde, hasta + 1)); },
+    expire: async (clave, segundos) => { ttl.set(clave, segundos); },
+    lrange: async (clave, desde, hasta) => (listas.get(clave) ?? []).slice(desde, hasta + 1),
+  };
+  const fallos = [];
   const modulo = cargar('../src/services/catalogoLecturaService.js', {
     './busquedaService': {
       buscar: registrar('es.buscar', busqueda.buscar ?? { resultados: [], total: 0, facetas: {}, categorias: [], subcategorias: [] }),
@@ -58,13 +72,18 @@ function servicio({ busqueda = {}, producto = {}, categoria = {}, suspendidos = 
     './productoService': {
       listar: registrar('mongo.listar', producto.listar ?? PRODUCTOS),
       obtener: registrar('mongo.obtener', producto.obtener ?? { id: 1 }),
+      vendedorOculto: registrar('mongo.vendedorOculto', producto.vendedorOculto ?? false),
     },
     './categoriaService': { listar: registrar('mongo.categorias', categoria.listar ?? []) },
     './suspensionService': { vendedoresSuspendidos: async () => new Set(suspendidos) },
+    './tendenciaService': { recomendar: registrar('tendencia.recomendar', tendencia.recomendar ?? { productos: [] }) },
     '../models/mongo/Producto': Producto,
     '../config/mongo': { conectar: async () => { if (mongoCaido) throw caidaMongo(); } },
+    '../config/redis': { conectar: async () => { if (redisCaido) throw new ServicioNoDisponible('redis'); return redis; } },
+    // El registrarFallo real escribe en la consola (una línea por caída): acá solo se anota qué se intentó avisar.
+    '../utils/resiliencia': { ...resiliencia, registrarFallo: (contexto) => { fallos.push(contexto); } },
   });
-  return { ...modulo, llamadas };
+  return { ...modulo, llamadas, listas, ttl, fallos };
 }
 
 // ── Elasticsearch apagado: la búsqueda cae a Mongo ──────────────────────────
@@ -103,7 +122,7 @@ test('sin Mongo la búsqueda no falla: se muestran el stock y las ventas del ín
 
 test('una página sin resultados no consulta a Mongo, y el respaldo (que ya viene de Mongo) tampoco relee nada', async () => {
   const vacia = servicio({ busqueda: { buscar: { ...RESPUESTA_INDICE, resultados: [], total: 0 } } });
-  await vacia.buscar({ q: 'zzz' });
+  await vacia.buscar({ precioMin: '99999' }); // con texto habría sugerencias: ver «Sin resultados» más abajo
   assert.deepEqual(vacia.llamadas, ['es.buscar']);
   const respaldo = servicio({ busqueda: { buscar: () => { throw caidaElastic(); } } });
   await respaldo.buscar({ q: 'camiseta' });
@@ -124,12 +143,21 @@ test('la portada con el índice VACÍO (Elasticsearch recién creado, sin backfi
   assert.equal(plano(await categoria.buscar({ categoriaId: ROPA })).total, 2, 'también una categoría sin otros filtros');
 });
 
-test('con filtros o texto, cero resultados es una respuesta legítima: no se busca en Mongo', async () => {
-  for (const opciones of [{ q: 'zzz' }, { atributos: '{"Talla":"XXL"}' }, { precioMin: '99999' }, { pagina: '3' }]) {
+test('con filtros, cero resultados es una respuesta legítima: no se busca en Mongo', async () => {
+  for (const opciones of [{ atributos: '{"Talla":"XXL"}' }, { precioMin: '99999' }, { pagina: '3' }]) {
     const s = servicio({ busqueda: { buscar: INDICE_VACIO } });
     assert.equal(plano(await s.buscar(opciones)).total, 0, JSON.stringify(opciones));
     assert.deepEqual(s.llamadas, ['es.buscar'], JSON.stringify(opciones));
   }
+});
+
+test('con texto, cero resultados tampoco se busca en Mongo: lo único que se agrega son las sugerencias, y la respuesta sigue en cero', async () => {
+  const pedidos = [];
+  const s = servicio({ busqueda: { buscar: INDICE_VACIO }, producto: { listar: (o) => { pedidos.push(plano(o)); return PRODUCTOS; } } });
+  const r = plano(await s.buscar({ q: 'zzz' }));
+  assert.equal(r.total, 0);
+  assert.equal(r.modo, undefined, 'sigue siendo la respuesta del motor');
+  assert.ok(pedidos.every((o) => o.q === undefined), 'a Mongo nunca se le pide «zzz»: solo la portada del índice vacío, para las sugerencias');
 });
 
 test('si Mongo tampoco tiene productos, o está apagado, la portada responde lo que dijo el índice', async () => {
@@ -169,11 +197,11 @@ test('el respaldo le pide a Mongo SOLO el texto y calcula las facetas disyuntiva
 });
 
 test('el respaldo y el motor devuelven las MISMAS claves: la interfaz no distingue quién contestó', async () => {
-  const motor = { resultados: [], total: 0, pagina: 1, tamano: 60, paginas: 1, arbol: [], ruta: [], atributos: [], precio: {}, filtros: {}, facetas: {}, categorias: [], subcategorias: [] };
+  const motor = { resultados: [PRODUCTOS[0]], total: 1, pagina: 1, tamano: 60, paginas: 1, arbol: [], ruta: [], atributos: [], precio: {}, filtros: {}, facetas: {}, categorias: [], subcategorias: [] };
   const sana = servicio({ busqueda: { buscar: motor } });
   const caida = servicio({ busqueda: { buscar: () => { throw caidaElastic(); } } });
   const claves = (r) => Object.keys(plano(r)).sort();
-  // Con texto: una portada sin resultados es otro caso (la guarda del índice vacío, más abajo).
+  // Con resultados: sin ellos la respuesta suma las sugerencias (más abajo) y una portada vacía es otro caso (la guarda del índice vacío).
   assert.deepEqual(claves(await caida.buscar({ q: 'x' })), [...claves(motor), 'modo'].sort());
   assert.deepEqual(claves(await sana.buscar({ q: 'x' })), claves(motor));
 });
@@ -205,6 +233,148 @@ test('el autocompletado cae a Mongo por prefijo, sin los vendedores suspendidos,
 test('el texto de las sugerencias es literal: un paréntesis suelto no rompe la consulta', async () => {
   const s = servicio({ busqueda: { sugerir: () => { throw caidaElastic(); } }, docs: [{ descripcion: 'Camiseta (azul)', vendedor_id: 1 }] });
   assert.deepEqual(plano(await s.sugerir('camiseta (a')), ['Camiseta (azul)']);
+});
+
+// ── Sin resultados: sugerencias y actividad reciente del usuario ────────────
+//
+// Cuando un TEXTO no encuentra nada, la respuesta sigue diciendo total 0 pero suma `sugeridos` y de dónde salieron
+// (`origenSugerencia`): la última actividad del usuario (una búsqueda que sí dio resultados, o el último producto
+// que abrió), su historial de compras o, sin sesión o sin nada de eso, los más vendidos. La actividad vive en una
+// lista de Redis por usuario; se guarda en segundo plano, así que las pruebas dejan correr la cola antes de mirarla.
+
+const VACIA = { ...RESPUESTA_INDICE, resultados: [], total: 0 };
+// El motor contesta según lo que se le pide: «camiseta» y la portada de más vendidos (sin texto) sí; lo demás, nada.
+const motorSegunTexto = (o) => (o.q === 'camiseta' || !o.q ? RESPUESTA_INDICE : VACIA);
+const cola = () => new Promise((resolver) => setImmediate(resolver));
+
+test('sin resultados y sin sesión se ofrecen los más vendidos; no se toca Redis ni el historial de compras', async () => {
+  const s = servicio({ busqueda: { buscar: motorSegunTexto } });
+  const r = plano(await s.buscar({ q: 'zzz' }));
+  assert.equal(r.total, 0, 'la respuesta sigue siendo la de cero resultados');
+  assert.equal(r.origenSugerencia, 'tendencia');
+  assert.deepEqual(r.sugeridos.map((p) => p.id), [1, 2]);
+  assert.equal(r.terminoBusquedaReciente, undefined);
+  assert.deepEqual(s.llamadas, ['es.buscar', 'es.buscar', 'mongo.existencias'], 'la segunda consulta es la de más vendidos y su stock se relee una vez');
+  assert.equal(s.listas.size, 0);
+});
+
+test('con sesión, sin resultados se repite la última búsqueda que sí dio resultados y se dice cuál fue', async () => {
+  const s = servicio({ busqueda: { buscar: motorSegunTexto }, actividad: { 7: [{ tipo: 'busqueda', valor: 'camiseta' }] } });
+  const r = plano(await s.buscar({ q: 'zzz' }, 7));
+  assert.equal(r.total, 0);
+  assert.equal(r.origenSugerencia, 'busquedaReciente');
+  assert.equal(r.terminoBusquedaReciente, 'camiseta');
+  assert.deepEqual(r.sugeridos.map((p) => p.id), [1, 2]);
+  assert.ok(!s.llamadas.includes('tendencia.recomendar'), 'no hace falta el historial de compras');
+});
+
+test('las sugerencias por búsqueda reciente muestran el stock vigente de Mongo, no el del índice', async () => {
+  const s = servicio({
+    busqueda: { buscar: motorSegunTexto },
+    actividad: { 7: [{ tipo: 'busqueda', valor: 'camiseta' }] },
+    existencias: [{ producto_id: 1, inventario: { cantidad: 0 }, total_vendido: 200 }],
+  });
+  const r = plano(await s.buscar({ q: 'zzz' }, 7));
+  assert.deepEqual(r.sugeridos.map((p) => [p.id, p.inventario.cantidad]), [[1, 0], [2, 9]], 'el #1 se agotó después de indexarse; el #2 sigue como estaba');
+});
+
+test('con sesión, si lo último que hizo fue ver un producto, ese producto es la sugerencia', async () => {
+  const s = servicio({
+    busqueda: { buscar: motorSegunTexto },
+    producto: { obtener: (id) => ({ id, descripcion: 'Smartphone', estado: 'activo', vendedor_id: 3 }) },
+    actividad: { 7: [{ tipo: 'producto', valor: 5 }, { tipo: 'busqueda', valor: 'camiseta' }] },
+  });
+  const r = plano(await s.buscar({ q: 'zzz' }, 7));
+  assert.equal(r.origenSugerencia, 'productoVisto');
+  assert.deepEqual(r.sugeridos.map((p) => p.id), [5], 'gana lo más reciente de las dos cosas');
+});
+
+test('un producto visto que ya está pausado, o cuyo vendedor se suspendió, NO se sugiere: se sigue con el historial de compras', async () => {
+  const historial = { productos: [{ id: 8, descripcion: 'Parecido', precio_recomendado: 40, precio_normal: 50 }] };
+  const casos = [
+    ['pausado (inactivo)', { obtener: (id) => ({ id, estado: 'inactivo', vendedor_id: 3 }) }],
+    ['de un vendedor suspendido', { obtener: (id) => ({ id, estado: 'activo', vendedor_id: 3 }), vendedorOculto: true }],
+  ];
+  for (const [nombre, producto] of casos) {
+    const s = servicio({ producto, tendencia: { recomendar: historial }, actividad: { 7: [{ tipo: 'producto', valor: 5 }] } });
+    const r = plano(await s.buscar({ q: 'zzz' }, 7));
+    assert.equal(r.origenSugerencia, 'historial', nombre);
+    assert.deepEqual(r.sugeridos.map((p) => p.id), [8], nombre);
+  }
+});
+
+test('sin actividad reciente se usa el historial de compras; sin historial, los más vendidos', async () => {
+  const conHistorial = servicio({ busqueda: { buscar: motorSegunTexto }, tendencia: { recomendar: { productos: [{ id: 8 }] } } });
+  assert.equal(plano(await conHistorial.buscar({ q: 'zzz' }, 7)).origenSugerencia, 'historial');
+  const sinHistorial = servicio({ busqueda: { buscar: motorSegunTexto } });
+  const r = plano(await sinHistorial.buscar({ q: 'zzz' }, 7));
+  assert.equal(r.origenSugerencia, 'tendencia');
+  assert.ok(sinHistorial.llamadas.includes('tendencia.recomendar'), 'con sesión se pregunta primero por lo personal');
+});
+
+test('una búsqueda que sí encontró algo se guarda como actividad, solo con sesión: sin repetidos, a lo sumo 5 y con 30 días de vida', async () => {
+  const s = servicio({ busqueda: { buscar: RESPUESTA_INDICE } });
+  await s.buscar({ q: '  camiseta ' }, 7);
+  await cola();
+  await s.buscar({ q: 'camiseta' }, 7);
+  await cola();
+  assert.deepEqual(s.listas.get('actividad:7'), [JSON.stringify({ tipo: 'busqueda', valor: 'camiseta' })], 'recortado y sin repetir');
+  assert.equal(s.ttl.get('actividad:7'), 60 * 60 * 24 * 30);
+  for (const texto of ['a', 'b', 'c', 'd', 'e']) {
+    await s.buscar({ q: texto }, 7);
+    await cola();
+  }
+  assert.equal(s.listas.get('actividad:7').length, 5, 'las más viejas se descartan');
+  assert.deepEqual(JSON.parse(s.listas.get('actividad:7')[0]), { tipo: 'busqueda', valor: 'e' }, 'la más reciente va primero');
+  await s.buscar({ q: 'sin sesión' });
+  await cola();
+  assert.deepEqual([...s.listas.keys()], ['actividad:7'], 'sin sesión no se guarda nada');
+});
+
+test('lo que no encontró nada no se guarda como actividad', async () => {
+  const s = servicio({ busqueda: { buscar: motorSegunTexto } });
+  await s.buscar({ q: 'zzz' }, 7);
+  await cola();
+  assert.equal(s.listas.size, 0);
+});
+
+test('un ?q repetido (Express lo entrega como arreglo) no rompe la búsqueda con sesión y se guarda como el texto que se buscó', async () => {
+  const s = servicio({ busqueda: { buscar: RESPUESTA_INDICE } });
+  const r = plano(await s.buscar({ q: ['camiseta', 'pantalon'] }, 7));
+  assert.equal(r.total, 2);
+  await cola();
+  const [entrada] = s.listas.get('actividad:7');
+  assert.deepEqual(JSON.parse(entrada), { tipo: 'busqueda', valor: 'camiseta,pantalon' });
+  const sinResultados = servicio({ busqueda: { buscar: VACIA } });
+  assert.equal(plano(await sinResultados.buscar({ q: ['a', 'b'] }, 7)).total, 0, 'tampoco rompe cuando no hay resultados');
+});
+
+test('ver un producto solo cuenta como actividad con sesión', async () => {
+  const s = servicio();
+  s.registrarVistaProducto(undefined, 5);
+  s.registrarVistaProducto(7, 5);
+  await cola();
+  assert.deepEqual(s.listas.get('actividad:7').map((e) => JSON.parse(e)), [{ tipo: 'producto', valor: 5 }]);
+  assert.equal(s.listas.size, 1, 'el anónimo no deja rastro');
+});
+
+test('con Redis apagado la búsqueda sigue: no se guarda la actividad y las sugerencias salen de las otras capas', async () => {
+  const conResultados = servicio({ busqueda: { buscar: RESPUESTA_INDICE }, redisCaido: true });
+  assert.equal(plano(await conResultados.buscar({ q: 'camiseta' }, 7)).total, 2);
+  await cola();
+  assert.deepEqual(conResultados.fallos, ['No se pudo registrar la actividad reciente'], 'se avisa, sin romper nada');
+  const sinResultados = servicio({ busqueda: { buscar: motorSegunTexto }, redisCaido: true, tendencia: { recomendar: { productos: [{ id: 8 }] } } });
+  const r = plano(await sinResultados.buscar({ q: 'zzz' }, 7));
+  assert.equal(r.total, 0);
+  assert.equal(r.origenSugerencia, 'historial', 'sin la lista de actividad se sigue con el historial de compras');
+});
+
+test('si las sugerencias no se pueden calcular, la búsqueda sigue siendo la de cero resultados, sin error', async () => {
+  const s = servicio({ busqueda: { buscar: (o) => { if (o.ordenarPor) throw new Error('consulta de más vendidos rota'); return VACIA; } } });
+  const r = plano(await s.buscar({ q: 'zzz' }));
+  assert.equal(r.total, 0);
+  assert.equal(r.sugeridos, undefined);
+  assert.deepEqual(s.fallos, ['No se pudieron calcular sugeridosSinResultados']);
 });
 
 // ── Mongo apagado: el catálogo se lee del índice ────────────────────────────
