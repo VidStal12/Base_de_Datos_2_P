@@ -5,7 +5,7 @@ const { conectar, cerrar } = require('../src/config/redis');
 // Ejecutar con el backend detenido, antes de arrancar la versión persistente.
 // Idempotente: las filas SQL existentes prevalecen, no se suman en un reintento.
 async function main() {
-  const redis = conectar();
+  const redis = conectar('admin');
   let cursor = '0';
   let migrados = 0;
   do {

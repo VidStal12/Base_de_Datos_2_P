@@ -17,3 +17,8 @@ flash-sale-tests/prepared-state.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Redis: archivo de ACL con los hashes de las cuentas de servicio (lo genera npm run seguridad:inicializar)
+docker/redis/users.acl
+# MongoDB: llave del replica set (la genera npm run seguridad:inicializar)
+docker/mongo/keyfile

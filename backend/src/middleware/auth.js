@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { CODIGO_CUENTA_SUSPENDIDA, exigirCuentaActiva } = require('../services/suspensionService');
+const { esErrorDeAcceso, registrarFallo } = require('../utils/resiliencia');
 
 // Valida el token Y que la cuenta no esté suspendida (bloqueo temporal por fraude
 // de confianza alta, ver suspensionService.js): una sola consulta a Redis por
@@ -35,12 +36,14 @@ async function requireAuth(req, res, next) {
 
 // Requiere requireAuth antes en la cadena (usa req.usuario.rol, que viene del token).
 function requireRole(...rolesPermitidos) {
-  return (req, res, next) => {
+  const middleware = (req, res, next) => {
     if (!req.usuario || !rolesPermitidos.includes(req.usuario.rol)) {
       return res.status(403).json({ error: 'No tenés permiso para esta acción' });
     }
     next();
   };
+  middleware.acceso = { roles: [...rolesPermitidos] };
+  return middleware;
 }
 
 // Como requireAuth, pero no rechaza si falta o es inválido el token — lo
@@ -58,12 +61,19 @@ async function optionalAuth(req, res, next) {
       const usuario = jwt.verify(token, process.env.JWT_SECRET);
       await exigirCuentaActiva(usuario.id_usuario, usuario.rol);
       req.usuario = usuario;
-    } catch {
+    } catch (err) {
       // Token inválido/expirado, o cuenta suspendida, en una ruta pública: se
-      // ignora, no se rechaza.
+      // ignora, no se rechaza. Una Redis que rechaza a la cuenta de servicio es otra cosa: la persona queda
+      // como anónima (nunca como sesión sin revisar), pero el error de configuración se anota.
+      if (esErrorDeAcceso(err)) registrarFallo('No se pudo comprobar si la cuenta está suspendida', err);
     }
   }
   next();
 }
+
+// Etiquetas que lee tests/accesoRutas.test.js para saber, sin ejecutar nada, qué exige cada ruta
+// del router real y compararlo con config/politicaRutas.js (la lista blanca de la API).
+requireAuth.acceso = { sesion: true };
+optionalAuth.acceso = { sesionOpcional: true };
 
 module.exports = { requireAuth, requireRole, optionalAuth };

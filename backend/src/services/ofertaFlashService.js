@@ -81,7 +81,7 @@ async function actualizar(usuario, productoId, { activo, precio_oferta, stock_of
   // toca): si Redis está apagado, la oferta queda guardada igual.
   if (nuevoActivo) {
     try {
-      await conectar().del(clave(productoId, doc.oferta_flash));
+      await conectar('ofertas').del(clave(productoId, doc.oferta_flash));
     } catch (err) {
       avisarCaida('redis', err);
     }
@@ -117,7 +117,7 @@ async function consultarStock(productoId) {
   // la oferta no se muestra (el producto sigue a su precio normal) en vez de inventar un número.
   let crudo;
   try {
-    crudo = await conectar().get(clave(productoId, oferta));
+    crudo = await conectar('ofertas').get(clave(productoId, oferta));
   } catch (err) {
     avisarCaida('redis', err);
     return { activo: false, producto, motivo: 'no_disponible' };
@@ -176,7 +176,7 @@ async function intentarComprar(productoId, cantidad, precioEsperado, soloValidar
 
   let restante;
   try {
-    restante = await conectar().decrementarOferta(clave(productoId, oferta), oferta.stock_oferta, ttlSegundos, cantidad);
+    restante = await conectar('ofertas').decrementarOferta(clave(productoId, oferta), oferta.stock_oferta, ttlSegundos, cantidad);
   } catch (err) {
     throw sinRedis(err);
   }
@@ -198,7 +198,7 @@ async function intentarComprar(productoId, cantidad, precioEsperado, soloValidar
 // (ver ADR-002 §5): si esto también falla, queda un desajuste menor a favor
 // de la oferta (un cupo de menos disponible), no un dato incorrecto.
 async function refundStock(productoId, cantidad, oferta) {
-  const redis = conectar();
+  const redis = conectar('ofertas');
   // Si el pool ya venció, no recrear un contador sin TTL.
   await redis.reintegrarOferta(clave(productoId, oferta), cantidad);
 }
@@ -273,7 +273,7 @@ async function comprarConIntento(usuarioId, productoId, datos) {
           const r = actual.reserva;
           let admitido;
           try {
-            admitido = await conectar().reservarOfertaIdempotente(r.claveStock, `checkout:reserva:${intentoId}`, r.stockInicial, r.vence, r.cantidad);
+            admitido = await conectar('ofertas').reservarOfertaIdempotente(r.claveStock, `checkout:reserva:${intentoId}`, r.stockInicial, r.vence, r.cantidad);
           } catch (err) {
             throw sinRedis(err);
           }

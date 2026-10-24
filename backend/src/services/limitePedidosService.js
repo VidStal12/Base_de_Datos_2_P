@@ -35,14 +35,14 @@ function configuracion(env = process.env) {
 // Reserva un pedido de la ventana de esta cuenta. `admitido: false` = ya llegó al
 // límite; `reintentarEnSegundos` es lo que falta para que la ventana cierre.
 async function reservar(usuarioId, limite, ventanaSegundos = VENTANA_SEGUNDOS) {
-  const [cuenta, segundos] = await conectar().reservarCupo(clave(usuarioId), limite, ventanaSegundos);
+  const [cuenta, segundos] = await conectar('cupos').reservarCupo(clave(usuarioId), limite, ventanaSegundos);
   return { admitido: Number(cuenta) !== -1, cuenta: Number(cuenta), reintentarEnSegundos: Number(segundos) };
 }
 
 // Devuelve el pedido reservado cuando no llegó a completarse (el servicio lo rechazó
 // después: stock, precio, dirección…): un pedido que falla no gasta el cupo.
 async function liberar(usuarioId) {
-  await conectar().liberarCupo(clave(usuarioId));
+  await conectar('cupos').liberarCupo(clave(usuarioId));
 }
 
 module.exports = { configuracion, reservar, liberar, clave, VENTANA_SEGUNDOS };

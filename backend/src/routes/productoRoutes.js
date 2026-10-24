@@ -24,7 +24,9 @@ router.get('/', optionalAuth, async (req, res) => {
 
 // Antes de "/:id" a propósito — si no, Express intenta leer "estadisticas"
 // como un id numérico y nunca llega acá.
-router.get('/estadisticas/ediciones', async (req, res) => {
+// Solo administrador: es el widget «Productos más editados» del panel administrativo, y revela con
+// qué frecuencia edita cada vendedor (y, de rebote, qué productos le importan a la competencia).
+router.get('/estadisticas/ediciones', requireAuth, requireRole('administrador'), async (req, res) => {
   const desde = req.query.desde ? new Date(req.query.desde) : undefined;
   const estadisticas = await productoService.estadisticasEdiciones({ desde });
   res.json(estadisticas);
@@ -54,12 +56,17 @@ router.get('/:id', optionalAuth, async (req, res) => {
 
 // Historial de cambios (ver ADR-003). Sin ?fecha, devuelve la línea de tiempo
 // completa de eventos; con ?fecha=AAAA-MM-DD, el snapshot vigente en esa fecha.
-// Solo vendedor/administrador: ahora incluye precio/stock por versión, que no
-// es algo que un comprador debería poder curiosear (historial de precios,
-// patrones de reabastecimiento).
+// Solo el vendedor DUEÑO del producto o un administrador: incluye precio/stock por
+// versión y quién editó, que no es algo que un comprador —ni otro vendedor, que es
+// su competencia— debería poder curiosear (historial de precios, patrones de
+// reabastecimiento). El rol no alcanza: verificarPermiso comprueba el dueño contra MySQL.
 router.get('/:id/historial', requireAuth, requireRole('vendedor', 'administrador'), async (req, res) => {
   try {
     const productoId = Number(req.params.id);
+    if (!Number.isInteger(productoId) || productoId < 1) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+    await productoService.verificarPermiso(req.usuario, productoId, 'ver el historial de');
     if (req.query.fecha) {
       const snapshot = await productoService.historialEnFecha(productoId, new Date(req.query.fecha));
       res.json(snapshot);

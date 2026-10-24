@@ -46,6 +46,28 @@ class ServicioNoDisponible extends Error {
   }
 }
 
+const CODIGO_CREDENCIAL_RECHAZADA = 'CREDENCIAL_RECHAZADA';
+const MENSAJE_PUBLICO_CREDENCIAL = 'El servidor no pudo autenticarse con uno de sus servicios (error de configuración). Avisá al equipo.';
+
+// Una base que RESPONDE pero rechaza las credenciales del backend (contraseña vieja, una cuenta sin el
+// permiso que el módulo necesita) NO está caída: reintentar no sirve, y esconderlo como «no responde» deja
+// la aplicación funcionando a medias sin que nadie sepa por qué. Es un error de configuración: se dice una
+// vez, con la cuenta y qué revisar, y los controles de seguridad que dependen de esa base fallan CERRADO
+// (IA/PLAN-ENTREGA-FINAL.md §4.3). Nunca llega al cliente con su texto: ver utils/http.js.
+class CredencialRechazada extends Error {
+  constructor(componente, cuenta, causa) {
+    super(
+      `${COMPONENTES[componente]?.nombre ?? 'Un servicio'} rechazó las credenciales del backend${cuenta ? ` (cuenta ${cuenta})` : ''}. Revisá backend/.env y los permisos de esa cuenta.`,
+      causa ? { cause: causa } : undefined
+    );
+    this.name = 'CredencialRechazada';
+    this.status = 500;
+    this.codigo = CODIGO_CREDENCIAL_RECHAZADA;
+    this.componente = componente || 'desconocido';
+    this.cuenta = cuenta ?? null;
+  }
+}
+
 // Errores de red que no dicen QUÉ base se cayó (un ECONNREFUSED es un ECONNREFUSED).
 const ERRNO_DE_RED = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNABORTED']);
 
@@ -103,6 +125,30 @@ function componenteCaido(err) {
   return null;
 }
 
+// Cómo dice cada base «no tenés permiso» o «no sé quién sos». Las respuestas de Redis empiezan con su
+// código (WRONGPASS, NOAUTH, NOPERM); dentro de un script Lua llegan como «ACL failure in script» o «The user
+// executing the script can't…». Mongo responde con el código 13 (Unauthorized: «requires authentication» si no
+// entraste, «not authorized on…» si entraste y no puedes) o el 18 (AuthenticationFailed). (Elasticsearch,
+// Cassandra y Neo4j se suman al activar su autenticación.)
+const REGLAS_ACCESO = [
+  ['redis', { mensajes: /^(WRONGPASS|NOAUTH|NOPERM)\b|ACL failure in script|The user executing the script can't (run this command|access at least one of the keys)/ }],
+  ['mongo', { mensajes: /^Authentication failed|requires authentication|not authorized on /, codeNames: ['Unauthorized', 'AuthenticationFailed'] }],
+];
+
+// ¿Este error significa «la base me rechaza» (credencial mala o cuenta sin permiso)? Devuelve el id del
+// componente ('redis'…) o null. Es lo opuesto a componenteCaido(): un error de acceso NUNCA se trata como
+// una caída (no hay circuito que abrir ni «se sigue sin él»).
+function esErrorDeAcceso(err, profundidad = 0) {
+  if (!err || typeof err !== 'object' || profundidad > 4) return null;
+  if (err.codigo === CODIGO_CREDENCIAL_RECHAZADA) return err.componente || 'desconocido';
+  const mensaje = String(err.message || '');
+  for (const [componente, regla] of REGLAS_ACCESO) {
+    if (regla.mensajes.test(mensaje) || regla.codeNames?.includes(err.codeName)) return componente;
+  }
+  if (err.cause && err.cause !== err) return esErrorDeAcceso(err.cause, profundidad + 1);
+  return null;
+}
+
 // Cortacircuitos por componente. Solo los fallos de CONEXIÓN lo abren: un error de la
 // consulta (un 400 del motor, una clave duplicada) significa que la base está arriba.
 function crearCircuito(componente, { aperturaMs = 5000, ahora = Date.now } = {}) {
@@ -154,10 +200,30 @@ function descripcionDe(err) {
 // petición (las vistas del catálogo hacen decenas por segundo).
 const ultimoAviso = new Map();
 function avisarCaida(componente, err, { cadaMs = 15000, ahora = Date.now() } = {}) {
+  // Un rechazo de credenciales no es una caída: se dice como lo que es (con la cuenta, si se sabe).
+  if (esErrorDeAcceso(err)) return avisarCredencial(componente, err, err?.cuenta, { cadaMs, ahora });
   const ultimo = ultimoAviso.get(componente) ?? 0;
   if (ahora - ultimo < cadaMs) return false;
   ultimoAviso.set(componente, ahora);
   console.error(`[resiliencia] ${componente} no responde (se sigue sin él): ${descripcionDe(err)}`);
+  return true;
+}
+
+// Una línea por cuenta cada `cadaMs` cuando una base rechaza las credenciales del backend: sin ella el
+// síntoma es «no funciona la caché» o, peor, un control de seguridad que se apagó solo.
+const ARCHIVO_DE_CUENTAS = { redis: 'redisCuentas.js', mongo: 'mongoCuentas.js' };
+const ultimoAvisoCredencial = new Map();
+function avisarCredencial(componente, err, cuenta, { cadaMs = 15000, ahora = Date.now() } = {}) {
+  // El motivo es el que dio la base (WRONGPASS, NOPERM…), no el texto de nuestro propio CredencialRechazada.
+  const causa = err?.codigo === CODIGO_CREDENCIAL_RECHAZADA && err.cause ? err.cause : err;
+  // La cuenta sale de quien avisa o, si no la sabe, del propio mensaje de Redis («User rd_cupos has no permissions…»).
+  const quien = cuenta ?? err?.cuenta ?? /User (\S+) has no permissions/.exec(String(causa?.message))?.[1];
+  const id = `${componente}:${quien ?? ''}`;
+  const ultimo = ultimoAvisoCredencial.get(id) ?? 0;
+  if (ahora - ultimo < cadaMs) return false;
+  ultimoAvisoCredencial.set(id, ahora);
+  const archivo = ARCHIVO_DE_CUENTAS[componente] ?? 'redisCuentas.js y mongoCuentas.js';
+  console.error(`[acceso] ${componente} rechazó a la cuenta del backend${quien ? ` ${quien}` : ''}: ${descripcionDe(causa).replace(/[.\s]+$/, '')}. Revisá backend/.env y los permisos de esa cuenta en src/config/${archivo} (npm run seguridad:inicializar).`);
   return true;
 }
 
@@ -168,6 +234,8 @@ function avisarCaida(componente, err, { cadaMs = 15000, ahora = Date.now() } = {
 function registrarFallo(contexto, err) {
   const componente = componenteCaido(err);
   if (componente) return avisarCaida(componente, err);
+  const denegado = esErrorDeAcceso(err);
+  if (denegado) return avisarCredencial(denegado, err, err?.cuenta);
   console.error(`${contexto}:`, err?.message ?? err);
   return true;
 }
@@ -181,4 +249,19 @@ function avisarRecuperacion(componente) {
   return true;
 }
 
-module.exports = { COMPONENTES, CODIGO_NO_DISPONIBLE, ServicioNoDisponible, componenteCaido, crearCircuito, descripcionDe, avisarCaida, avisarRecuperacion, registrarFallo };
+module.exports = {
+  COMPONENTES,
+  CODIGO_NO_DISPONIBLE,
+  CODIGO_CREDENCIAL_RECHAZADA,
+  MENSAJE_PUBLICO_CREDENCIAL,
+  ServicioNoDisponible,
+  CredencialRechazada,
+  componenteCaido,
+  esErrorDeAcceso,
+  crearCircuito,
+  descripcionDe,
+  avisarCaida,
+  avisarCredencial,
+  avisarRecuperacion,
+  registrarFallo,
+};

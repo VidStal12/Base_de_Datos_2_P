@@ -15,7 +15,7 @@ function crearCandado(prefijo) {
   // PTTL: -2 no existe, -1 existe sin vencimiento (no lo crea este código, pero se
   // respeta), >= 0 los milisegundos que faltan.
   async function estado(usuarioId) {
-    const restanteMs = await conectar().pttl(clave(usuarioId));
+    const restanteMs = await conectar('candados_r').pttl(clave(usuarioId));
     if (restanteMs === -2) return { activo: false };
     return {
       activo: true,
@@ -27,19 +27,19 @@ function crearCandado(prefijo) {
   // true si escribió (no había candado o el nuevo dura más).
   async function bloquear(usuarioId, duracionMs) {
     if (!(duracionMs > 0)) throw new Error('La duración del candado debe ser positiva');
-    const escribio = await conectar().bloquearCuenta(clave(usuarioId), JSON.stringify({ desde: new Date().toISOString() }), Math.ceil(duracionMs));
+    const escribio = await conectar('candados_w').bloquearCuenta(clave(usuarioId), JSON.stringify({ desde: new Date().toISOString() }), Math.ceil(duracionMs));
     return Number(escribio) === 1;
   }
 
   // true si había un candado que quitar.
   async function levantar(usuarioId) {
-    return (await conectar().del(clave(usuarioId))) > 0;
+    return (await conectar('candados_w').del(clave(usuarioId))) > 0;
   }
 
   // Ids con el candado puesto (SCAN, no KEYS: no bloquea el servidor aunque el
   // espacio de claves crezca).
   async function usuarios() {
-    const redis = conectar();
+    const redis = conectar('candados_r');
     const ids = [];
     let cursor = '0';
     do {
@@ -58,7 +58,7 @@ function crearCandado(prefijo) {
   async function restantes(usuarioIds) {
     const resultado = new Map();
     if (usuarioIds.length === 0) return resultado;
-    const pipeline = conectar().pipeline();
+    const pipeline = conectar('candados_r').pipeline();
     for (const id of usuarioIds) pipeline.pttl(clave(id));
     const respuestas = await pipeline.exec();
     usuarioIds.forEach((id, i) => {

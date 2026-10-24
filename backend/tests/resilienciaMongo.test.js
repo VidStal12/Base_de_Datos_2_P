@@ -77,3 +77,107 @@ test('una conexión que se cierra a propósito (los scripts al terminar) no se a
   assert.equal(mongoose.estado.eventos.disconnected, undefined, 'solo se avisa cuando una operación sufre la caída');
   assert.equal(typeof mongoose.estado.eventos.reconnected, 'function', 'pero sí se anota cuando vuelve');
 });
+
+// ───────────────────────── Credenciales (Entrega Final, IA/PLAN-ENTREGA-FINAL.md §4.2 y §4.3) ─────────────────────────
+const { CredencialRechazada } = require('../src/utils/resiliencia');
+
+const rechazoDeMongo = (nombre, codeName, mensaje) => Object.assign(new Error(mensaje), { name: 'MongoServerError', codeName });
+
+function mongooseQueRechaza() {
+  const mongoose = mongooseFalso();
+  mongoose.estado.rechazos = 0;
+  mongoose.connect = async function connect(uri, opciones) {
+    mongoose.estado.intentos += 1;
+    mongoose.estado.opciones = opciones;
+    mongoose.estado.rechazos += 1;
+    throw rechazoDeMongo('MongoServerError', 'AuthenticationFailed', 'Authentication failed.');
+  };
+  return mongoose;
+}
+
+const cargarConEntorno = (mongoose, entorno) => cargar('../src/config/mongo.js', { mongoose }, { MONGO_URI: 'mongodb://prueba/tiendaya', ...entorno });
+
+test('con la contraseña de mg_app en el entorno conecta con esas credenciales, contra la base `tiendaya`', async () => {
+  const mongoose = mongooseFalso();
+  await cargarConEntorno(mongoose, { MONGO_CONTRASENA_APP: 'p'.repeat(40) }).conectar();
+  const { opciones, uris } = mongoose.estado;
+  assert.deepEqual(uris, ['mongodb://prueba/tiendaya'], 'la URI no lleva la contraseña: viaja aparte');
+  assert.deepEqual({ ...opciones.auth }, { username: 'mg_app', password: 'p'.repeat(40) });
+  assert.equal(opciones.authSource, 'tiendaya');
+  assert.ok(opciones.serverSelectionTimeoutMS <= 3000, 'y conserva los tiempos acotados');
+});
+
+test('sin contraseña en el entorno conecta sin credenciales (un Mongo sin autenticación), como antes', async () => {
+  const mongoose = mongooseFalso();
+  await cargarConEntorno(mongoose, {}).conectar();
+  assert.equal(mongoose.estado.opciones.auth, undefined);
+  assert.equal(mongoose.estado.opciones.authSource, undefined);
+});
+
+test('el servidor web nunca entra con la cuenta de administración', async () => {
+  const mongoose = mongooseFalso();
+  await cargarConEntorno(mongoose, { MONGO_CONTRASENA_ADMIN: 'a'.repeat(40) }).conectar();
+  assert.equal(mongoose.estado.opciones.auth, undefined, 'solo MONGO_CONTRASENA_APP cuenta para el servidor');
+});
+
+test('un rechazo de credenciales NO es una caída: CredencialRechazada, y no se vuelve a intentar en cada petición', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const mongoose = mongooseQueRechaza();
+  const config = cargarConEntorno(mongoose, { MONGO_CONTRASENA_APP: 'p'.repeat(40) });
+  await assert.rejects(config.conectar(), (err) => err instanceof CredencialRechazada && err.componente === 'mongo' && err.cuenta === 'mg_app' && err.status === 500);
+  assert.equal(mongoose.estado.intentos, 1);
+  for (let i = 0; i < 5; i++) await assert.rejects(config.conectar(), CredencialRechazada);
+  assert.equal(mongoose.estado.intentos, 1, 'cinco peticiones más: ningún login fallido adicional');
+});
+
+test('un rechazo de credenciales no se confunde con una caída: no abre el cortacircuitos ni lo anuncia como «no responde»', async (t) => {
+  const avisos = t.mock.method(console, 'error', () => {});
+  const mongoose = mongooseQueRechaza();
+  const config = cargarConEntorno(mongoose, { MONGO_CONTRASENA_APP: 'p'.repeat(40) });
+  await assert.rejects(config.conectar(), CredencialRechazada);
+  assert.ok(avisos.mock.calls.every((c) => !/no responde/.test(String(c.arguments[0]))), 'el aviso habla de credenciales, no de una caída');
+});
+
+test('pasado el tiempo de espera se prueba UNA vez más, para que corregir el .env no exija reiniciar', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const reloj = { ahora: Date.now() };
+  class DateConReloj extends Date {
+    static now() {
+      return reloj.ahora;
+    }
+  }
+  const mongoose = mongooseQueRechaza();
+  const config = cargar('../src/config/mongo.js', { mongoose }, { MONGO_URI: 'mongodb://prueba/tiendaya', MONGO_CONTRASENA_APP: 'p'.repeat(40) }, { Date: DateConReloj });
+  await assert.rejects(config.conectar(), CredencialRechazada);
+  reloj.ahora += 29000;
+  await assert.rejects(config.conectar(), CredencialRechazada);
+  assert.equal(mongoose.estado.intentos, 1, 'a los 29 s todavía no');
+  reloj.ahora += 2000;
+  await assert.rejects(config.conectar(), CredencialRechazada);
+  assert.equal(mongoose.estado.intentos, 2, 'a los 31 s hace un intento nuevo');
+});
+
+test('un fallo de red al conectar NO bloquea: sigue siendo una caída que se reintenta', async () => {
+  const mongoose = mongooseFalso({ fallar: 1 });
+  const config = cargarConEntorno(mongoose, { MONGO_CONTRASENA_APP: 'p'.repeat(40) });
+  await assert.rejects(config.conectar(), (err) => err instanceof ServicioNoDisponible);
+  assert.ok(!(await config.conectar().catch((e) => e) instanceof CredencialRechazada));
+});
+
+test('credencialesDe: solo la cuenta pedida, con su usuario y su base de autenticación', () => {
+  const { credencialesDe } = cargarConEntorno(mongooseFalso(), {});
+  assert.equal(credencialesDe('app', {}), null);
+  assert.deepEqual({ ...credencialesDe('app', { MONGO_CONTRASENA_APP: 'x'.repeat(20) }).auth }, { username: 'mg_app', password: 'x'.repeat(20) });
+  assert.equal(credencialesDe('admin', { MONGO_CONTRASENA_ADMIN: 'y'.repeat(20) }).authSource, 'admin');
+  assert.throws(() => credencialesDe('root', {}), /Cuenta de Mongo desconocida/);
+});
+
+test('un script de mantenimiento puede pedir la cuenta de administración (la primera conexión manda)', async () => {
+  const mongoose = mongooseFalso();
+  const config = cargarConEntorno(mongoose, { MONGO_CONTRASENA_ADMIN: 'a'.repeat(40), MONGO_CONTRASENA_APP: 'p'.repeat(40) });
+  await config.conectar('admin');
+  assert.deepEqual({ ...mongoose.estado.opciones.auth }, { username: 'mg_admin', password: 'a'.repeat(40) });
+  assert.equal(mongoose.estado.opciones.authSource, 'admin');
+  await config.conectar(); // ya conectado: el resto del proceso sigue con esa conexión
+  assert.equal(mongoose.estado.intentos, 1);
+});

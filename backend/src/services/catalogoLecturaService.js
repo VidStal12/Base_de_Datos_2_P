@@ -103,7 +103,7 @@ const TTL_ACTIVIDAD_SEGUNDOS = 60 * 60 * 24 * 30;
 
 async function registrarActividad(usuarioId, tipo, valor) {
   try {
-    const redis = await conectarRedis();
+    const redis = await conectarRedis('actividad');
     const clave = CLAVE_ACTIVIDAD_RECIENTE(usuarioId);
     const entrada = JSON.stringify({ tipo, valor });
     await redis.lrem(clave, 0, entrada);
@@ -118,7 +118,7 @@ async function registrarActividad(usuarioId, tipo, valor) {
 
 async function obtenerUltimaActividad(usuarioId) {
   try {
-    const redis = await conectarRedis();
+    const redis = await conectarRedis('actividad');
     const [masReciente] = await redis.lrange(CLAVE_ACTIVIDAD_RECIENTE(usuarioId), 0, 0);
     return masReciente ? JSON.parse(masReciente) : null;
   } catch (err) {

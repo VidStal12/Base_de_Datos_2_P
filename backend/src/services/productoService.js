@@ -254,8 +254,9 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
 // Un vendedor solo puede tocar su propio producto; un administrador puede tocar
 // cualquiera. Se verifica contra MySQL (no Mongo) a propósito: id_vendedor se
 // mantiene también ahí para que esto no dependa de una consulta cruzada — ver
-// ADR-002 §3.2.
-async function verificarPermiso(vendedor, productoId) {
+// ADR-002 §3.2. `accion` solo cambia el verbo del mensaje de rechazo («modificar»
+// al editar; «ver el historial de» al leer el historial, que también es del dueño).
+async function verificarPermiso(vendedor, productoId, accion = 'modificar') {
   const producto = await prisma.producto.findUnique({ where: { id: productoId } });
   if (!producto) {
     const err = new Error('Producto no encontrado');
@@ -263,7 +264,7 @@ async function verificarPermiso(vendedor, productoId) {
     throw err;
   }
   if (producto.id_vendedor !== vendedor.id_usuario && vendedor.rol !== 'administrador') {
-    const err = new Error('No podés modificar un producto que no te pertenece');
+    const err = new Error(`No podés ${accion} un producto que no te pertenece`);
     err.status = 403;
     throw err;
   }

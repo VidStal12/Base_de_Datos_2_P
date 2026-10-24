@@ -21,7 +21,9 @@ const ProductoEvento = require('../src/models/mongo/ProductoEvento');
 // haga falta durante el desarrollo (MySQL ya se resetea solo al recrear el
 // volumen/reaplicar migraciones).
 async function main() {
-  await conectar();
+  // Vacía el catálogo Y el historial de cambios: es una tarea de administración. El rol de la aplicación no puede
+  // borrar (el historial es append-only), así que el seed entra con la cuenta de administración (IA/ADR-007).
+  await conectar('admin');
   console.log('Limpiando colecciones de Mongo...');
   await Promise.all([
     Categoria.deleteMany({}),

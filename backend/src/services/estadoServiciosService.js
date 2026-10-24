@@ -5,6 +5,7 @@ const { conectar: conectarRedis } = require('../config/redis');
 const { conCircuito } = require('../config/elasticsearch');
 const neo4j = require('../config/neo4j');
 const cassandra = require('../config/cassandra');
+const { esErrorDeAcceso } = require('../utils/resiliencia');
 
 // Qué base responde AHORA (GET /api/health/componentes). Existe para que la interfaz pueda
 // decirle a la persona «hoy no hay ofertas flash» en vez de dejarla descubrirlo por
@@ -22,9 +23,12 @@ const COMPROBACIONES = {
   mongo: async () => {
     await conectarMongo();
     await mongoose.connection.db.admin().ping();
+    // `ping` no pide autenticación: sin esta lectura la salud diría «ok» con un catálogo que responde 500 porque Mongo
+    // rechaza a la cuenta del servidor. Una lectura mínima de su propia base comprueba también que tiene permiso.
+    await mongoose.connection.db.collection('categorias').findOne({}, { projection: { _id: 1 } });
   },
   redis: async () => {
-    await conectarRedis().ping();
+    await conectarRedis('salud').ping();
   },
   elasticsearch: async () => {
     const vivo = await conCircuito((cliente) => cliente.ping());
@@ -53,7 +57,13 @@ async function comprobar(nombre, comprobacion) {
     await conTope(comprobacion(), TOPE_MS);
     return [nombre, { ok: true, ms: Date.now() - inicio }];
   } catch (err) {
-    return [nombre, { ok: false, ms: Date.now() - inicio, error: String(err?.cause?.message || err?.message || err).split('\n')[0].slice(0, 160) }];
+    // `credencial: true` distingue «responde pero me rechaza» de «no responde» (solo lo ve un administrador).
+    return [nombre, {
+      ok: false,
+      ms: Date.now() - inicio,
+      error: String(err?.cause?.message || err?.message || err).split('\n')[0].slice(0, 160),
+      ...(esErrorDeAcceso(err) && { credencial: true }),
+    }];
   }
 }
 
@@ -65,6 +75,17 @@ function resumir(componentes) {
   if (caidos.length === 0) return 'completo';
   const catalogoPerdido = caidos.includes('mongo') && caidos.includes('elasticsearch');
   return caidos.includes('mysql') || catalogoPerdido ? 'critico' : 'degradado';
+}
+
+// Lo que ve cualquiera que consulte la salud (la franja de AvisoServicios no inicia sesión): solo si cada
+// base responde. Los milisegundos y, sobre todo, el texto del error del driver pueden traer direcciones
+// internas, nombres de usuario o rutas de archivo; eso se lo queda un administrador (saludRoutes.js).
+function paraPublico({ estado, componentes, consultadoEn }) {
+  return {
+    estado,
+    componentes: Object.fromEntries(Object.entries(componentes).map(([nombre, { ok }]) => [nombre, { ok }])),
+    consultadoEn,
+  };
 }
 
 let reciente = null;
@@ -87,4 +108,4 @@ async function consultar({ comprobaciones = COMPROBACIONES, ahora = Date.now } =
   return enCurso;
 }
 
-module.exports = { consultar, resumir, COMPROBACIONES };
+module.exports = { consultar, resumir, paraPublico, COMPROBACIONES };

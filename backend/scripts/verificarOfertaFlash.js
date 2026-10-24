@@ -61,7 +61,7 @@ async function main() {
     }
   );
 
-  const redis = conectarRedis();
+  const redis = conectarRedis('admin');
   await ofertaDatos.invalidar(productoId); // el script editó Mongo directamente
   const clave = `oferta:${productoId}:stock`;
   await redis.del(clave); // estado limpio, por si quedó algo de una corrida anterior
@@ -128,5 +128,5 @@ main()
     await prisma.$disconnect();
     await mongoose.disconnect();
     await neo4j.cerrar();
-    conectarRedis().disconnect();
+    conectarRedis('admin').disconnect();
   });

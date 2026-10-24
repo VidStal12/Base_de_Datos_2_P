@@ -26,7 +26,8 @@ let productoId;
 let servidor;
 const evidencia = [];
 async function main() {
-  await mongo.conectar();
+  // Esta prueba elimina al terminar el producto sintético que creó, y el rol de la aplicación no puede borrar.
+  await mongo.conectar('admin');
   const rol = await prisma.rol_usuario.findFirst({ where: { tipo_rol: 'comprador' } });
   const subcategoria = await Subcategoria.findOne().lean();
   assert.ok(rol && subcategoria, 'Se necesita el seed del proyecto (rol comprador y subcategoría).');
@@ -56,7 +57,7 @@ async function main() {
     return { status: res.status, body: await res.json() };
   }
   const confirmar = (i) => ({ intentoId: i.intentoId, direccionId: direccion.id, metodoPagoId: metodo.id, items: i.items });
-  const redis = redisConfig.conectar();
+  const redis = redisConfig.conectar('admin');
   await cart.agregar(comprador, productoId, 1);
   const [a, b] = await Promise.all([peticion('/checkout/intentos', {}), peticion('/checkout/intentos', {})]);
   assert.equal(a.status, 200, JSON.stringify(a.body));
@@ -205,7 +206,7 @@ async function limpiar() {
     } catch (err) { console.error('Limpieza del grafo sintético pendiente:', err.message); }
   }
   if (productoId) await Producto.deleteOne({ producto_id: productoId });
-  if (clavesRedis.length) await redisConfig.conectar().del(...clavesRedis);
+  if (clavesRedis.length) await redisConfig.conectar('admin').del(...clavesRedis);
 }
 main().catch((err) => { console.error(err); process.exitCode = 1; })
   .finally(async () => {

@@ -105,7 +105,7 @@ async function main() {
 
   // 2) La recomendación incluye un producto de OTRO vendedor (Marta), no
   // solo variantes de Luis — es el punto central de la funcionalidad.
-  const redis = conectarRedis();
+  const redis = conectarRedis('admin');
   await redis.del(`recomendaciones:${usuario.id_usuario}`); // estado limpio, por si quedó cacheado de una corrida anterior
   const { productos } = await tendenciaService.recomendar(usuario.id_usuario);
   console.log(
@@ -223,5 +223,5 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
     await mongoose.disconnect();
-    conectarRedis().disconnect();
+    conectarRedis('admin').disconnect();
   });

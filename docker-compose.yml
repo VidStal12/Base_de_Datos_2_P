@@ -37,18 +37,43 @@ services:
     # mongod escucha DENTRO del contenedor (rs.reconfig lo exige — lo probamos
     # y falló con "no host... maps to this node"), así que adentro y afuera
     # tienen que ser el mismo número. Ver IA/ADR-002, notas de implementación.
-    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27018"]
+    #
+    # Control de acceso (IA/PLAN-ENTREGA-FINAL.md §4.2): con --auth, Mongo exige usuario y
+    # contraseña. Un replica set con autenticación necesita además una llave compartida
+    # (--keyFile) con la que sus miembros se identifican entre sí, aunque aquí sea uno solo.
+    # La llave la genera `npm run seguridad:inicializar` (docker/mongo/keyfile, fuera de git) y
+    # se COPIA a /tmp con permisos 400 y dueño mongodb: Mongo rechaza una llave con permisos
+    # abiertos, y un archivo montado desde Windows siempre los tiene así. El rol y los usuarios
+    # (mg_app para el servidor web, mg_admin para mantenimiento) los crea `npm run seguridad:mongo`.
+    command:
+      - sh
+      - -c
+      - >
+        cp /etc/mongo-keyfile-origen /tmp/mongo-keyfile &&
+        chmod 400 /tmp/mongo-keyfile &&
+        chown mongodb:mongodb /tmp/mongo-keyfile &&
+        exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --port 27018 --keyFile /tmp/mongo-keyfile --auth
+    # Solo desde esta máquina (127.0.0.1): antes se publicaba en todas las interfaces.
     ports:
-      - "27018:27018"
+      - "127.0.0.1:27018:27018"
     volumes:
       - mongo_data:/data/db
+      # create_host_path: false — si la llave no existe, Docker avisa «bind source path does not
+      # exist» en vez de crear una carpeta con ese nombre.
+      - type: bind
+        source: ./docker/mongo/keyfile
+        target: /etc/mongo-keyfile-origen
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
-      # Se inicia el replica set solo si todavía no existe uno (rs.status()
-      # falla la primera vez) — evita un paso manual aparte de "correr esto
-      # una vez"; el healthcheck termina haciendo ese trabajo de inicialización.
+      # Sin credenciales: `hello` no las pide. Está sano cuando es el primario del replica set. Si el
+      # volumen es nuevo y el replica set todavía no existe, se inicia aquí (con la autenticación
+      # activa Mongo lo permite desde localhost mientras no haya ningún usuario); con usuarios ya
+      # creados el replica set ya existe y esta rama no se vuelve a usar.
       test: >
         mongosh --port 27018 --quiet --eval
-        "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27018'}]}).ok }"
+        "const h = db.hello(); if (h.isreplicaset && !h.setName) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27018'}]}) } quit(db.hello().isWritablePrimary ? 0 : 1)"
       interval: 5s
       timeout: 10s
       retries: 20
@@ -61,7 +86,23 @@ services:
     # Copias propias del carrito (durable en MySQL) y datos flash, con TTL.
     # Los contadores flash siguen siendo transitorios: perder Redis puede
     # reinicializar el cupo promocional aunque SQL limite el inventario real.
-    # Sin auth ni persistencia especial en este entorno de desarrollo.
+    # Sin persistencia especial en este entorno de desarrollo.
+    #
+    # Control de acceso (IA/PLAN-ENTREGA-FINAL.md §4.0 y §4.2): el usuario `default` está
+    # apagado y cada módulo del backend entra con su propia cuenta, que solo tiene los
+    # comandos y las llaves de ese módulo (lista blanca en backend/src/config/redisCuentas.js).
+    # El archivo de ACL lo genera `npm run seguridad:inicializar` (desde backend/) y lleva
+    # solo hashes de las contraseñas; sin ese archivo este contenedor no arranca.
+    command: ["redis-server", "--aclfile", "/etc/redis/users.acl"]
+    volumes:
+      # create_host_path: false — si el archivo no existe, Docker avisa «bind source path does not
+      # exist» en vez de crear una carpeta con ese nombre (Redis fallaría con un error confuso).
+      - type: bind
+        source: ./docker/redis/users.acl
+        target: /etc/redis/users.acl
+        read_only: true
+        bind:
+          create_host_path: false
     #
     # Puerto del host parametrizado (default sin cambios, 6379): en Windows,
     # Hyper-V/WSL2 reserva rangos de puertos efímeros de forma dinámica (ver
@@ -72,10 +113,13 @@ services:
     # raíz del repo (al lado de este archivo) y actualizá REDIS_URL en
     # backend/.env con el mismo puerto — el contenedor sigue hablando 6379
     # puertas adentro, esto solo cambia a qué puerto del host se publica.
+    # Solo desde esta máquina (127.0.0.1): antes se publicaba en todas las interfaces.
     ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Con `default` apagado, un PING sin credenciales responde NOAUTH: el servidor está vivo
+      # y no hace falta ninguna contraseña en este archivo.
+      test: ["CMD-SHELL", "redis-cli ping 2>&1 | grep -qE 'PONG|NOAUTH'"]
       interval: 5s
       timeout: 5s
       retries: 10

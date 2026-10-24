@@ -49,6 +49,6 @@ main()
     await prisma.$disconnect();
     await mongoose.disconnect().catch(() => {});
     try {
-      conectarRedis().disconnect();
+      conectarRedis('admin').disconnect();
     } catch {}
   });

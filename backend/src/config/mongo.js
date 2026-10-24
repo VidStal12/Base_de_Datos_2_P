@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
-const { ServicioNoDisponible, crearCircuito, avisarCaida, avisarRecuperacion } = require('../utils/resiliencia');
+const { ServicioNoDisponible, CredencialRechazada, esErrorDeAcceso, crearCircuito, avisarCaida, avisarCredencial, avisarRecuperacion } = require('../utils/resiliencia');
+const { definicion, variableContrasena } = require('./mongoCuentas');
 
 let conexion;
 
@@ -23,12 +24,38 @@ const circuitoInicial = crearCircuito('mongo', { aperturaMs: 3000 });
 // 'disconnected': los scripts cierran la conexión a propósito al terminar y eso no es una caída.
 mongoose.connection.on('reconnected', () => avisarRecuperacion('mongo'));
 
+// Las credenciales del servidor web (la cuenta `mg_app`, ver mongoCuentas.js) salen del entorno: backend/.env, que
+// escribe `npm run seguridad:inicializar`. Sin contraseña definida se conecta sin credenciales (un Mongo sin
+// autenticación), como antes de la Entrega Final.
+function credencialesDe(cuenta = 'app', env = process.env) {
+  const contrasena = env[variableContrasena(cuenta)];
+  const d = definicion(cuenta);
+  return contrasena ? { auth: { username: d.usuario, password: contrasena }, authSource: d.db } : null;
+}
+
+// Si Mongo rechaza las credenciales, reintentar en cada petición sería un nuevo intento de login fallido por
+// petición: se recuerda el rechazo y, durante este tiempo, las llamadas fallan al instante con CredencialRechazada.
+// Pasado el tiempo se prueba UNA vez más, para que corregir el .env no exija reiniciar el backend.
+const REINTENTO_CREDENCIAL_MS = 30000;
+let rechazado = null;
+
 // Conexión perezosa y reutilizada — se abre una sola vez, la primera vez que
-// algún servicio la necesita, en vez de al arrancar el proceso.
-function conectar() {
+// algún servicio la necesita, en vez de al arrancar el proceso. `cuenta` solo cuenta en esa primera vez: el servidor
+// web usa siempre la de la aplicación; un script de mantenimiento que necesita borrar (el rol de la aplicación no
+// puede) pide 'admin' ANTES de tocar nada y todo el proceso corre con ella.
+function conectar(cuenta = 'app') {
+  if (rechazado && Date.now() - rechazado.en < REINTENTO_CREDENCIAL_MS) return Promise.reject(rechazado.error);
+  rechazado = null;
   if (!conexion) {
-    conexion = circuitoInicial.ejecutar(() => mongoose.connect(process.env.MONGO_URI, OPCIONES)).catch((err) => {
+    const credenciales = credencialesDe(cuenta);
+    conexion = circuitoInicial.ejecutar(() => mongoose.connect(process.env.MONGO_URI, { ...OPCIONES, ...credenciales })).catch((err) => {
       conexion = undefined;
+      if (esErrorDeAcceso(err)) {
+        const usuario = credenciales?.auth.username ?? null;
+        rechazado = { error: new CredencialRechazada('mongo', usuario, err), en: Date.now() };
+        avisarCredencial('mongo', err, usuario);
+        throw rechazado.error;
+      }
       throw err;
     });
     return conexion;
@@ -44,4 +71,4 @@ function conectar() {
   return conexion;
 }
 
-module.exports = { conectar };
+module.exports = { conectar, credencialesDe };

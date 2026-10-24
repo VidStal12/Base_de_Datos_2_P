@@ -1,4 +1,5 @@
 const { crearCandado } = require('./candadoRedis');
+const { esErrorDeAcceso } = require('../utils/resiliencia');
 
 // Suspensión temporal de cuentas — la parte RÁPIDA (Redis), la que se consulta en
 // cada petición autenticada. La parte durable (por qué, quién lo revisó, qué se
@@ -15,6 +16,11 @@ const { crearCandado } = require('./candadoRedis');
 // caída de Redis no debe dejar a todo el sitio sin poder iniciar sesión; el costo
 // es que durante la caída una cuenta suspendida podría actuar, y en cuanto Redis
 // vuelve, bloqueoService.reconciliar() reconstruye los bloqueos desde MySQL.
+//
+// Fallar abierto es para una Redis CAÍDA, no para una Redis que RECHAZA a la cuenta de servicio (credencial
+// vencida, un permiso que falta en su ACL): eso es un error de configuración, y dejar pasar a todo el
+// mundo «sin que nadie lo note» apagaría las suspensiones en silencio. En ese caso la consulta FALLA
+// (500 CREDENCIAL_RECHAZADA) y el error queda en el log con la cuenta (IA/PLAN-ENTREGA-FINAL.md §4.3).
 
 const CODIGO_CUENTA_SUSPENDIDA = 'CUENTA_SUSPENDIDA';
 // Un automatismo no puede dejar sin acceso a las únicas personas que pueden
@@ -64,6 +70,7 @@ async function estaBloqueada(usuarioId) {
   try {
     return await estadoBloqueo(usuarioId);
   } catch (err) {
+    if (esErrorDeAcceso(err)) throw err;
     avisarFallo(err);
     return { bloqueada: false };
   }

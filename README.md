@@ -15,24 +15,14 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
 
 ## Puesta en marcha
 
-1. **Levantar MySQL, MongoDB, Redis, Cassandra y Neo4j en Docker** (desde la raíz del repo):
-
-   ```bash
-   docker compose up -d
-   ```
-
-   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis conserva cachés del carrito/productos y contadores de ofertas. El carrito durable vive en MySQL; su caché se puede reconstruir. Redis sigue sin persistencia configurada: perder un contador flash puede reinicializar el cupo durante una oferta (ver la nota de límites abajo). Si Redis no arranca en Windows con un error de *permisos* de bind (no "puerto ocupado"), ver el comentario del servicio `redis` en `docker-compose.yml` — 6379 puede caer en un rango que Hyper-V/WSL2 reserva en esa máquina.
-
-   Cassandra y Neo4j usan un nodo con volumen persistente para desarrollo: esta configuración no ofrece alta disponibilidad. Esperar a que los servicios estén listos antes de aplicar migraciones o sincronizar ventas/fraude.
-
-2. **Instalar dependencias del backend**:
+1. **Instalar dependencias del backend**:
 
    ```bash
    cd backend
    npm install
    ```
 
-3. **Configurar variables de entorno** (`.env` no se versiona):
+2. **Configurar variables de entorno** (`.env` no se versiona):
 
    ```bash
    cp .env.example .env
@@ -61,7 +51,26 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
    | `RESTRICCION_PEDIDOS_HORA` | Tope propio de pedidos por hora de una cuenta bajo vigilancia; `2` por defecto, `0` = sin tope propio |
    | `LIMITE_PEDIDOS_HORA` | Tope general de pedidos por hora de cualquier cuenta (contador en Redis); `5` por defecto, `0` = sin tope |
 
-4. **Aplicar el esquema**:
+3. **Preparar el control de acceso de Redis y MongoDB** (una sola vez; desde `backend/`):
+
+   ```bash
+   npm run seguridad:inicializar
+   ```
+
+   Genera una contraseña por cuenta de servicio en tu `.env`, el archivo de ACL de Redis (`docker/redis/users.acl`) y la llave del replica set de MongoDB (`docker/mongo/keyfile`); los tres están fuera de git. Sin estos archivos, `docker compose up` no arranca Redis ni MongoDB (Docker avisa «bind source path does not exist»). Es idempotente y nunca cambia una contraseña que ya existe. Detalle, y cómo migrar un entorno que ya estaba andando, en «Control de acceso (Entrega Final)».
+
+4. **Levantar MySQL, MongoDB, Redis, Cassandra y Neo4j en Docker** (desde la raíz del repo):
+
+   ```bash
+   docker compose up -d
+   (cd backend && npm run seguridad:mongo)   # solo la primera vez: crea el rol y los usuarios de MongoDB
+   ```
+
+   MongoDB corre como *replica set* de un solo nodo (se auto-inicializa) y exige usuario y contraseña — lo necesitan las transacciones del historial de cambios, ver [IA/ADR-003](IA/ADR-003-historial-cambios-eventos.md). Redis conserva cachés del carrito/productos y contadores de ofertas. El carrito durable vive en MySQL; su caché se puede reconstruir. Redis sigue sin persistencia configurada: perder un contador flash puede reinicializar el cupo durante una oferta (ver la nota de límites abajo). Si Redis no arranca en Windows con un error de *permisos* de bind (no "puerto ocupado"), ver el comentario del servicio `redis` en `docker-compose.yml` — 6379 puede caer en un rango que Hyper-V/WSL2 reserva en esa máquina.
+
+   Cassandra y Neo4j usan un nodo con volumen persistente para desarrollo: esta configuración no ofrece alta disponibilidad. Esperar a que los servicios estén listos antes de aplicar migraciones o sincronizar ventas/fraude.
+
+5. **Aplicar el esquema**:
 
    - Aplicar las migraciones versionadas de `prisma/migrations/`, incluida la tabla de outbox, y generar el cliente Prisma (no crea migraciones nuevas ni necesita permisos de shadow database):
      ```bash
@@ -74,19 +83,78 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
      ```
      (usa una *shadow database* temporal para calcular el diff — el usuario `tiendaya` ya tiene el permiso `CREATE, DROP` necesario, otorgado automáticamente al inicializar el contenedor por `docker/mysql-init/01-grant-shadow-db.sql`. Detalle del porqué en [ADR-001](IA/ADR-001-stack-y-migraciones.md#notas-de-implementación-2026-08-22).)
 
-5. **Cargar datos de prueba representativos** (MySQL + Mongo, un solo paso — hasta el 2026-08-30 esto eran dos scripts separados, ver `IA/ADR-002` §3.4):
+6. **Cargar datos de prueba representativos** (MySQL + Mongo, un solo paso — hasta el 2026-08-30 esto eran dos scripts separados, ver `IA/ADR-002` §3.4):
 
    ```bash
    npm run seed
    ```
 
-6. **Levantar el servidor**:
+7. **Levantar el servidor**:
 
    ```bash
    npm run dev
    ```
 
    Por defecto queda escuchando en `http://localhost:3000`. `GET /api/health` confirma que está arriba.
+
+## Control de acceso (Entrega Final)
+
+Tres niveles, todos con la misma regla: **lista blanca**. Se parte de «nada permitido», se anota lo que sí, y lo que no figura se niega. Diseño, alternativas y límites en [IA/ADR-007](IA/ADR-007-control-de-acceso.md); el plan, en [IA/PLAN-ENTREGA-FINAL.md §4](IA/PLAN-ENTREGA-FINAL.md).
+
+| Nivel | Qué hace | Dónde está |
+|---|---|---|
+| **API** | Cada ruta declara su acceso (pública, sesión opcional, sesión, roles). Una ruta nueva sin declarar hace fallar las pruebas, y se prueba por HTTP que sin sesión se responde 401 y que cada rol fuera de la lista de una ruta recibe 403. | `backend/src/config/politicaRutas.js`, `backend/tests/accesoRutas.test.js` |
+| **Redis** | El usuario `default` está apagado. Cada módulo del backend entra con su propia cuenta (`rd_carrito`, `rd_candados_r`, `rd_ofertas`…), que solo tiene los comandos y las llaves de ese módulo: el carrito no puede levantar una suspensión, la revisión de sesión no puede escribir, y nadie ejecuta `FLUSHALL`, `KEYS` ni `CONFIG`. | `backend/src/config/redisCuentas.js`, `docker/redis/users.acl` (generado) |
+| **MongoDB** | Autenticación activada. El servidor web entra como `mg_app`: lee y escribe el catálogo y las reseñas (sin borrar) y, del historial de cambios, **solo lee e inserta**: un evento no se puede modificar ni borrar, ni siquiera con un bug, porque la base de datos no lo permite. | `backend/src/config/mongoCuentas.js` |
+
+Redis y MongoDB se publican solo en `127.0.0.1`.
+
+### Preparar un entorno (o migrar uno que ya estaba andando)
+
+Idempotente: se puede repetir y nunca cambia una contraseña que ya existe. Desde `backend/`:
+
+```bash
+npm run seguridad:inicializar   # contraseñas en tu .env, docker/redis/users.acl y la llave del replica set de Mongo
+docker compose up -d redis      # Redis lee el archivo de ACL (la caché se vacía y se vuelve a llenar sola)
+npm run seguridad:mongo         # con Mongo corriendo: crea el rol y los usuarios (mg_app, mg_admin)
+docker compose up -d mongo      # Mongo arranca exigiendo usuario y contraseña (los datos se conservan)
+```
+
+Después, reiniciar el backend para que tome las contraseñas. Las contraseñas (`REDIS_CONTRASENA_*`, `MONGO_CONTRASENA_*`) viven en `backend/.env`; `users.acl` solo lleva sus hashes; los dos están fuera de git. Sin esas variables el backend se conecta sin credenciales, lo que sirve únicamente contra un Redis o un Mongo sin autenticación (el estado anterior a la Entrega Final).
+
+Los scripts de mantenimiento que necesitan permisos de administración los piden de forma explícita (`conectar('admin')`); el servidor web nunca lo hace, y una prueba lo comprueba. `scripts/spike-pagos/` (el ensayo del ADR-005) se conecta con su propia URI y necesita credenciales si se vuelve a correr.
+
+### Verificarlo
+
+```bash
+npm run test:acceso       # pruebas aisladas (sin Docker): lista blanca de rutas, cuentas de Redis y Mongo, errores
+npm run verificar:acceso  # contra los contenedores reales: la matriz cuenta × recurso × acción, permitido y negado
+```
+
+`verificar:acceso` imprime la matriz completa y termina con código 1 si algo no coincide. Lo permitido de Redis se evalúa con `ACL DRYRUN` (no ejecuta nada); lo negado se ejecuta de verdad y tiene que responder `NOPERM`, y queda en `ACL LOG`. En Mongo compara los privilegios de `mg_app` en el servidor con los declarados, y ejecuta lo prohibido (modificar o borrar un evento del historial, borrar colecciones o bases, crear usuarios) esperando «not authorized». Antes de ejecutar algo prohibido comprueba que el servidor no lo permita: si lo permitiera por un error de configuración, no lo ejecuta y lo marca como falla.
+
+A mano, para la demostración:
+
+```bash
+docker exec tiendaya-redis redis-cli ping                       # NOAUTH Authentication required.
+docker exec tiendaya-redis redis-cli --user rd_carrito --pass <contraseña de .env> GET bloqueo:7   # NOPERM
+docker exec tiendaya-redis redis-cli --user rd_admin --pass <contraseña de .env> ACL LOG          # lo que Redis denegó
+```
+
+### Qué pasa si una credencial falla
+
+Un rechazo de credenciales **no es una caída de la base**: reintentar no sirve, y tratarlo como «se sigue sin ella» dejaría la aplicación a medias sin que nadie sepa por qué.
+
+- El servidor responde `500` con `codigo: CREDENCIAL_RECHAZADA` y un mensaje genérico (nunca la cuenta, el comando ni la llave), y escribe **una** línea en su log por cuenta cada 15 s: `[acceso] redis rechazó a la cuenta del backend rd_carrito: …`.
+- Los controles de seguridad fallan **cerrado**: la revisión de suspensión en cada petición autenticada, los límites suaves de una cuenta bajo vigilancia, el tope de pedidos por hora y el contador de intentos de contraseña. Lo que es solo una caché (carrito, ofertas, recomendaciones) degrada a MySQL como con una base apagada, pero con el aviso.
+- No hay bucle de reintentos: tras un rechazo la cuenta queda marcada 30 s y luego se prueba una vez más, así que corregir el `.env` o el ACL no exige reiniciar el backend.
+- `GET /api/health/componentes` distingue, solo para un administrador, «no responde» de «me rechaza» (`credencial: true`).
+
+### Límites conocidos
+
+- Un `SCAN` lista los nombres de **todas** las llaves de Redis, y los ACL no pueden filtrarlo: solo `rd_candados_r` lo tiene (lo necesitan el panel de suspensiones y el catálogo).
+- Quien controle el proceso del backend tiene todas las contraseñas de su `.env`: las cuentas por módulo acotan un bug, un script mal escrito o una credencial filtrada de un módulo, no un servidor comprometido.
+- Elasticsearch, Cassandra, Neo4j y MySQL todavía no tienen cuentas por módulo (Neo4j Community no tiene roles).
 
 ## Panel de ventas con Cassandra (Entrega 2)
 
@@ -221,7 +289,7 @@ Escenarios (`--falla=`): `mysql-dentro` (rollback atómico), `mongo-antes` (fall
 
 ## Apagar una base de datos con la aplicación en marcha (Entrega 3)
 
-La aplicación sigue siendo utilizable cuando se apaga el contenedor de **una o de varias** bases: solo pierde los datos de esa base, y lo dice (una franja amarilla en la tienda y `GET /api/health/componentes`). Se vuelve a encender el contenedor y todo vuelve solo, sin reiniciar el backend.
+La aplicación sigue siendo utilizable cuando se apaga el contenedor de **una o de varias** bases: solo pierde los datos de esa base, y lo dice (una franja amarilla en la tienda y `GET /api/health/componentes`, que es pública y solo dice si cada base responde: los milisegundos y el texto del error solo se devuelven con el token de un administrador). Se vuelve a encender el contenedor y todo vuelve solo, sin reiniciar el backend.
 
 ```bash
 docker stop tiendaya-redis                                    # una base
@@ -457,7 +525,7 @@ Si `total_vendido` o `precio`/`cantidad` alguna vez se desincronizan de la reali
 
 ## Historial de cambios (Entrega 1)
 
-Cada alta/edición de un producto agrega un evento en vez de sobrescribir — descripción, estado, atributos, imágenes, **y precio/cantidad** (cacheados desde MySQL en el momento del evento, ver [ADR-003](IA/ADR-003-historial-cambios-eventos.md#31-esquema)). Un edit de solo precio o solo stock también genera su propio evento; los descuentos de inventario del checkout, a propósito, no (eso seguiría siendo cada venta individual, no una edición de catálogo). Solo `vendedor`/`administrador` — requiere token:
+Cada alta/edición de un producto agrega un evento en vez de sobrescribir — descripción, estado, atributos, imágenes, **y precio/cantidad** (cacheados desde MySQL en el momento del evento, ver [ADR-003](IA/ADR-003-historial-cambios-eventos.md#31-esquema)). Un edit de solo precio o solo stock también genera su propio evento; los descuentos de inventario del checkout, a propósito, no (eso seguiría siendo cada venta individual, no una edición de catálogo). Solo lo ve el vendedor **dueño del producto** o un `administrador` — requiere token (otro vendedor y un comprador reciben `403`, sin sesión `401`):
 
 ```bash
 VTOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \

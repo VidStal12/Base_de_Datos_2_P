@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/redis');
+const { esErrorDeAcceso } = require('../utils/resiliencia');
 
 // Reautenticación: volver a pedir la contraseña antes de un pedido cuando la cuenta
 // tiene límites suaves (restriccionService.js). Una sesión robada o un token filtrado
@@ -10,7 +11,9 @@ const { conectar } = require('../config/redis');
 // intentos se cuentan en Redis con el mismo cupo por ventana que los pedidos (INCR +
 // EXPIRE atómico): MAX_INTENTOS por ventana y, pasados, 429 sin ni siquiera comparar.
 // Cada intento cuenta; uno acertado borra el contador, así que quien sabe su
-// contraseña nunca acumula. Sin Redis se verifica igual, solo que sin contar.
+// contraseña nunca acumula. Sin Redis se verifica igual, solo que sin contar; pero si Redis RECHAZA a la
+// cuenta de servicio (credencial o permiso) se relanza: sin el contador el endpoint de compra volvería a ser
+// un oráculo de contraseñas, y que eso pase en silencio es peor que un error de configuración a la vista.
 
 const MAX_INTENTOS = 5;
 const VENTANA_SEGUNDOS = 900; // 15 minutos
@@ -28,8 +31,9 @@ function avisarFallo(err) {
 async function verificarContrasena(usuarioId, contrasena) {
   let reserva = null;
   try {
-    reserva = await conectar().reservarCupo(claveIntentos(usuarioId), MAX_INTENTOS, VENTANA_SEGUNDOS);
+    reserva = await conectar('cupos').reservarCupo(claveIntentos(usuarioId), MAX_INTENTOS, VENTANA_SEGUNDOS);
   } catch (err) {
+    if (esErrorDeAcceso(err)) throw err;
     avisarFallo(err);
   }
   if (reserva && Number(reserva[0]) === -1) {
@@ -41,7 +45,7 @@ async function verificarContrasena(usuarioId, contrasena) {
   if (!coincide) return { ok: false, motivo: 'incorrecta' };
 
   try {
-    await conectar().del(claveIntentos(usuarioId));
+    await conectar('cupos').del(claveIntentos(usuarioId));
   } catch (err) {
     avisarFallo(err);
   }

@@ -62,7 +62,7 @@ async function main() {
   await Producto.updateOne({ producto_id: productoId }, { $set: { inventario: { precio: 10, cantidad: 20 } } });
   await cache.invalidar(productoId);
   await cart.vaciar(usuarioId);
-  const redis = conectarRedis();
+  const redis = conectarRedis('admin');
   const clave = `carrito:${usuarioId}`;
   const compra = (precioEsperado) => checkout({ usuarioId, direccionId: direccion.id, metodoPagoId: metodo.id, items: [{ productoId, cantidad: 1, precioEsperado }] });
 

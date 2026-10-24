@@ -2,7 +2,7 @@ const express = require('express');
 const { registrar, login, obtenerPerfil } = require('../services/authService');
 const { requireAuth } = require('../middleware/auth');
 const { responderError } = require('../utils/http');
-const { componenteCaido } = require('../utils/resiliencia');
+const { componenteCaido, esErrorDeAcceso } = require('../utils/resiliencia');
 
 const router = express.Router();
 
@@ -22,7 +22,8 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     // Una base apagada NO es «credenciales inválidas»: 503 con el aviso de qué falta
     // (antes devolvía 401 con el mensaje crudo de Prisma, y la interfaz mostraba eso).
-    if (componenteCaido(err)) return responderError(res, err);
+    // (Y una base que rechaza las credenciales del backend tampoco es «credenciales inválidas» de la persona.)
+    if (componenteCaido(err) || esErrorDeAcceso(err)) return responderError(res, err);
     // 401 para credenciales inválidas; 403 con `codigo` si la cuenta está
     // suspendida (la interfaz reacciona al código, no al texto).
     res.status(err.status ?? 401).json({ error: err.message, ...(err.codigo && { codigo: err.codigo, hasta: err.hasta }) });

@@ -1,6 +1,7 @@
 const limitePedidos = require('../services/limitePedidosService');
 const restriccionService = require('../services/restriccionService');
 const reautenticacion = require('../services/reautenticacionService');
+const { esErrorDeAcceso } = require('../utils/resiliencia');
 
 // Control de un pedido ANTES de que se complete (IA/PLAN-NEO4J-DETECCION-FRAUDE.md §21),
 // en las tres rutas de compra (checkout, oferta flash, recomendación), después de
@@ -18,7 +19,9 @@ const reautenticacion = require('../services/reautenticacionService');
 // La contraseña se comprueba ANTES de reservar: un intento fallido no gasta un pedido.
 // Está en las rutas y no en los servicios a propósito: es una protección del canal HTTP,
 // y así los scripts y las pruebas que llaman a los servicios no la sienten. Falla abierto:
-// sin Redis, o con una configuración mal escrita, no se frena a nadie.
+// sin Redis, o con una configuración mal escrita, no se frena a nadie. Salvo que Redis RECHACE a la cuenta de
+// servicio (credencial o permiso, no una caída): eso se relanza y el pedido responde 500 CREDENCIAL_RECHAZADA, en
+// vez de dejar sin tope y sin contraseña a una cuenta bajo vigilancia sin que nadie se entere.
 
 const CODIGO_REQUIERE_CONTRASENA = 'REQUIERE_CONTRASENA';
 const CODIGO_CONTRASENA_INCORRECTA = 'CONTRASENA_INCORRECTA';
@@ -85,6 +88,7 @@ async function controlPedidos(req, res, next) {
       try {
         reserva = await limitePedidos.reservar(usuarioId, limite);
       } catch (err) {
+        if (esErrorDeAcceso(err)) throw err;
         avisarFallo(err);
       }
       if (reserva && !reserva.admitido) {

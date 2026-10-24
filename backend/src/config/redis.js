@@ -1,7 +1,11 @@
 const Redis = require('ioredis');
-const { ServicioNoDisponible, avisarCaida, avisarRecuperacion } = require('../utils/resiliencia');
+const { ServicioNoDisponible, CredencialRechazada, esErrorDeAcceso, avisarCaida, avisarCredencial, avisarRecuperacion } = require('../utils/resiliencia');
+const { definicion, usuarioDe, variableContrasena } = require('./redisCuentas');
 
-let cliente;
+// Un cliente por cuenta de servicio (ver redisCuentas.js): cada módulo del backend entra a Redis con la suya.
+// Mientras Redis no tenga ACL (sin REDIS_CONTRASENA_* en el entorno) todas las cuentas comparten una única
+// conexión «legada» sin credenciales, como antes de la Entrega Final.
+const clientes = new Map();
 
 // Redis es una caché y un puñado de contadores auxiliares (carrito, ofertas flash,
 // bloqueos, topes de pedidos): sin él la aplicación sigue funcionando, solo que sin esos
@@ -13,12 +17,21 @@ let cliente;
 //     quedaron en la cola de espera de la conexión).
 //   - maxRetriesPerRequest: la cola se descarta tras un solo reintento fallido.
 //   - connectTimeout / retryStrategy: reconectar seguido, sin esperar 10 s por intento.
+//   - enableReadyCheck / disableClientInfo: ioredis pregunta INFO y CLIENT SETINFO al conectar; una cuenta de
+//     servicio no tiene (ni debe tener) esos comandos, y el rechazo ensuciaría el registro de ACL de Redis.
 const OPCIONES_RESILIENTES = {
   commandTimeout: 1500,
   maxRetriesPerRequest: 1,
   connectTimeout: 2000,
   retryStrategy: (intento) => Math.min(intento * 250, 2000),
+  enableReadyCheck: false,
+  disableClientInfo: true,
 };
+
+// Tras un rechazo de credenciales no se insiste en bucle (cada reintento sería otro WRONGPASS): la cuenta queda
+// «rechazada» y sus comandos fallan al instante con CredencialRechazada. Pasado este tiempo se prueba UNA vez
+// más con un cliente nuevo, para que corregir el .env o recargar el ACL de Redis no exija reiniciar el backend.
+const REINTENTO_CREDENCIAL_MS = 30000;
 
 // Mientras el cliente está reconectando (la conexión ya se perdió), un comando nuevo
 // falla AL INSTANTE en vez de esperar su commandTimeout: así una petición que toca Redis
@@ -26,6 +39,10 @@ const OPCIONES_RESILIENTES = {
 // encolar, acotado por commandTimeout, porque Redis puede estar perfectamente sano.
 class RedisTolerante extends Redis {
   sendCommand(comando, flujo) {
+    if (this.credencialRechazada) {
+      comando.reject(this.credencialRechazada);
+      return comando.promise;
+    }
     if (this.status === 'reconnecting' || this.status === 'end') {
       comando.reject(new ServicioNoDisponible('redis'));
       return comando.promise;
@@ -223,40 +240,79 @@ if n > 0 then return redis.call('DECR', KEYS[1]) end
 return 0
 `;
 
-// Conexión perezosa y reutilizada, mismo patrón que config/mongo.js — se abre
-// una sola vez, la primera vez que algún servicio la necesita.
-function conectar() {
+// Las credenciales de una cuenta salen del entorno (backend/.env, que escribe `npm run seguridad:inicializar`);
+// null si no hay contraseña definida, es decir, si Redis todavía no tiene ACL.
+function credencialesDe(cuenta, env = process.env) {
+  const contrasena = env[variableContrasena(cuenta)];
+  return contrasena ? { username: usuarioDe(cuenta), password: contrasena } : null;
+}
+
+function crearCliente(credenciales) {
+  const usuario = credenciales?.username ?? null;
+  // La estrategia de reintento mira al propio cliente: una vez rechazadas las credenciales no se reconecta.
+  const retryStrategy = (intento) => (cliente.credencialRechazada ? null : OPCIONES_RESILIENTES.retryStrategy(intento));
+  const cliente = new RedisTolerante(process.env.REDIS_URL, { ...OPCIONES_RESILIENTES, ...(credenciales ?? {}), retryStrategy });
+  // Sin un oyente, ioredis escribiría un "Unhandled error event" por cada reintento.
+  cliente.on('error', (err) => {
+    if (esErrorDeAcceso(err)) {
+      // Rechazaron el login (WRONGPASS, o NOAUTH si el servidor exige credenciales y no hay): el cerrojo detiene el
+      // bucle de reintentos y los comandos siguientes fallan con CredencialRechazada. Un NOPERM es otra cosa: el
+      // login fue bueno y solo ese comando está prohibido; se avisa, pero la cuenta sigue en pie.
+      if (!cliente.credencialRechazada && /^(WRONGPASS|NOAUTH)\b/.test(String(err.message))) {
+        cliente.credencialRechazada = new CredencialRechazada('redis', usuario, err);
+        cliente.rechazadaEn = Date.now();
+      }
+      avisarCredencial('redis', err, usuario);
+      return;
+    }
+    avisarCaida('redis', err);
+  });
+  cliente.on('ready', () => avisarRecuperacion('redis'));
+  // Registrado una sola vez acá (no en cada llamada) — ioredis expone esto
+  // después como cliente.decrementarOferta(key, ...argv), un comando más.
+  cliente.defineCommand('decrementarOferta', { numberOfKeys: 1, lua: LUA_DECREMENTAR_OFERTA });
+  cliente.defineCommand('reintegrarOferta', { numberOfKeys: 1, lua: LUA_REINTEGRAR_OFERTA });
+  cliente.defineCommand('reservarOfertaIdempotente', { numberOfKeys: 2, lua: LUA_RESERVAR_OFERTA });
+  cliente.defineCommand('devolverReservaOferta', { numberOfKeys: 2, lua: LUA_DEVOLVER_RESERVA });
+  cliente.defineCommand('leerCarrito', { numberOfKeys: 2, lua: LUA_LEER_CARRITO });
+  cliente.defineCommand('publicarCarrito', { numberOfKeys: 2, lua: LUA_PUBLICAR_CARRITO });
+  cliente.defineCommand('invalidarCarrito', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
+  cliente.defineCommand('leerOferta', { numberOfKeys: 2, lua: LUA_LEER_OFERTA });
+  cliente.defineCommand('publicarOferta', { numberOfKeys: 2, lua: LUA_PUBLICAR_OFERTA });
+  // Invalidar es lo mismo para el carrito y la oferta: subir la revisión y
+  // borrar los datos, en un solo paso atómico.
+  cliente.defineCommand('invalidarOferta', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
+  cliente.defineCommand('bloquearCuenta', { numberOfKeys: 1, lua: LUA_BLOQUEAR_CUENTA });
+  cliente.defineCommand('reservarCupo', { numberOfKeys: 1, lua: LUA_RESERVAR_CUPO });
+  cliente.defineCommand('liberarCupo', { numberOfKeys: 1, lua: LUA_LIBERAR_CUPO });
+  return cliente;
+}
+
+// Conexión perezosa y reutilizada, mismo patrón que config/mongo.js — se abre una sola vez por cuenta, la
+// primera vez que algún servicio la necesita. `cuenta` es obligatoria (las de redisCuentas.js): cada módulo dice
+// con cuál entra, y los scripts de mantenimiento piden 'admin'; el servidor web nunca la usa.
+function conectar(cuenta) {
+  definicion(cuenta); // lanza si falta o no existe: un módulo no puede entrar «sin decir quién es»
+  const credenciales = credencialesDe(cuenta);
+  const id = credenciales ? cuenta : 'legado';
+  let cliente = clientes.get(id);
+  if (cliente?.credencialRechazada && Date.now() - cliente.rechazadaEn >= REINTENTO_CREDENCIAL_MS) {
+    cliente.disconnect();
+    clientes.delete(id);
+    cliente = undefined;
+  }
   if (!cliente) {
-    cliente = new RedisTolerante(process.env.REDIS_URL, OPCIONES_RESILIENTES);
-    // Sin un oyente, ioredis escribiría un "Unhandled error event" por cada reintento.
-    cliente.on('error', (err) => avisarCaida('redis', err));
-    cliente.on('ready', () => avisarRecuperacion('redis'));
-    // Registrado una sola vez acá (no en cada llamada) — ioredis expone esto
-    // después como cliente.decrementarOferta(key, ...argv), un comando más.
-    cliente.defineCommand('decrementarOferta', { numberOfKeys: 1, lua: LUA_DECREMENTAR_OFERTA });
-    cliente.defineCommand('reintegrarOferta', { numberOfKeys: 1, lua: LUA_REINTEGRAR_OFERTA });
-    cliente.defineCommand('reservarOfertaIdempotente', { numberOfKeys: 2, lua: LUA_RESERVAR_OFERTA });
-    cliente.defineCommand('devolverReservaOferta', { numberOfKeys: 2, lua: LUA_DEVOLVER_RESERVA });
-    cliente.defineCommand('leerCarrito', { numberOfKeys: 2, lua: LUA_LEER_CARRITO });
-    cliente.defineCommand('publicarCarrito', { numberOfKeys: 2, lua: LUA_PUBLICAR_CARRITO });
-    cliente.defineCommand('invalidarCarrito', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
-    cliente.defineCommand('leerOferta', { numberOfKeys: 2, lua: LUA_LEER_OFERTA });
-    cliente.defineCommand('publicarOferta', { numberOfKeys: 2, lua: LUA_PUBLICAR_OFERTA });
-    // Invalidar es lo mismo para el carrito y la oferta: subir la revisión y
-    // borrar los datos, en un solo paso atómico.
-    cliente.defineCommand('invalidarOferta', { numberOfKeys: 2, lua: LUA_INVALIDAR_CARRITO });
-    cliente.defineCommand('bloquearCuenta', { numberOfKeys: 1, lua: LUA_BLOQUEAR_CUENTA });
-    cliente.defineCommand('reservarCupo', { numberOfKeys: 1, lua: LUA_RESERVAR_CUPO });
-    cliente.defineCommand('liberarCupo', { numberOfKeys: 1, lua: LUA_LIBERAR_CUPO });
+    cliente = crearCliente(credenciales);
+    clientes.set(id, cliente);
   }
   return cliente;
 }
 
-// Cierra únicamente el cliente ya abierto, sin crear conexiones al apagar ni
+// Cierra únicamente los clientes ya abiertos, sin crear conexiones al apagar ni
 // continuar reintentando contra un Redis que podría estar fuera de servicio.
 function cerrar() {
-  if (cliente) cliente.disconnect();
-  cliente = undefined;
+  for (const cliente of clientes.values()) cliente.disconnect();
+  clientes.clear();
 }
 
-module.exports = { conectar, cerrar };
+module.exports = { conectar, cerrar, credencialesDe };

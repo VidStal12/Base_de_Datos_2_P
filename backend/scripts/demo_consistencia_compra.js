@@ -171,7 +171,7 @@ async function leerEstado(ctx, detalleIds = []) {
     },
     mongo: { stock: doc.inventario.cantidad, vendido: doc.total_vendido },
     redis: await conCaptura(async () => {
-      const redis = redisConfig.conectar();
+      const redis = redisConfig.conectar('admin');
       const clave = `carrito:${compradorId}`;
       const campos = (await redis.hkeys(clave)).filter((campo) => campo !== '_formato');
       return { lineas: campos.length, ttlSegundos: campos.length ? Math.round((await redis.pttl(clave)) / 1000) : null };
@@ -371,7 +371,7 @@ const ESCENARIOS = {
       });
       const antes = await leerEstado(ctx);
       imprimirEstado('ANTES (con 1 producto en el carrito)', antes);
-      const redis = redisConfig.conectar();
+      const redis = redisConfig.conectar('admin');
       const { valor, error, registros } = await capturandoLogs(() => comprar(ctx, { alRodear: (fn) => conFalla(redis, 'invalidarCarrito', 'connect ECONNREFUSED 127.0.0.1:16379 (falla simulada)', fn) }));
       titulo('RESULTADO');
       dato('checkout()', error ? `LANZÓ: ${error.message}` : `NO lanzó — compra #${valor.compra.id}, pago ${valor.pago.estado}`);

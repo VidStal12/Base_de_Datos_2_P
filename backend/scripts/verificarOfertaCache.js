@@ -23,7 +23,7 @@ const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   await conectarMongo();
-  const redis = redisConfig.conectar();
+  const redis = redisConfig.conectar('admin');
   const mayorista = await prepararCuenta('fraude.mayorista@example.com', 'Fraude Mayorista', 'tok_fraude_mayorista', { rol: 'vendedor', nacimiento: '1984-02-02' });
   const producto = await asegurarProducto(mayorista.usuario, '[PRUEBA flash] Producto de la caché de oferta', 25, {
     subcategoria: 'Cocina', atributos: [{ nombre: 'Material', valor: 'Acero' }, { nombre: 'Color', valor: 'Gris' }], cantidad: 10,

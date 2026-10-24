@@ -40,6 +40,10 @@
     "test:ventas": "node --test tests/ventas*.test.js",
     "test:busqueda": "node --test tests/busqueda*.test.js",
     "test:resiliencia": "node --test tests/resiliencia*.test.js",
+    "test:acceso": "node --test tests/acceso*.test.js",
+    "seguridad:inicializar": "node scripts/seguridad/inicializar.js",
+    "seguridad:mongo": "node scripts/seguridad/mongoUsuarios.js",
+    "verificar:acceso": "node scripts/verificarControlAcceso.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

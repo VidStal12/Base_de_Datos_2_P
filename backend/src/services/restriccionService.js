@@ -1,5 +1,6 @@
 const { crearCandado } = require('./candadoRedis');
 const { ROLES_EXENTOS } = require('./suspensionService');
+const { esErrorDeAcceso } = require('../utils/resiliencia');
 
 // Límites suaves para una cuenta con un hallazgo de fraude de confianza «posible»
 // (respuesta escalonada, IA/PLAN-NEO4J-DETECCION-FRAUDE.md §21): no se la suspende
@@ -60,7 +61,9 @@ function avisarFallo(err) {
 // si están apagados, o es un administrador — un automatismo no toca a quienes
 // pueden deshacerlo). `montoMaximo`/`pedidosPorHora` son null cuando ese tope está
 // desactivado. Una configuración inválida o un Redis caído se tratan como "sin
-// restricción" y se avisa: no deben impedir comprar a todo el mundo.
+// restricción" y se avisa: no deben impedir comprar a todo el mundo. Excepción: una Redis que rechaza a la cuenta
+// de servicio (credencial o permiso, no una caída) NO se trata como "sin restricción": se relanza, porque dejar
+// pasar sin límites a quien está bajo vigilancia sería apagar el control en silencio.
 async function limitesDe(usuarioId, rol) {
   if (ROLES_EXENTOS.has(rol)) return null;
   try {
@@ -70,6 +73,7 @@ async function limitesDe(usuarioId, rol) {
     if (!estado.activo) return null;
     return { montoMaximo: cfg.montoMaximo || null, pedidosPorHora: cfg.pedidosPorHora || null, hasta: estado.hasta };
   } catch (err) {
+    if (esErrorDeAcceso(err)) throw err;
     avisarFallo(err);
     return null;
   }

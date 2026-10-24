@@ -87,20 +87,20 @@ async function main() {
   // 3) Oferta flash: se rechaza ANTES de tocar Redis — el dueño no gasta (ni hay
   // que devolverle) una unidad del pool.
   const claveOferta = `oferta:${propio.id}:stock`;
-  const poolAntes = await redis.conectar().get(claveOferta);
+  const poolAntes = await redis.conectar('admin').get(claveOferta);
   await esperarRechazo('oferta flash de un producto propio', () =>
     ofertaFlashService.comprar(dueno.id_usuario, propio.id, { cantidad: 1, ...datosCompra })
   );
-  afirmar((await redis.conectar().get(claveOferta)) === poolAntes, 'el rechazo no debe tocar el pool de la oferta en Redis');
+  afirmar((await redis.conectar('admin').get(claveOferta)) === poolAntes, 'el rechazo no debe tocar el pool de la oferta en Redis');
 
   // 4) Recomendación: rechazo antes del cupo personal, y nunca se la recomienda.
   const claveCupo = `oferta-recomendada:${propio.id}:${dueno.id_usuario}:stock`;
-  const cupoAntes = await redis.conectar().get(claveCupo);
+  const cupoAntes = await redis.conectar('admin').get(claveCupo);
   await esperarRechazo('recomendación de un producto propio', () =>
     tendenciaService.comprar(dueno.id_usuario, propio.id, { cantidad: 1, ...datosCompra })
   );
-  afirmar((await redis.conectar().get(claveCupo)) === cupoAntes, 'el rechazo no debe tocar el cupo personal en Redis');
-  await redis.conectar().del(`recomendaciones:${dueno.id_usuario}`); // sin caché previa a la regla
+  afirmar((await redis.conectar('admin').get(claveCupo)) === cupoAntes, 'el rechazo no debe tocar el cupo personal en Redis');
+  await redis.conectar('admin').del(`recomendaciones:${dueno.id_usuario}`); // sin caché previa a la regla
   const { productos: recomendados } = await tendenciaService.recomendar(dueno.id_usuario);
   afirmar(
     recomendados.every((p) => p.vendedor_id !== dueno.id_usuario),

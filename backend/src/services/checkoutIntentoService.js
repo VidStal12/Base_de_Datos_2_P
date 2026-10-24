@@ -148,7 +148,7 @@ async function transaccion({ usuarioId, intentoId, datos, reservar }, operacion)
 }
 async function compensar(intento) {
   if (intento.compensado) return;
-  if (intento.reserva) await conectar().devolverReservaOferta(intento.reserva.claveStock, `checkout:reserva:${intento.id}`, intento.reserva.vence);
+  if (intento.reserva) await conectar('ofertas').devolverReservaOferta(intento.reserva.claveStock, `checkout:reserva:${intento.id}`, intento.reserva.vence);
   await prisma.checkout_intento.update({ where: { id: intento.id }, data: { compensado: true } });
 }
 // Adquirir el mismo lock elimina la ambigüedad de un COMMIT cuya respuesta se

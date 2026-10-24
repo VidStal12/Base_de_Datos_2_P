@@ -1,6 +1,6 @@
 # Plan — Entrega Final (Vectorial, Seguridad y Cierre)
 
-> Creado: 2026-10-22. **Estado: propuesta, sin implementar.** Se armó a partir del PRD, del estado real del repositorio y de la nota de voz del catedrático del 2026-10-21, con dos investigaciones en paralelo (una técnica —vectores y control de acceso— y una de cierre —diagrama, retrospectiva, presentación y calendario—). Lo que el agente técnico **probó** en contenedores desechables con las mismas imágenes del proyecto está marcado como «probado»; las horas son estimaciones, no mediciones. Las fuentes están en §12 y deben abrirse antes de citarlas en el informe.
+> Creado: 2026-10-22. **Estado (2026-10-23): propuesta, con el ítem 2 (control de acceso) implementado —huecos de la API, lista blanca de rutas, cuentas de Redis y roles de MongoDB, ADR-007— y verificado que los vectores pueden vivir solo en Elasticsearch (§3.4b). Falta el ítem 1 (vectores: espera la aprobación de la descarga del modelo), el diagrama, la retrospectiva y la presentación.** Se armó a partir del PRD, del estado real del repositorio y de la nota de voz del catedrático del 2026-10-21, con dos investigaciones en paralelo (una técnica —vectores y control de acceso— y una de cierre —diagrama, retrospectiva, presentación y calendario—). Lo que el agente técnico **probó** en contenedores desechables con las mismas imágenes del proyecto está marcado como «probado»; las horas son estimaciones, no mediciones. Las fuentes están en §12 y deben abrirse antes de citarlas en el informe.
 
 ## 0. Resumen
 
@@ -8,8 +8,8 @@ El PRD llama a esta entrega «Entrega Final — Vectorial, Seguridad y Cierre» 
 
 | Ítem | Pts | Decisión recomendada | Esfuerzo (persona-horas, estimado) | Riesgo principal |
 |---|---|---|---|---|
-| **1. Recomendación semántica** (§3) | 5 | Elasticsearch `dense_vector` + kNN con embeddings locales (`multilingual-e5-small`); Mongo guarda el vector; respaldo por coseno en memoria; ADR-006 | 20–24 (+ 2–3 de prueba previa) | Modelo de 118 MB en Windows/ONNX; calidad con títulos de ~21 caracteres |
-| **2. Control de acceso NoSQL** (§4) | 4 | Dos capas: **API** (arreglar huecos reales + política por rol probada) y **cuentas de servicio** en Redis y Mongo; ADR-007 | 14–16 piso · 22–26 completo | Mongo con auth + replica set; que un error de credencial se confunda con una caída |
+| **1. Recomendación semántica** (§3) | 5 | Elasticsearch `dense_vector` + kNN con embeddings locales (`multilingual-e5-small`); **los vectores viven solo en Elasticsearch** (se recalculan desde el texto del producto); respaldo: misma subcategoría desde Mongo; ADR-006 | 20–24 (+ 2–3 de prueba previa) | Modelo de 118 MB en Windows/ONNX; calidad con títulos de ~21 caracteres |
+| **2. Control de acceso NoSQL** (§4) | 4 | Dos capas: **API** (arreglar huecos reales + política por rol probada) y **cuentas de servicio** en Redis y Mongo; ADR-007 | 17–20 piso · 25–30 completo | Mongo con auth + replica set; que un error de credencial se confunda con una caída |
 | **3. Diagrama final** (§5) | 3 | Cuatro vistas + una secuencia en Mermaid, con lista de chequeo contra el repo | 10–13 | Que se desfase del código |
 | **4. Retrospectiva** (§6) | 4 | Tabla de 15 decisiones citadas, veredicto con número, arquitectura v2 | 8–9 | Que se lea como lista de opiniones |
 | **5. Presentación** (§7) | 4 | Pirámide + tres demos con plan B + banco de preguntas | 10–12 | Docker o el equipo fallan en el aula |
@@ -103,7 +103,7 @@ Horas = persona-horas, estimación del agente. «Probado» = el agente lo ejecut
 | Redis | `redis:7` es 7.4.11 **sin módulos** (`VADD`/`FT.*` no existen); Redis 8 trae Query Engine pero cambia las categorías ACL y choca con el ítem 2 | Descartada |
 | MongoDB | 7 no tiene `$vectorSearch`; 8.2 Community es vista previa con proceso aparte, sólo desarrollo | Descartada |
 | Dedicado (Qdrant, Weaviate, Milvus, Chroma, LanceDB) | Herramienta específica; Qdrant, por ejemplo, es Apache-2.0 y sin autenticación por defecto | 12–16 h; 7.º componente y 3.ª copia para ~100 filas; LanceDB (embebido) evita el contenedor pero no muestra operación multi-servicio |
-| **No cambiar: coseno en Node** | Vectores guardados en Mongo y similitud exacta en memoria | 0,12 ms con 106×384; 4,8 ms con 10 k; 49 ms con 100 k; 283 ms con 500 k (medido). Deja de servir hacia ~100 k productos o con varios procesos/filtros. **Se usa como respaldo**, no como solución |
+| **No cambiar: coseno en Node** | Vectores guardados en Mongo y similitud exacta en memoria | 0,12 ms con 106×384; 4,8 ms con 10 k; 49 ms con 100 k; 283 ms con 500 k (medido). Deja de servir hacia ~100 k productos o con varios procesos/filtros. **Descartada también como respaldo** (decisión del 2026-10-23, ver §3.4b): obligaría a guardar los vectores en Mongo y a mantener una segunda implementación de la similitud |
 
 ### 3.3 Modelo de embeddings (local, sin claves de pago)
 
@@ -114,7 +114,7 @@ Horas = persona-horas, estimación del agente. «Probado» = el agente lo ejecut
 | `bge-m3` / `embeddinggemma-300m` (Ollama) | 1024 · 1,2 GB / 768 · 622 MB | Excesivos para títulos de 21 caracteres |
 | OpenAI, Voyage, etc. | — | Descartados: exigen internet y clave (rompen la demo sin conexión) y las direcciones son datos personales. Anthropic no ofrece embeddings propios |
 
-Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await import(...)`); sin internet con `env.allowRemoteModels = false` y `env.localModelPath`. El archivo de 118 MB supera el límite de 100 MB de GitHub → `.gitignore` + script de descarga + copiar la caché antes de la demo, **y congelar los vectores de los productos en un JSON versionado (~400 KB)** para que la demo funcione aunque el modelo no cargue. **No medido todavía:** latencia en CPU (estimación 5–20 ms por título, carga 1–3 s, +300–400 MB de RAM) y calidad con títulos cortos. Regla de decisión para la prueba previa: el modelo más chico con precisión@5 ≥ 90 % sobre los títulos y 0 productos sin vecino. La descarga y la instalación necesitan autorización del equipo.
+Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await import(...)`); sin internet con `env.allowRemoteModels = false` y `env.localModelPath`. El archivo de 118 MB supera el límite de 100 MB de GitHub → `.gitignore` + script de descarga + copiar la caché antes de la demo, **Como los vectores viven solo en Elasticsearch, reconstruir el índice exige tener el modelo instalado** (`busqueda:backfill` recalcula cada vector): la caché del modelo va en una carpeta fija y se comprueba antes de la demo. Un JSON versionado con los vectores (~400 KB) es solo un plan de contingencia si el modelo resulta frágil en Windows. **No medido todavía:** latencia en CPU (estimación 5–20 ms por título, carga 1–3 s, +300–400 MB de RAM) y calidad con títulos cortos. Regla de decisión para la prueba previa: el modelo más chico con precisión@5 ≥ 90 % sobre los títulos y 0 productos sin vecino. La descarga y la instalación necesitan autorización del equipo.
 
 ### 3.4 Decisión recomendada — cuerpo propuesto del ADR-006
 
@@ -124,18 +124,39 @@ Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await 
 >
 > **Alternativas.** (1) No cambiar: atributos/BM25/`more_like_this`, o coseno en memoria. (2) Extensión relacional: pgvector (añade PostgreSQL) o MySQL (8.4 sin `VECTOR`; `DISTANCE()` fuera de Community aun en 9.7). (3) Componente dedicado (Qdrant, Weaviate, Milvus, Chroma, LanceDB). (4) Motor de búsqueda existente: Elasticsearch `dense_vector` + kNN. (5) Otros ya presentes: Cassandra 5 (SAI), Neo4j (índice vectorial), Redis (sin módulos en 7), MongoDB (sin `$vectorSearch` en 7).
 >
-> **Decisión.** (4): campo `embedding` (384 dim, coseno, `int8_hnsw`) con vectores de `multilingual-e5-small` (ONNX int8) calculados localmente en Node. Mongo conserva vector, hash y versión del modelo como **fuente**; Elasticsearch es **copia derivada** reconstruible con `busqueda:backfill`. Respaldo: coseno exacto en memoria sobre los vectores de Mongo; si ambos caen, la sección se oculta.
+> **Decisión.** (4): campo `embedding` (384 dim, coseno, `int8_hnsw`) con vectores de `multilingual-e5-small` (ONNX int8) calculados localmente en Node. **Los vectores se guardan solo en Elasticsearch**, junto al documento del producto; Mongo no los copia. El documento de búsqueda sigue siendo una copia derivada del catálogo y se reconstruye con `busqueda:backfill`, que recalcula cada vector desde el texto del producto. Respaldo: si Elasticsearch no responde, los relacionados salen de la misma subcategoría (Mongo); si ambos caen, la sección se oculta.
 >
-> **Justificación.** *Consistencia:* una sola fuente (Mongo) e índice derivado e idempotente, igual que Cassandra, Neo4j y Elasticsearch. *Patrón de consulta:* kNN con filtros de estado y vendedor suspendido dentro de la búsqueda e híbrido BM25 + kNN (verificados). *Escalabilidad:* HNSW; de ~100 a 100 k productos sin cambiar la API (el coseno en Node todavía responde en 49 ms a 100 k). *Costo operativo:* 0 contenedores nuevos frente a +1 con pgvector o un dedicado; salud, circuito y banner ya existen. *Licencia:* en Basic no hay RRF, ELSER ni `semantic_text` (verificado), por eso los vectores se calculan fuera.
+> **Justificación.** *Consistencia:* el vector es un dato derivado (texto del producto + modelo) que se recalcula en segundos, así que no necesita una segunda copia en la base fuente: el catálogo de Mongo no cambia y no hay dos implementaciones de la similitud que mantener. Reindexar recalcula el vector o, si el modelo no está, actualiza el documento sin tocarlo (un `index` completo lo borraría: comprobado). *Patrón de consulta:* kNN con filtros de estado y vendedor suspendido dentro de la búsqueda e híbrido BM25 + kNN (verificados). *Escalabilidad:* HNSW; de ~100 a 100 k productos sin cambiar la API. *Costo operativo:* 0 contenedores nuevos frente a +1 con pgvector o un dedicado; salud, circuito y banner ya existen. *Licencia:* en Basic no hay RRF, ELSER ni `semantic_text` (verificado), por eso los vectores se calculan fuera.
 >
-> **Consecuencias.** (+) Funciona sin conexión y degrada con gracia. (−) El modelo (118 MB) vive fuera del repo; cambiar de modelo obliga a reindexar; `dynamic: 'strict'` exige mantener mapping y prueba alineados; Elasticsearch opera casi en su límite de memoria (961 MiB de 1 GiB). Se reabre si el catálogo supera ~100 k productos, aparecen filtros relacionales complejos o varios servicios consumen vectores (→ pgvector o Qdrant).
+> **Consecuencias.** (+) Funciona sin conexión; Mongo no cambia; los relacionados siguen aunque Mongo esté apagado (todo sale del índice). (−) El modelo (118 MB) vive fuera del repo y reconstruir el índice exige tenerlo; cambiar de modelo obliga a reindexar; si Elasticsearch cae, los relacionados pasan de «por significado» a «de la misma subcategoría»; hay que excluir el vector de `_source` en las demás consultas (con él pesan 13 veces más: comprobado); `dynamic: 'strict'` exige mantener mapping y prueba alineados; Elasticsearch opera casi en su límite de memoria (961 MiB de 1 GiB). Se reabre si el catálogo supera ~100 k productos, aparecen filtros relacionales complejos o varios servicios consumen vectores (→ pgvector o Qdrant).
+
+### 3.4b Verificación: ¿vectores solo en Elasticsearch? (2026-10-23)
+
+El equipo decidió **no guardar una copia de los vectores en Mongo**. Antes de construirlo se comprobó contra el Elasticsearch 8.15.0 real, con un índice temporal que usa el mapping real de `tiendaya_productos` y sus 121 documentos (vectores sintéticos de 384 dimensiones; se borró al terminar):
+
+| Qué se comprobó | Resultado |
+|---|---|
+| Agregar `dense_vector` con `putMapping` a un índice que ya existe y es `dynamic: strict` | Funciona. El tipo por defecto es `int8_hnsw` (m 16, ef_construction 100). Los documentos que ya estaban quedan sin vector hasta correr el backfill |
+| Leer el vector de un producto por id (`GET` con `_source_includes`) | 384 valores en 9–24 ms: «relacionados» son dos consultas baratas (leer el vector, kNN) |
+| kNN con filtro (activo, sin el propio producto, sin vendedores suspendidos), ordenado por similitud | Correcto; `_score` = (1 + coseno) / 2 |
+| Umbral mínimo de similitud dentro del propio kNN (`similarity`) | Descarta lo que queda por debajo: «mejor nada que algo sin relación» se resuelve en la consulta, sin filtrar después |
+| Un documento sin vector | No rompe nada: no aparece en kNN, y su vector se lee como «ausente» (se cae a la misma subcategoría) |
+| **`index` completo de un producto sin recalcular el vector** | **Lo borra.** Es justo lo que hace `indexarProducto` hoy en cada edición. Solución: recalcular siempre y, si el modelo no está, un `update` parcial con `doc_as_upsert` sin ese campo: conserva el vector, reemplaza `atributos` entero y deja bien `sugerencia` y `contexts.estado` |
+| **Una búsqueda normal con el vector dentro de `_source`** | 509 KB frente a 37 KB para 60 productos (13 veces): hay que poner `_source.excludes: ['embedding']` en las consultas actuales |
+| Tamaño en disco | ~1,3 MB para 122 documentos con vector |
+
+**Un argumento que se descartó:** «los vectores inflarían el historial de eventos». No es cierto: los *snapshots* de `producto_eventos` se arman con campos explícitos (descripción, estado, atributos, imágenes, inventario), así que un campo nuevo en el documento no entra. La decisión se sostiene por otras razones: el vector es un dato derivado que se recalcula, no hace falta una segunda copia ni una segunda implementación de la similitud, y el catálogo de Mongo no cambia.
+
+**Lo que se pierde:** el respaldo de coseno en memoria (con Elasticsearch caído, los relacionados pasan de «por significado» a «de la misma subcategoría», lo que sigue cumpliendo el requisito de que la aplicación funcione con una base apagada, solo que sin esos datos) y reconstruir el índice exige el modelo instalado. Recalcular ~109 títulos se estima en 1–2 s (no medido: se mide en la prueba previa). A cambio, los relacionados **siguen funcionando con Mongo apagado**, porque todo sale del índice.
+
+**Veredicto: buena decisión para este proyecto, con tres reglas.** (1) Nunca reindexar un producto sin recalcular su vector ni con un `index` completo que lo omita. (2) Excluir `embedding` de `_source` en todo lo demás. (3) El modelo y su caché son parte de la preparación de la demo, con una comprobación previa. Se reabre si la prueba previa muestra que el modelo no es confiable en Windows (entonces, el JSON de contingencia) o si el catálogo crece tanto que recalcular todo deje de ser cuestión de segundos.
 
 ### 3.5 Diseño
 
 - **Texto a embeber.** A: `query: {título}` · B: `query: {título}. {subcategoría}. {categoría}. {Atributo: valor; …}` · C: B + `descripcion_larga`. Con 21 caracteres de mediana, **B es el mínimo**; C (106–109 textos de 1–2 frases generados una vez con un LLM y **declarados sintéticos**, ~2 h + ~5 h de campo, formulario y mapping) alinea con el PRD, que dice «descripción» y hoy es un título. **Fuga de etiqueta:** si B incluye la subcategoría, «misma subcategoría» sube por construcción: medir la calidad semántica con A y con juicio humano para B y C.
-- **Sincronización.** En Mongo: `embedding` (`select: false`, para que no viaje en cada respuesta), `embedding_hash` (sha256 de texto + modelo + dimensiones) y `embedding_modelo`. `indexarProducto` calcula si el hash cambió (mejor esfuerzo; sin vector → cae al respaldo); `backfillBusqueda` recalcula sólo los desajustes. `aDocumento`, `MAPPING` y su prueba cambian juntos (`dynamic: 'strict'`). Cambiar de modelo = reindexar.
+- **Sincronización.** El vector se guarda en el documento de Elasticsearch (`embedding`), no en Mongo. `indexarProducto` lo recalcula del texto (título + subcategoría + categoría + atributos) en cada alta o edición y lo indexa junto al resto; si el modelo no está disponible hace un `update` parcial (`doc_as_upsert`) SIN ese campo, para no borrar el vector anterior —un `index` completo lo borra: comprobado— y lo avisa una vez. `backfillBusqueda` recalcula todo (109 títulos: segundos). Las demás consultas excluyen `embedding` de `_source`. `aDocumento`, `MAPPING` y su prueba cambian juntos (`dynamic: 'strict'`), y el campo se agrega con `putMapping` al índice que ya existe (comprobado). Cambiar de modelo = reindexar.
 - **Consulta y reglas de negocio** (`GET /api/productos/:id/relacionados`): sólo `estado: activo`; excluir vendedores suspendidos (`vendedoresSuspendidos()`), lo propio (patrón de `tendenciaService`) y el mismo producto; sin stock al final; máximo 2 por vendedor y deduplicar casi idénticos; umbral τ calibrado con la evaluación y **≥ 2 resultados o se oculta** («mejor nada que algo sin relación», audio 08:30); explicación «Parecido a …» / «Misma subcategoría: Celulares». Referentes: Shopify separa «relacionados» (sustitutos) de «complementarios» y permite ocultar por producto; Airbnb usa embeddings de anuncios para similares; Zalando resuelve el arranque en frío; MMR para diversidad.
-- **Degradación** (conserva lo ya construido): Elasticsearch kNN → coseno sobre los vectores de Mongo → misma subcategoría → ocultar. La respuesta lleva `modo` (como `busqueda` con `modo: 'basico'`), la página lo carga aparte (como `ofertasApi.consultarStock`) y `AvisoServicios` avisa.
+- **Degradación** (conserva lo ya construido): Elasticsearch kNN → misma subcategoría (Mongo) → ocultar. La respuesta lleva `modo` (como `busqueda` con `modo: 'basico'`), la página lo carga aparte (como `ofertasApi.consultarStock`) y `AvisoServicios` avisa.
 
 ### 3.6 Evaluación (lo que se muestra al jurado)
 
@@ -161,9 +182,9 @@ Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await 
 
 | # | Paso | Horas | Archivos |
 |---|---|---|---|
-| 0 | **Prueba previa** (con autorización de descargar 118 MB e instalar el paquete en una carpeta aparte): medir latencia y RAM; comparar e5-small vs MiniLM en precisión@5 y cobertura; repetir la línea base de §3.1 con los 109 productos | 2–3 | fuera del repo |
+| 0 | **Prueba previa** (con autorización de descargar el modelo, 118 MB, e instalar el paquete —con `onnxruntime-node`, ~430 MB en total— en una carpeta aparte): medir latencia y RAM; comparar e5-small vs MiniLM en precisión@5 y cobertura; repetir la línea base de §3.1 con los 109 productos | 2–3 | fuera del repo |
 | 1 | `embeddingService`: carga perezosa, prefijo, normalización, hash | 3 | `backend/src/services/embeddingService.js` |
-| 2 | Datos: campos en Mongo, `MAPPING` + `aDocumento` + prueba de alineación, sincronización en `indexarProducto`, backfill idempotente | 4–5 | `models/mongo/Producto.js`, `config/elasticsearch.js`, `busquedaSyncService.js`, `tests/busquedaMapping.test.js`, `scripts/backfillBusqueda.js` |
+| 2 | Datos: `MAPPING` + `aDocumento` + prueba de alineación (campo `embedding`), `indexarProducto` con recálculo y `update` parcial si falta el modelo, `_source.excludes` en las consultas que no lo necesitan, backfill que recalcula | 4–5 | `config/elasticsearch.js`, `busquedaSyncService.js`, `tests/busquedaMapping.test.js`, `scripts/backfillBusqueda.js` |
 | 3 | Consulta: `similares()`, `conRespaldo` en `catalogoLecturaService`, ruta `GET /:id/relacionados`, pruebas con dobles | 4–5 | `busquedaService.js`, `catalogoLecturaService.js`, `routes/productoRoutes.js` |
 | 4 | UI: «Productos relacionados» en la ficha + aviso de modo | 3 | `frontend/src/components/product/ProductosRelacionados.jsx`, `pages/ProductDetailPage.jsx`, `api/productos.js`, `layout/AvisoServicios.jsx` |
 | 5 | Evaluación + ADR-006 + flujo en el diagrama | 4 | `scripts/verificarSimilares.js` (`npm run verificar:similares`), `tests/similares*.test.js`, `IA/ADR-006-…md` |
@@ -172,13 +193,29 @@ Con `@huggingface/transformers` (Node ≥ 20; el backend es CommonJS → `await 
 
 **Evidencia a mostrar.** Apagar `tiendaya-elasticsearch` en vivo: los relacionados siguen (modo `respaldo`) y el banner avisa; apagar también Mongo: la sección desaparece sin romper la página. La tabla BM25 vs kNN con las 12 consultas coloquiales. La salida de `verificar:similares`. La consulta kNN con sus filtros. El ADR.
 
-**Riesgos.** *onnxruntime pesado o fallos en Windows* → se prueba en la prueba previa; vectores congelados en JSON; productos nuevos sin vector → respaldo por subcategoría. *Calidad baja con títulos* → variantes B/C, MiniLM, umbral; resultado honesto en el ADR. *Elasticsearch al límite de memoria y host con 1,4 GB libres* → medir antes de subir `mem_limit`; no sumar contenedores. *Fuga de etiqueta y señal por direcciones con datos de prueba* → excluir cuentas y direcciones de prueba; sólo corroborador.
+**Riesgos.** *onnxruntime pesado o fallos en Windows* → se prueba en la prueba previa; contingencia: un JSON con los vectores si el modelo resulta frágil; productos sin vector → respaldo por subcategoría. *Calidad baja con títulos* → variantes B/C, MiniLM, umbral; resultado honesto en el ADR. *Elasticsearch al límite de memoria y host con 1,4 GB libres* → medir antes de subir `mem_limit`; no sumar contenedores. *Fuga de etiqueta y señal por direcciones con datos de prueba* → excluir cuentas y direcciones de prueba; sólo corroborador.
 
 **Fuera de alcance.** Reranker/cross-encoder, imágenes (CLIP), *fine-tuning*, RRF/ELSER/`semantic_text`, «complementarios», pruebas A/B en línea, embeddings por tecla del autocompletado, Redis 8, pgvector o Qdrant (salvo plan B).
 
 ## 4. Ítem 2 — Control de acceso en componentes NoSQL (4 pts)
 
 **Qué se gana:** autenticación y autorización explícitas en al menos un componente NoSQL, con permisos acotados por servicio, y **evidencia de que quien no tiene permiso no puede operar fuera de su alcance**. El audio pide algo más cercano a la aplicación: un mecanismo concreto, tipo ACL por rol, para reseñas y fraude, de modo que «si encuentro un bug no pueda ver más». Por eso el plan tiene **dos capas** que se refuerzan: (1) autorización en la API, probada contra bugs reales, y (2) cuentas de servicio con permisos mínimos en los componentes NoSQL.
+
+### 4.0 Principio de diseño: lista blanca (negar por defecto)
+
+**Una sola regla para todas las capas:** se parte de «nada permitido» y se anota lo que sí; lo que no está en la lista se **niega**. Una lista negra («todo permitido salvo…») falla abierta: lo que se olvida anotar queda permitido. Así nacieron los huecos de §4.1 (una ruta sin ningún chequeo estaba abierta para todos). Las reglas de negar existen, pero solo como red de seguridad o excepción, nunca como base.
+
+| Capa | Lista blanca (lo que se permite) | Red de seguridad o excepción |
+|---|---|---|
+| **API, por ruta** (mínimo, §4.4 paso 1b) | `config/politicaRutas.js` declara **cada** ruta con su acceso (pública, sesión opcional, sesión, roles, dueño). Una prueba recorre el router real y **falla** si hay una ruta sin declarar (una ruta nueva sin chequeo no pasa), si el acceso declarado no coincide con el middleware que de verdad tiene, o si una ruta «pública» lleva un chequeo que la contradice | Cuentas suspendidas (`bloqueo:*`) y límites suaves (`restriccion:*`): la lista negra por usuario que ya existe |
+| **API, política configurable** (ideal, paso 6) | `acl_regla`: pasa solo si coincide una regla `permitir` (rol, recurso, acción, alcance `propios`) | Una regla `negar` explícita gana sobre cualquier `permitir`; sin regla, negado |
+| **Cuentas de Redis** | `-@all` + `+comando` + patrón de llaves por cuenta (`%R~` / `%W~` separan lectura y escritura); `resetchannels` (sin Pub/Sub); el usuario `default` apagado | Sin `@dangerous`; sin `SCAN` salvo a quien deba listar |
+| **Cuentas de Mongo, Elasticsearch y Cassandra** | Roles con privilegios explícitos por colección, índice o keyspace (en Mongo los roles solo permiten: no existe «negar») | — |
+| **Red** (ideal) | Puertos de las bases solo en `127.0.0.1` | — |
+
+**Fuera de este principio:** listas por usuario individual («este vendedor sí puede X»: los permisos son por rol) y listas de IP para clientes (la IP solo sería una señal opcional de fraude).
+
+**La matriz es la lista blanca y se prueba por los dos lados.** `verificar:acceso` (paso 5) no solo comprueba lo permitido: intenta también lo que **no** está en la lista (otro prefijo de llaves, `FLUSHALL`, `KEYS *`, un comando de otra cuenta) y exige `NOPERM`.
 
 ### 4.1 Capa 1 — Autorización en la API: huecos reales (verificados en el código)
 
@@ -192,6 +229,10 @@ El agente auditó `routes/*` y `services/*` (OWASP API Top 10 2023); yo comprob�
 | 4 | **`GET /api/health/componentes`** (API8) | Público; el campo `error` es la primera línea del mensaje del driver (hasta 160 caracteres: puede incluir host, puerto o usuario) | Público sólo el estado `ok`; el detalle, sólo administrador |
 | 5 | `POST /api/categorias*` abierto a todo vendedor | Es una decisión de diseño documentada (un vendedor crea categorías al publicar), pero la taxonomía no se puede editar ni borrar | Revisar con el equipo: ¿sólo administrador? |
 | 6 | Sin límite de intentos en login/registro (API4) | Según el agente (no verificado por mí) | Reutilizar `reservarCupo` de Redis |
+
+**Corregidos 1–4 el 2026-10-23** (primer paso del plan). Historial: `verificarPermiso` (dueño o administrador; MySQL es la autoridad del dueño, como al editar) y un id inválido ya no llega a MySQL; la pantalla solo ofrece el historial al dueño y al administrador. Reseñas: la lista pública devuelve el autor como alias («Ana G.») y sin id de cuenta, para cualquier rol. Estadísticas de ediciones: solo administrador (el panel administrativo ahora manda su token). Salud: `routes/saludRoutes.js`; público solo `ok` por base, y con token de administrador también los milisegundos y el texto del error. 14 pruebas HTTP con el middleware real (`npm run test:acceso`, la matriz rol × endpoint), cada una verificada deshaciendo su arreglo, y comprobación en vivo con cuentas reales de comprador, vendedor dueño, otro vendedor y administrador. Quedan el 5 (¿categorías solo del administrador?) y el 6 (límite de intentos de login), que son decisiones aparte.
+
+**Lista blanca de la API hecha el 2026-10-23 (paso 1b, §4.0).** `src/config/politicaRutas.js` declara las **53 rutas** del backend con su acceso (8 públicas, 4 con sesión opcional, 24 con sesión, 17 por roles; 8 comprueban además el dueño del recurso). `tests/accesoRutas.test.js` carga el `app.js` real, recorre su router (en el orden en que Express lo ejecuta, con los `router.use(requireAuth)` heredados) y falla si una ruta no está declarada, si la declarada ya no existe, o si el acceso real —leído de las etiquetas de `requireAuth`, `requireRole` y `optionalAuth`— no es el declarado. Después prueba por HTTP, con los manejadores reales reemplazados por un centinela para no tocar ninguna base: todas las rutas con sesión responden 401 sin token y con un token inválido, y **cada rol que no figura en la lista de una ruta recibe 403** (la matriz rol × endpoint completa, 17 rutas × los roles excluidos). 6 pruebas; 15 mutaciones (quitar un filtro, abrir un rol, una ruta nueva sin declarar, una entrada fantasma, un filtro falso que copia la etiqueta pero no hace nada, un `requireRole` o `requireAuth` roto) detectadas, y 274 de 274 pruebas del backend en verde. Una ruta nueva sin declarar ya no pasa la suite.
 
 Bien hecho hoy: pedidos, direcciones, métodos de pago e intentos de checkout filtran por dueño; `/api/admin/*` siempre con `requireRole('administrador')`; `?vendedorId` nunca se confía. **Arreglar 1–4 es el control de acceso más barato y más defendible**: es exactamente «encontré un bug y veo de más», y la demo es directa (vendedor A lee el historial de B: hoy 200, después 403).
 
@@ -210,20 +251,34 @@ Bien hecho hoy: pedidos, direcciones, métodos de pago e intentos de checkout fi
 | Neo4j 5.26 Community | `CREATE USER` sí; **`CREATE ROLE`/`GRANT` → «Unsupported administration command»** y un usuario sin roles pudo escribir (probado): sólo autenticación | Autorización fina = Enterprise: se documenta como límite honesto (retrospectiva) · 1 h |
 | MySQL 8.4 (no NoSQL, barato) | `GRANT` mínimos por rol; `docker/mysql-init` sólo corre con volumen vacío | 2 h |
 
-**Recomendación.** *Mínimo viable:* **Redis + MongoDB** con cuentas por servicio, la capa 1 con los huecos 1–4 arreglados y la política probada, pruebas negativas automatizadas y la demo en vivo. *Piso si falta tiempo (≈ 14–16 h):* Redis ACL + huecos de API + pruebas + `verificar:acceso` (Mongo pasa a *stretch*: sigue cumpliendo «al menos un componente NoSQL»). *Ideal:* + Elasticsearch, Cassandra, Neo4j autenticado, MySQL mínimo, puertos a `127.0.0.1` y secretos fuera del repo.
+**Hecho el 2026-10-23: Redis y MongoDB (pasos 2 a 5).** Diseño, hallazgos y evidencia en [ADR-007](ADR-007-control-de-acceso.md); cómo usarlo, en el README («Control de acceso»). Lo que cambió respecto de lo planeado:
 
-**Matriz servicio × recurso × acción** (derivada de `src/**` y `scripts/**`; es también la lista de pruebas negativas):
+- **Redis: nueve cuentas, no cuatro.** Leyendo el código servicio por servicio, la cuenta `rd_ofertas` se partió: `rd_cupos` (`limite:pedidos:*`, `reauth:intentos:*`), `rd_recomendaciones` (`recomendaciones:*` y `oferta-recomendada:*`, una familia que la matriz derivada antes no tenía) y `rd_salud` (solo `PING`). Los candados se separan en lectura (`rd_candados_r`) y escritura (`rd_candados_w`): la revisión de sesión no puede levantar una suspensión. Cada familia de llaves se escribe desde una sola cuenta, y una prueba estática exige que cada servicio que usa Redis figure en la cuenta con la que entra.
+- **El archivo de ACL no admite comentarios** y las contraseñas van como hash SHA-256; ioredis 6 pregunta `INFO` y `CLIENT SETINFO` al conectar y hubo que desactivarlos para una cuenta mínima; `SCAN` lista las llaves de todas las familias (solo `rd_candados_r` lo tiene).
+- **El `healthcheck` de Redis no lleva contraseña:** con `default` apagado, un `PING` sin credenciales responde `NOAUTH`, y eso basta para saber que está vivo.
+- **Mongo: dos cuentas** (`mg_app` con el rol `app_tiendaya`, y `mg_admin`), no tres: `tiendaya_lectura` no tenía quién la usara. El servidor web no puede borrar nada en Mongo, y `producto_eventos` solo admite `find` e `insert` (más las acciones de esquema de Mongoose). Los scripts que necesitan borrar piden `conectar('admin')`.
+- **El `healthcheck` de Mongo** ya no usa `rs.status()` (pide credenciales): mira `hello`, que no las pide, e inicia el replica set solo si el volumen es nuevo. La salud de la API hace además una lectura con la cuenta de la aplicación, porque `ping` no pide autenticación y decía «ok» con el catálogo respondiendo 500.
+- **Errores de credencial (§4.3):** implementados para Redis y Mongo (`CredencialRechazada`, `esErrorDeAcceso`, cerrojo con reintento a los 30 s, 500 `CREDENCIAL_RECHAZADA` sin detalle, fallo cerrado de la suspensión, los límites suaves, el tope por hora y los intentos de contraseña). Comprobados con fallas provocadas en vivo.
+- **Evidencia:** `npm run verificar:acceso` (88 comprobaciones contra los contenedores reales), `npm run test:acceso`, 62 mutaciones de las protecciones detectadas, `ACL LOG` vacío tras los flujos reales.
+- **Puertos:** Redis y Mongo ahora solo en `127.0.0.1`. Quedan MySQL (`3306`) y las demás bases del «ideal».
+
+**Recomendación.** *Mínimo viable:* **Redis + MongoDB** con cuentas por servicio, la capa 1 con los huecos 1–4 arreglados y la política probada, pruebas negativas automatizadas y la demo en vivo. *Piso si falta tiempo (≈ 17–20 h):* Redis ACL + huecos de API + lista blanca de rutas + pruebas + `verificar:acceso` (Mongo pasa a *stretch*: sigue cumpliendo «al menos un componente NoSQL»). *Ideal:* + Elasticsearch, Cassandra, Neo4j autenticado, MySQL mínimo, puertos a `127.0.0.1` y secretos fuera del repo.
+
+**Matriz servicio × recurso × acción** (derivada de `src/**` y `scripts/**`; es la **lista blanca** de §4.0 —cada fila dice qué se permite y todo lo demás se niega— y también la lista de pruebas negativas):
 
 | Servicio (módulo) | Cuenta | Recurso y acciones | Prueba negativa |
 |---|---|---|---|
-| Auth y lectura de suspensión (`middleware/auth`, `suspensionService`) | `rd_candados_r` | `bloqueo:*`, `restriccion:*`: `PTTL`, `EXISTS`, `SCAN` | `DEL bloqueo:7` → NOPERM |
-| Suspensión (`bloqueoService`, `candadoRedis`) | `rd_candados_w` | mismas llaves + `DEL`, `EVAL`, `EVALSHA` | `GET carrito:1` → NOPERM |
-| Carrito (`cartService`) | `rd_carrito` | `carrito:*` lectura/escritura + Lua, sin `@dangerous` ni `SCAN` | `GET bloqueo:7`, `FLUSHALL`, `KEYS *`, `INFO` → NOPERM |
-| Ofertas, cupos, recomendaciones, reautenticación, checkout | `rd_ofertas` | `oferta:*`, `checkout:reserva:*`, `limite:pedidos:*`, `reauth:intentos:*`, `recomendaciones:*` + Lua con `+time` | `SET bloqueo:7` → NOPERM |
-| Catálogo y búsqueda (`catalogoLecturaService`: actividad reciente del usuario) | `rd_actividad` | `actividad:*`: `LRANGE`, `LPUSH`, `LREM`, `LTRIM`, `EXPIRE` (clave nueva desde 2026-10-22, ver PLAN-ELASTICSEARCH-BUSQUEDA.md §16) | `GET carrito:1` → NOPERM |
+| Revisión de sesión, control de pedidos y paneles (`candadoRedis`: `estado`, `restantes`, `usuarios`) | `rd_candados_r` | `%R~bloqueo:*`, `%R~restriccion:*`: `PTTL`, `SCAN` (solo lectura) | `DEL bloqueo:7`, `SET bloqueo:7`, `PTTL carrito:7` → NOPERM |
+| Suspensión (`candadoRedis`: `bloquear`, `levantar`) | `rd_candados_w` | `~bloqueo:*`, `~restriccion:*`: `PTTL`, `SET`, `DEL`, `EVAL`, `EVALSHA` | `GET carrito:1`, `SCAN 0`, un `EVAL` que lee `carrito:1` → NOPERM / «ACL failure in script» |
+| Carrito (`cartService`) | `rd_carrito` | `~carrito:*` con los comandos de sus tres scripts Lua | `GET bloqueo:7`, `FLUSHALL`, `KEYS *`, `INFO`, `CONFIG GET *`, `SCAN`, un `EVAL` que lee `bloqueo:7` → NOPERM |
+| Ofertas flash y reservas del checkout (`ofertaDatosService`, `ofertaFlashService`, `checkoutIntentoService`) | `rd_ofertas` | `~oferta:*`, `~checkout:reserva:*` + Lua (incluye `TIME`) | `SET bloqueo:7`, `GET oferta-recomendada:1:7:stock` → NOPERM |
+| Topes de pedidos y de intentos de contraseña (`limitePedidosService`, `reautenticacionService`) | `rd_cupos` | `~limite:pedidos:*`, `~reauth:intentos:*` | `GET bloqueo:7`, `SET limite:pedidos:7 0` → NOPERM |
+| Recomendaciones por tendencia (`tendenciaService`) | `rd_recomendaciones` | `~recomendaciones:*`, `~oferta-recomendada:*` | `GET oferta:1:stock`, `DEL recomendaciones:7` → NOPERM |
+| Actividad reciente de la búsqueda (`catalogoLecturaService`) | `rd_actividad` | `~actividad:*`: `LRANGE`, `LPUSH`, `LREM`, `LTRIM`, `EXPIRE` | `GET carrito:1`, `DEL actividad:7` → NOPERM |
+| Salud (`estadoServiciosService`) | `rd_salud` | `PING`, ninguna llave | `GET carrito:7`, `KEYS *`, `INFO` → NOPERM |
 | Scripts `verificar*`/`backfill*` | `rd_admin` (el usuario `default` queda apagado) | todo | — |
-| API de catálogo, reseñas y checkout | Mongo `tiendaya_app` | `productos`, `categorias`, `subcategorias`, `resenas` lectura/escritura; `producto_eventos`: `find` e `insert` | update/delete de un evento, `dropDatabase` → «not authorized» |
-| Reportes y verificación | Mongo `tiendaya_lectura` (`read`) | todo `tiendaya` | insert, `createUser` → not authorized |
+| API de catálogo, reseñas y checkout | Mongo `mg_app` (rol `app_tiendaya`) | `productos`, `categorias`, `subcategorias`, `resenas`: `find`, `insert`, `update`; `producto_eventos`: `find` e `insert`; más `createIndex`/`createCollection`/`listIndexes`, que Mongoose usa al cargar un modelo | update/delete de un evento, borrar la colección o una base, `createUser`, leer `admin.system.users` → «not authorized» |
+| Mantenimiento (`npm run seguridad:mongo`, scripts que borran) | Mongo `mg_admin` (`root`) | todo | — (el servidor web nunca la usa; lo comprueba una prueba) |
 | `busquedaService` / `busquedaSyncService` (ideal) | ES `tiendaya_buscador` (`read`) / `tiendaya_sincronizador` (`write`) | índice `tiendaya_productos` | `PUT _doc` con el de lectura → 403; `_search` con el de escritura → 403 |
 | `ventasService` / `ventasSyncService` (ideal) | Cassandra: lectura (SELECT) / escritura (MODIFY) / admin (DDL) | `tiendaya_analytics` | INSERT con la de lectura → Unauthorized |
 | `fraudeService` / `fraudeSyncService` | Neo4j: usuario propio | lectura/escritura sólo por convención (`executeRead`/`executeWrite`) | documentar el límite |
@@ -242,15 +297,16 @@ La degradación elegante (§2) asume que «error de base = caída». Con autenti
 
 ### 4.4 Plan de trabajo
 
-**MVP ≈ 22–26 h (piso ≈ 14–16 h).** Orden pensado para que lo barato y seguro vaya primero:
+**MVP ≈ 25–30 h (piso ≈ 17–20 h).** Orden pensado para que lo barato y seguro vaya primero:
 
 | # | Paso | Horas | Archivos |
 |---|---|---|---|
-| 1 | **Huecos de API 1–4** + matriz de pruebas rol × endpoint (estilo `checkoutHttp.test.js`, con dobles) | 4–6 | `routes/productoRoutes.js`, `services/resenaService.js`, `services/estadoServiciosService.js`, `tests/acceso*.test.js` |
-| 2 | **Redis ACL:** `aclfile` desde `.env`, cuentas por módulo, `config/redis.js` por módulo, errores de credencial (§4.3) | 6–8 | `docker-compose.yml`, `docker/`, `config/redis.js`, `utils/resiliencia.js`, `utils/http.js`, `suspensionService.js`, `middleware/controlPedidos.js`, `.env.example` |
-| 3 | **Script de arranque idempotente** (`npm run seguridad:inicializar`) + **ADR-007** | 3–4 | `scripts/seguridad/inicializar.js`, `IA/ADR-007-control-de-acceso.md` |
-| 4 | **Mongo RBAC:** keyFile, init de roles, healthcheck con credenciales, `MONGO_URI` con usuario; roles del `producto_eventos` | 6–8 | `docker-compose.yml`, `docker/mongo/init/01-roles.js`, `config/mongo.js` |
-| 5 | **`verificar:acceso`:** abre cada cuenta, ejecuta la tabla permitido/negado e imprime la matriz (~10 s) | 2–3 | `scripts/verificarControlAcceso.js` |
+| 1 | ✅ **Huecos de API 1–4** + matriz de pruebas rol × endpoint (estilo `checkoutHttp.test.js`, con dobles) — **hecho el 2026-10-23**, resultado en §4.1 | 4–6 | `routes/productoRoutes.js`, `routes/saludRoutes.js` (nuevo), `services/resenaService.js`, `services/estadoServiciosService.js`, `tests/accesoApi.test.js` |
+| 1b | ✅ **Lista blanca de la API** (§4.0): `config/politicaRutas.js` (cada ruta declarada con su acceso) + prueba que recorre el router real y falla si falta una ruta o el acceso no coincide — **hecho el 2026-10-23**, resultado en §4.1 | 3–4 | `config/politicaRutas.js`, `middleware/auth.js`, `tests/accesoRutas.test.js` |
+| 2 | ✅ **Redis ACL como lista blanca** (§4.0): `aclfile` desde `.env`, cuentas por módulo (`-@all` + comandos + llaves), `config/redis.js` por módulo, errores de credencial (§4.3) — **hecho el 2026-10-23** | 6–8 | `docker-compose.yml`, `docker/`, `config/redis.js`, `utils/resiliencia.js`, `utils/http.js`, `suspensionService.js`, `middleware/controlPedidos.js`, `.env.example` |
+| 3 | ✅ **Script de arranque idempotente** (`npm run seguridad:inicializar`) + **ADR-007** — **hecho el 2026-10-23** | 3–4 | `scripts/seguridad/inicializar.js`, `IA/ADR-007-control-de-acceso.md` |
+| 4 | ✅ **Mongo RBAC:** keyFile, roles y usuarios (`npm run seguridad:mongo`), healthcheck sin credenciales, credenciales aparte de `MONGO_URI`; `producto_eventos` solo `find` e `insert` — **hecho el 2026-10-23** | 6–8 | `docker-compose.yml`, `docker/mongo/init/01-roles.js`, `config/mongo.js` |
+| 5 | ✅ **`verificar:acceso`:** abre cada cuenta, ejecuta la tabla permitido/negado (incluye lo que **no** está en la lista blanca) e imprime la matriz (~10 s) — **hecho el 2026-10-23** (Redis y Mongo) | 2–3 | `scripts/verificarControlAcceso.js` |
 | 6 | *Ideal de la capa 1:* política `acl_regla` + `autorizar` + `/admin/permisos` + auditoría en Mongo | 8–10 | `prisma/schema.prisma` (+ migración), `middleware/autorizar.js`, `services/politicaAccesoService.js`, `pages/admin/AdminPermisosPage.jsx` |
 
 **Ideal (+16–20 h):** Elasticsearch (5–6), Cassandra (5–6), Neo4j autenticado (1), MySQL mínimo (2), secretos y puertos (2), matriz generada con `ACL DRYRUN` (2).
@@ -409,7 +465,7 @@ Con dos integrantes: A = arquitectura, decisiones y retrospectiva; B = demos, ve
 
 | Pista | Qué incluye | Archivos propios (para no pisarse) |
 |---|---|---|
-| **V · Vector** | §3: embeddings, índice, endpoint, widget, respaldo, evaluación, ADR-006 | `services/embeddingService.js`, `models/mongo/Producto.js`, `config/elasticsearch.js`, `busquedaSyncService.js`, `busquedaService.js`, `catalogoLecturaService.js`, `ProductosRelacionados.jsx`, `verificarSimilares.js` |
+| **V · Vector** | §3: embeddings, índice, endpoint, widget, respaldo, evaluación, ADR-006 | `services/embeddingService.js`, `config/elasticsearch.js`, `busquedaSyncService.js`, `busquedaService.js`, `catalogoLecturaService.js`, `ProductosRelacionados.jsx`, `verificarSimilares.js` |
 | **S · Acceso** | §4: huecos de API, cuentas de servicio, arranque con auth, matriz y pruebas negativas | `docker-compose.yml`, `docker/*`, `config/redis.js`, `config/mongo.js`, `utils/resiliencia.js`, `utils/http.js`, `.env.example`, `tests/acceso*.test.js`, `verificarControlAcceso.js` |
 | **C · Cierre** | §5, §6, §7 | `IA/ARQUITECTURA-FINAL.md`, `IA/RETROSPECTIVA.md`, `IA/img/`, diapositivas, README y `ESTADO-PROYECTO.md` |
 
@@ -431,8 +487,8 @@ P = probabilidad, I = impacto (A alta, M media).
 
 | # | Riesgo | P | I | Mitigación |
 |---|---|---|---|---|
-| 1 | **Mongo con autenticación + replica set** rompe el healthcheck (`rs.status()` sin credenciales, `docker-compose.yml:49-52`), la URI y los scripts | A | A | Empezar el acceso por Redis ACL; en Mongo, o retirar `--replSet` (el código no usa transacciones, ver §6) o usar keyFile (válido en desarrollo); ensayar con una copia del volumen |
-| 2 | **Embeddings sin internet** (descarga del modelo, ONNX en Windows) | M | A | Vectores precalculados y versionados + modelo local con descargas remotas desactivadas; respaldo léxico con `more_like_this` de Elasticsearch |
+| 1 | ✅ *(resuelto el 2026-10-23: keyFile con copia y `chmod`, healthcheck sin credenciales, probado con datos reales y con volumen nuevo)* **Mongo con autenticación + replica set** rompe el healthcheck (`rs.status()` sin credenciales, `docker-compose.yml:49-52`), la URI y los scripts | A | A | Empezar el acceso por Redis ACL; en Mongo, o retirar `--replSet` (el código no usa transacciones, ver §6) o usar keyFile (válido en desarrollo); ensayar con una copia del volumen |
+| 2 | **Embeddings sin internet** (descarga del modelo, ONNX en Windows) | M | A | Modelo local con descargas remotas desactivadas y su caché en una carpeta fija (se comprueba antes de la demo); contingencia: un JSON versionado con los vectores; respaldo léxico con `more_like_this` de Elasticsearch |
 | 3 | **Regresión** en ≈ 240 pruebas y 13 scripts por las credenciales nuevas | M | A | `npm run test:*` (sin conexiones) en cada fusión; los `verificar:*` conectan a bases reales y necesitan cuenta propia: lista de los críticos |
 | 4 | **La pista técnica se come el cierre** (11 de 20 pts no dependen del código nuevo) | A | A | MVP/*stretch*, congelación fija, pista C intocable |
 | 5 | **Docker falla en el aula** (WSL2, puerto 6379 reservado por Hyper-V, RAM) | M | A | Videos de respaldo, segunda laptop, `REDIS_HOST_PORT`, `npm run test:resiliencia` |
@@ -453,7 +509,7 @@ P = probabilidad, I = impacto (A alta, M media).
 **Para decidir en el equipo:**
 
 4. ¿Son 2 o 3 integrantes y quién lleva cada pista (V · S · C)? El PRD pide indicar la distribución.
-5. ¿Se autoriza **bajar ~118 MB del modelo (una vez) e instalar `@huggingface/transformers`** en el backend? Es lo único del plan que necesita descarga.
+5. ¿Se autoriza **bajar ~118 MB del modelo (una vez) e instalar `@huggingface/transformers`** en el backend? Es lo único del plan que necesita descarga. **Ojo con el tamaño real:** el paquete son ~10 MB, pero arrastra `onnxruntime-node` (~300 MB en disco, trae binarios de todas las plataformas), así que son ~430 MB en total; en la prueba previa se mira si basta una variante más liviana.
 6. ¿Quién toca `config/redis.js` y `docker-compose.yml`? Hay trabajo de compañeros ahí: diff contra su último commit y reportar de quién es qué.
 7. ¿Se agrega el campo `descripcion_larga` con textos sintéticos declarados (variante C de §3.5)?
 8. ¿Neo4j queda sólo autenticado (sin roles) y se documenta como límite?
@@ -465,7 +521,7 @@ P = probabilidad, I = impacto (A alta, M media).
 
 **Primeros pasos propuestos (si aprueban el plan), en este orden:**
 
-1. **Arreglar los huecos de API 1–4** con su prueba de rol × endpoint (§4.4, paso 1): bajo riesgo, alto valor, sin infraestructura.
+1. ✅ **Hecho el 2026-10-23:** los huecos de API 1–4 con su prueba de rol × endpoint (§4.4, paso 1; resultado en §4.1).
 2. **Prueba previa del modelo de embeddings** (§3.8, paso 0): necesita la autorización de la decisión 5.
 3. **Esqueleto del diagrama y de la retrospectiva** (la pista C arranca hoy; no depende de nada).
 4. **Redis ACL** (§4.4, paso 2), con el manejo de errores de credencial de §4.3.
@@ -478,6 +534,7 @@ P = probabilidad, I = impacto (A alta, M media).
 - C4 nivel 4, servidor Structurizr, ATAM completo, automatizar la demo, herramientas externas de caos.
 - Editar ADR aceptados (se *supersede* con uno nuevo).
 - Control de acceso en **todas** las bases (se cubren las que el MVP define; el resto queda declarado como límite en el modelo de amenazas).
+- Listas de permisos por usuario individual y listas de IP para clientes (los permisos son por rol y por cuenta de servicio; §4.0).
 
 ## 12. Fuentes
 

@@ -168,7 +168,7 @@ async function calcularRecomendaciones(usuarioId) {
 async function recomendar(usuarioId) {
   let cacheado = null;
   try {
-    cacheado = await conectarRedis().get(claveCache(usuarioId));
+    cacheado = await conectarRedis('recomendaciones').get(claveCache(usuarioId));
   } catch (err) {
     avisarCaida('redis', err);
   }
@@ -176,7 +176,7 @@ async function recomendar(usuarioId) {
 
   const resultado = await calcularRecomendaciones(usuarioId);
   try {
-    await conectarRedis().set(claveCache(usuarioId), JSON.stringify(resultado), 'EX', CACHE_TTL_SEGUNDOS);
+    await conectarRedis('recomendaciones').set(claveCache(usuarioId), JSON.stringify(resultado), 'EX', CACHE_TTL_SEGUNDOS);
   } catch (err) {
     avisarCaida('redis', err);
   }
@@ -233,7 +233,7 @@ async function comprar(usuarioId, productoId, { cantidad, direccionId, metodoPag
   const precioActual = Number(productoActual.inventario?.precio ?? 0);
   const precioRecomendadoActual = calcularPrecioRecomendado(precioActual);
 
-  const redis = conectarRedis();
+  const redis = conectarRedis('recomendaciones');
   const clave = claveCupo(productoId, usuarioId);
   let restante;
   try {

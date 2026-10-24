@@ -13,7 +13,7 @@ const ofertaRoutes = require('./routes/ofertaRoutes');
 const recomendacionRoutes = require('./routes/recomendacionRoutes');
 const busquedaRoutes = require('./routes/busquedaRoutes');
 const { manejarErrores } = require('./utils/http');
-const estadoServicios = require('./services/estadoServiciosService');
+const saludRoutes = require('./routes/saludRoutes');
 
 const app = express();
 
@@ -25,7 +25,7 @@ app.get('/', (req, res) => {
     mensaje: 'TiendaYa API — todavía no hay frontend, este backend solo expone /api/*',
     endpoints: [
       'GET /api/health',
-      'GET /api/health/componentes (qué base de datos responde ahora: mysql, mongo, redis, elasticsearch, neo4j, cassandra; estado completo/degradado/critico)',
+      'GET /api/health/componentes (qué base de datos responde ahora: mysql, mongo, redis, elasticsearch, neo4j, cassandra; estado completo/degradado/critico. Público solo con ok por componente; con token de administrador, también milisegundos y el texto del error)',
       'POST /api/auth/registro',
       'POST /api/auth/login',
       'GET /api/auth/me (requiere token)',
@@ -38,10 +38,10 @@ app.get('/', (req, res) => {
       'POST /api/categorias/:id/subcategorias (requiere token, rol vendedor/administrador)',
       'POST /api/categorias/subcategorias/:id/atributos (requiere token, rol vendedor/administrador)',
       'GET /api/productos (filtros: ?categoriaId=, ?subcategoriaId=, ?q=, ?vendedorId=, ?atributos=<JSON {nombre:valor}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos)',
-      'GET /api/productos/estadisticas/ediciones (agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
+      'GET /api/productos/estadisticas/ediciones (requiere token de administrador — agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
       'GET /api/productos/:id',
-      'GET /api/productos/:id/historial (requiere token, rol vendedor/administrador — ?fecha=AAAA-MM-DD para reconstrucción; sin fecha, línea de tiempo completa)',
-            'GET /api/productos/:id/resenas (reseñas de un producto, público)',
+      'GET /api/productos/:id/historial (requiere token: el vendedor DUEÑO del producto o un administrador — ?fecha=AAAA-MM-DD para reconstrucción; sin fecha, línea de tiempo completa)',
+            'GET /api/productos/:id/resenas (reseñas de un producto, público; el autor aparece como alias —«Ana G.»—, sin id ni nombre completo)',
       'POST /api/productos/:id/resenas (requiere token — {calificacion, comentario})',
       'POST /api/productos (requiere token, rol vendedor/administrador)',
       'PATCH /api/productos/:id (requiere token, rol vendedor/administrador — dueño del producto o administrador)',
@@ -77,9 +77,8 @@ app.get('/', (req, res) => {
     ],
   });
 });
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
-// Qué base responde ahora (la interfaz avisa qué función está limitada; ver estadoServiciosService.js).
-app.get('/api/health/componentes', async (req, res) => res.json(await estadoServicios.consultar()));
+// GET /api/health y GET /api/health/componentes (qué base responde ahora; ver saludRoutes.js).
+app.use('/api/health', saludRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/direcciones', direccionRoutes);
 app.use('/api/metodos-pago', metodoPagoRoutes);

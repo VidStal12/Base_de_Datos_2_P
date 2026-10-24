@@ -36,7 +36,7 @@ const HORA = 3600000;
 
 async function main() {
   const config = bloqueo.configuracion();
-  const redis = redisConfig.conectar();
+  const redis = redisConfig.conectar('admin');
 
   // --- 0) Datos de prueba: un administrador, un vendedor con un producto y el par por buzón ---
   const admin = await prepararCuenta('bloqueo.admin@example.com', 'Bloqueo Admin', 'tok_bloqueo_admin', { rol: 'administrador' });

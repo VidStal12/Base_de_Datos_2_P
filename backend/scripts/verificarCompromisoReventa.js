@@ -33,7 +33,7 @@ async function esperarRechazo(nombre, accion) {
 
 async function main() {
   await conectarMongo();
-  const redis = redisConfig.conectar();
+  const redis = redisConfig.conectar('admin');
   const comprador = await prisma.usuarios.findFirst({ where: { correo: 'ana.gomez@example.com' } });
   const vendedor = await prisma.usuarios.findFirst({ where: { correo: 'luis.ramirez@example.com' } });
   const admin = await prisma.usuarios.findFirst({ where: { correo: 'admin.fraude.check@example.com' } });

@@ -51,7 +51,7 @@ const ATRIBUTO = { nombre: 'Material', valor: 'Peluche-escalonada' };
 const PRECIO = 30;
 
 async function main() {
-  const redis = redisConfig.conectar();
+  const redis = redisConfig.conectar('admin');
   const cliente = await elastic.conectar();
 
   // --- 0) Datos de prueba ---

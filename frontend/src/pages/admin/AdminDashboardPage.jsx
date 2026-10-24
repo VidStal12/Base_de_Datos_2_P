@@ -32,7 +32,7 @@ function EstadisticasEdicionesWidget() {
     // Token de administrador acá también: un producto editado y luego
     // desactivado tiene que poder seguir resolviendo su descripción real acá,
     // no caer al "Producto #N" solo porque ya no está activo.
-    Promise.all([productosApi.estadisticasEdiciones(desde), productosApi.listar({}, token)])
+    Promise.all([productosApi.estadisticasEdiciones(desde, token), productosApi.listar({}, token)])
       .then(([stats, productos]) => {
         setStats(stats);
         setDescripciones(Object.fromEntries(productos.map((p) => [p.id, p.descripcion])));

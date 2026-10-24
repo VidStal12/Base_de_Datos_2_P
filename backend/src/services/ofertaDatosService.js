@@ -140,7 +140,7 @@ function venceEn(producto) {
 
 async function cacheSegura(operacion) {
   try {
-    return await operacion(conectar());
+    return await operacion(conectar('ofertas'));
   } catch (err) {
     console.error('No se pudo leer/actualizar la caché de la oferta flash:', err.message);
   }

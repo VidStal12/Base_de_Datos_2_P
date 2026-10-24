@@ -18,8 +18,9 @@ export const productosApi = {
   // Solo vendedor/administrador (ver productoRoutes.js) — requiere token.
   historial: (id, token) => api.get(`/productos/${id}/historial`, token),
   historialEnFecha: (id, fecha, token) => api.get(`/productos/${id}/historial?fecha=${fecha}`, token),
-  estadisticasEdiciones: (desde) =>
-    api.get(`/productos/estadisticas/ediciones${desde ? `?desde=${desde}` : ''}`),
+  // Solo administrador: el token es obligatorio (ver productoRoutes.js).
+  estadisticasEdiciones: (desde, token) =>
+    api.get(`/productos/estadisticas/ediciones${desde ? `?desde=${desde}` : ''}`, token),
 };
 
 export const categoriasApi = {

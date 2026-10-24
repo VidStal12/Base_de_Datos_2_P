@@ -17,10 +17,33 @@ function formatear(doc) {
   };
 }
 
+// Cómo aparece quien reseña ante CUALQUIERA que abra el producto: «Ana G.» (primer nombre + inicial del
+// último apellido), nunca el nombre completo ni el id de la cuenta. Son datos personales y, con el id,
+// cualquiera podría seguir a una misma cuenta por todos los productos que reseñó — justo el patrón que
+// busca el análisis de fraude. Quien necesita las identidades las tiene en el panel de fraude (solo
+// administrador), no en este listado público. El nombre completo sigue guardado en la reseña.
+function alias(nombreCompleto) {
+  const palabras = String(nombreCompleto ?? '').trim().split(/\s+/).filter(Boolean);
+  if (palabras.length === 0) return 'Cliente';
+  if (palabras.length === 1) return palabras[0];
+  return `${palabras[0]} ${palabras[palabras.length - 1][0].toUpperCase()}.`;
+}
+
+function formatearPublico(doc) {
+  return {
+    id: doc._id,
+    producto_id: doc.producto_id,
+    usuario_nombre: alias(doc.usuario_nombre),
+    calificacion: doc.calificacion,
+    comentario: doc.comentario || '',
+    fecha: doc.fecha,
+  };
+}
+
 async function listarPorProducto(productoId) {
   await conectar();
   const documentos = await Resena.find({ producto_id: productoId }).sort({ fecha: -1 }).lean();
-  return documentos.map(formatear);
+  return documentos.map(formatearPublico);
 }
 
 // Recalcula el resumen embebido en Producto (promedio/cantidad) desde la
@@ -146,4 +169,4 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   return formatear(doc);
 }
 
-module.exports = { listarPorProducto, crear };
+module.exports = { listarPorProducto, crear, alias };

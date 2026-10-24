@@ -8,7 +8,7 @@ const clave = (usuarioId) => `carrito:${usuarioId}`;
 const revisionClave = (usuarioId) => `carrito:${usuarioId}:revision`;
 
 async function cacheSeguro(operacion) {
-  try { return await operacion(conectar()); }
+  try { return await operacion(conectar('carrito')); }
   catch (err) { console.error('No se pudo actualizar/leer la caché del carrito:', err.message); }
 }
 

@@ -7,7 +7,7 @@ const { cargar } = require('./redisHelpers');
 // cómo lo toma la aplicación (estadoServiciosService.js).
 function servicio() {
   return cargar('../src/services/estadoServiciosService.js', {
-    mongoose: { connection: { db: { admin: () => ({ ping: async () => {} }) } } },
+    mongoose: { connection: { db: { admin: () => ({ ping: async () => {} }), collection: () => ({ findOne: async () => null }) } } },
     '../config/prisma': {},
     '../config/mongo': {},
     '../config/redis': {},
@@ -66,4 +66,36 @@ test('el resultado vale 2 s: el frontend consulta cada 10 s y varios clientes no
   t += 2500;
   await consultar({ comprobaciones: contador, ahora: reloj });
   assert.equal(pings, 2, 'vencida la vigencia, se vuelve a comprobar');
+});
+
+// ───────────────────────── Mongo con autenticación (IA/PLAN-ENTREGA-FINAL.md §4.2) ─────────────────────────
+// `ping` no pide autenticación: con la cuenta del servidor rechazada el catálogo respondía 500 y la salud seguía en «ok».
+// La comprobación de Mongo lee algo con la cuenta de la aplicación.
+function servicioConMongo(collection, { ping = async () => {} } = {}) {
+  return cargar('../src/services/estadoServiciosService.js', {
+    mongoose: { connection: { db: { admin: () => ({ ping }), collection } } },
+    '../config/prisma': {},
+    '../config/mongo': { conectar: async () => {} },
+    '../config/redis': {},
+    '../config/elasticsearch': {},
+    '../config/neo4j': {},
+    '../config/cassandra': {},
+  }, {}, { setTimeout, clearTimeout });
+}
+
+test('la salud de Mongo hace una lectura con la cuenta de la aplicación, no solo un ping', async () => {
+  const lecturas = [];
+  const { COMPROBACIONES } = servicioConMongo((nombre) => ({ findOne: async () => { lecturas.push(nombre); return null; } }));
+  await COMPROBACIONES.mongo();
+  assert.deepEqual(lecturas, ['categorias']);
+});
+
+test('si Mongo rechaza a la cuenta del servidor, la salud lo dice: falla y marca `credencial` (el detalle es solo para el administrador)', async () => {
+  const rechazo = Object.assign(new Error('not authorized on tiendaya to execute command { find: "categorias" }'), { name: 'MongoServerError', codeName: 'Unauthorized' });
+  const { consultar, paraPublico } = servicioConMongo(() => ({ findOne: async () => { throw rechazo; } }));
+  const estado = await consultar({ comprobaciones: { mongo: servicioConMongo(() => ({ findOne: async () => { throw rechazo; } })).COMPROBACIONES.mongo } });
+  assert.equal(estado.componentes.mongo.ok, false);
+  assert.equal(estado.componentes.mongo.credencial, true);
+  const publico = plano(paraPublico(estado));
+  assert.deepEqual(publico.componentes.mongo, { ok: false }, 'quien no es administrador no ve ni el motivo ni la marca');
 });

@@ -56,6 +56,9 @@ export function ProductDetailPage() {
   // Nadie compra lo que él mismo vende (el servidor lo rechaza con 403, ver
   // productoService.verificarNoEsPropio): no se ofrece ninguna forma de comprarlo.
   const esPropio = usuario?.id_usuario != null && usuario.id_usuario === producto.vendedor_id;
+  // El historial trae precio y stock de cada versión: el servidor solo se lo da al dueño y a un administrador
+  // (productoRoutes.js), así que a otro vendedor ni se le ofrece — pediría un historial que va a recibir en 403.
+  const puedeVerHistorial = ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (usuario.rol.tipo_rol === 'administrador' || esPropio);
   // Solo un administrador llega a ver un producto oculto (ver productoRoutes.js): su
   // vendedor está suspendido y nadie puede comprarlo hasta que se levante.
   const oculto = producto.vendedor_suspendido === true;
@@ -197,7 +200,7 @@ export function ProductDetailPage() {
         </p>
       )}
 
-      {!producto.desde_indice && ROLES_VEN_HISTORIAL.includes(usuario?.rol?.tipo_rol) && (
+      {!producto.desde_indice && puedeVerHistorial && (
         <HistorialSection
           productoId={producto.id}
           vendedorId={producto.vendedor_id}
