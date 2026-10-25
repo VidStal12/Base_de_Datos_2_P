@@ -211,6 +211,20 @@ npm run test:similares       # pruebas aisladas (sin Docker ni modelo): reglas, 
 npm run verificar:similares  # contra el catálogo real: precisión@5, cobertura, BM25 contra vectores, consultas coloquiales y reglas de visibilidad en el motor
 ```
 
+## Arquitectura final, retrospectiva y presentación (Entrega Final)
+
+| Documento | Qué es |
+|---|---|
+| [IA/ARQUITECTURA-FINAL.md](IA/ARQUITECTURA-FINAL.md) | El sistema tal como es hoy: cinco diagramas en Mermaid (contenedores, escrituras y sincronización, lecturas con respaldo, despliegue y seguridad, secuencia del checkout), exportados a SVG y PNG en [`IA/img/`](IA/img/); el inventario legible por máquina, la tabla de cada flecha y la lista de chequeo con sus hallazgos |
+| [IA/RETROSPECTIVA.md](IA/RETROSPECTIVA.md) | Qué decisiones se sostendrían y cuáles se replantearían, con la evidencia, el mejor argumento en contra y el costo de cada una; incidentes sin culpa, deuda técnica y la arquitectura v2. Es un borrador para el equipo |
+| [IA/PRESENTACION.md](IA/PRESENTACION.md) | Guía de la presentación: tesis, tiempos, diapositivas, tres demostraciones con su plan B, preparación de la sala y banco de preguntas |
+
+El inventario de la arquitectura lo vigila una prueba que no abre ninguna conexión: si alguien agrega un contenedor, un modelo, una familia de llaves de Redis, una tabla de Cassandra, una etiqueta de Neo4j o un proceso de fondo sin actualizar el documento, falla (desde `backend/`):
+
+```bash
+npm run test:arquitectura   # 14 pruebas: el inventario, la tabla de flechas y los diagramas contra el código
+```
+
 ## Panel de ventas con Cassandra (Entrega 2)
 
 La pantalla `/admin/ventas` y `GET /api/admin/ventas` requieren una cuenta con rol **administrador**. Muestran ingresos, unidades, evolución por día/semana/mes y productos con aumento reciente de unidades vendidas.
@@ -620,7 +634,7 @@ Usuarios de prueba (creados por `npm run seed` del backend): `ana.gomez@example.
 ## Estructura del repositorio
 
 ```
-IA/                    Documentación de arquitectura (PRD, ERD, ADRs, estado del proyecto)
+IA/                    Documentación de arquitectura (PRD, ERD, ADRs, estado del proyecto, arquitectura final, retrospectiva y presentación; los diagramas exportados, en img/)
 backend/
   prisma/
     schema.prisma       Esquema MySQL (usuarios, direcciones, pedidos, pagos, inventario — el catálogo vive en Mongo, ver ADR-002 §3.4)

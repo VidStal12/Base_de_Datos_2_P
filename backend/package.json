@@ -44,6 +44,7 @@
     "test:resiliencia": "node --test tests/resiliencia*.test.js",
     "test:acceso": "node --test tests/acceso*.test.js",
     "test:permisos": "node --test tests/permisos*.test.js",
+    "test:arquitectura": "node --test tests/arquitectura*.test.js",
     "seguridad:inicializar": "node scripts/seguridad/inicializar.js",
     "seguridad:mongo": "node scripts/seguridad/mongoUsuarios.js",
     "modelo:descargar": "node scripts/descargarModelo.js",
