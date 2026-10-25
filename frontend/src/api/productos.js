@@ -13,6 +13,9 @@ export const productosApi = {
   // suspendido (oculto al público) le llega marcado con `vendedor_suspendido`; para
   // cualquier otra persona, ese producto "no existe" mientras dure la suspensión.
   obtener: (id, token) => api.get(`/productos/${id}`, token),
+  // Productos parecidos por significado (o, de respaldo, de la misma subcategoría): { modo, subcategoria?, productos }.
+  // Con token el servidor descarta los productos del propio vendedor.
+  relacionados: (id, token) => api.get(`/productos/${id}/relacionados`, token),
   crear: (datos, token) => api.post('/productos', datos, token),
   actualizar: (id, datos, token) => api.patch(`/productos/${id}`, datos, token),
   // Solo vendedor/administrador (ver productoRoutes.js) — requiere token.

@@ -25,6 +25,8 @@ model rol_usuario {
   tipo_rol String
 
   usuarios usuarios[]
+  // Lo que un administrador cambió para este rol desde /admin/permisos (ver acl_regla).
+  reglas   acl_regla[]
 }
 
 model usuarios {
@@ -55,6 +57,8 @@ model usuarios {
   // Suspensiones de esta cuenta, y las que esta cuenta (un administrador) revisó.
   bloqueos           bloqueo_cuenta[] @relation("bloqueo_de_usuario")
   bloqueos_revisados bloqueo_cuenta[] @relation("bloqueo_revisado_por")
+  // Las reglas de permisos que esta cuenta (un administrador) cambió por última vez.
+  reglas_acl_editadas acl_regla[] @relation("acl_regla_autor")
 }
 
 model direcciones {
@@ -269,4 +273,24 @@ model bloqueo_cuenta {
 
   @@unique([id_usuario, huella, tipo])
   @@index([estado, expira_en])
+}
+
+// Permisos de la API que un administrador cambió desde /admin/permisos (ver IA/ADR-007, §9). La política BASE
+// vive en el código (config/politicaRutas.js, la lista blanca que prueban tests/accesoRutas.test.js); esta tabla
+// guarda solo las DIFERENCIAS: «el rol X sí/no puede en la ruta Y». Sin fila, vale lo que declara el código —así
+// una ruta nueva funciona desde el primer día y «restaurar» es borrar filas—. `ruta` es la clave de la lista
+// blanca («GET /api/admin/ventas»); solo se aplican las rutas declaradas como editables y nunca al administrador.
+model acl_regla {
+  id              Int      @id @default(autoincrement())
+  rol_id          Int
+  ruta            String   @db.VarChar(200)
+  permitido       Boolean
+  actualizado_por Int?
+  actualizado_en  DateTime @default(now())
+
+  rol   rol_usuario @relation(fields: [rol_id], references: [id], onDelete: Cascade)
+  autor usuarios?   @relation("acl_regla_autor", fields: [actualizado_por], references: [id_usuario], onDelete: SetNull)
+
+  @@unique([rol_id, ruta])
+  @@index([ruta])
 }

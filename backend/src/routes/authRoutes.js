@@ -1,5 +1,6 @@
 const express = require('express');
 const { registrar, login, obtenerPerfil } = require('../services/authService');
+const politica = require('../services/politicaAccesoService');
 const { requireAuth } = require('../middleware/auth');
 const { responderError } = require('../utils/http');
 const { componenteCaido, esErrorDeAcceso } = require('../utils/resiliencia');
@@ -33,7 +34,10 @@ router.post('/login', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const usuario = await obtenerPerfil(req.usuario.id_usuario);
-    res.json(usuario);
+    // Las rutas por roles que ESTE rol puede usar hoy (la lista blanca más lo que ajustó un administrador): la interfaz
+    // las usa para decidir qué secciones ofrece. Quien manda es la API: esto no concede nada.
+    const permisos = await politica.permisosDe(usuario.rol.tipo_rol);
+    res.json({ ...usuario, permisos });
   } catch (err) {
     // 404 solo si la cuenta no existe: con MySQL apagado es 503, y la interfaz NO debe
     // interpretarlo como «sesión inválida» y cerrarla.

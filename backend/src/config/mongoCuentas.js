@@ -3,9 +3,10 @@
 // En Mongo los roles solo PERMITEN (no existe «negar»): la lista blanca es lo que cada rol suma, y lo que no
 // figura no se puede. El servidor web entra con `mg_app`, cuyo rol `app_tiendaya`:
 //   - lee, inserta y actualiza las colecciones del catálogo y las reseñas, sin poder borrar nada;
-//   - sobre `producto_eventos` (el historial de cambios, ADR-003) solo puede LEER e INSERTAR: el historial es
-//     append-only por garantía de la base de datos, no por convención del código — un evento no se puede
-//     modificar ni borrar ni siquiera con un bug o una inyección en la aplicación;
+//   - sobre `producto_eventos` (el historial de cambios, ADR-003) y `auditoria_acceso` (quién cambió qué permiso y
+//     qué accesos se denegaron, ADR-007 §9) solo puede LEER e INSERTAR: son append-only por garantía de la base
+//     de datos, no por convención del código — un registro no se puede modificar ni borrar ni siquiera con un bug
+//     o una inyección en la aplicación;
 //   - no administra nada: ni usuarios, ni roles, ni índices fuera de sus colecciones, ni borrar bases.
 // `mg_admin` (root) es solo para mantenimiento y para crear estos usuarios; el servidor web nunca la usa.
 //
@@ -17,15 +18,16 @@
 
 const BASE_DE_DATOS = 'tiendaya';
 const COLECCIONES_CON_ESCRITURA = ['productos', 'categorias', 'subcategorias', 'resenas'];
+const COLECCIONES_SOLO_ALTA = ['producto_eventos', 'auditoria_acceso'];
 const ACCIONES_DE_ESQUEMA = ['createIndex', 'createCollection', 'listIndexes'];
 
 const ROLES = {
   app_tiendaya: {
     db: BASE_DE_DATOS,
-    uso: 'La API: catálogo y reseñas con lectura/alta/edición (sin borrar) y el historial solo con lectura y alta.',
+    uso: 'La API: catálogo y reseñas con lectura/alta/edición (sin borrar); el historial de cambios y la auditoría de accesos, solo con lectura y alta.',
     privilegios: [
       ...COLECCIONES_CON_ESCRITURA.map((coleccion) => ({ coleccion, acciones: ['find', 'insert', 'update', ...ACCIONES_DE_ESQUEMA] })),
-      { coleccion: 'producto_eventos', acciones: ['find', 'insert', ...ACCIONES_DE_ESQUEMA] },
+      ...COLECCIONES_SOLO_ALTA.map((coleccion) => ({ coleccion, acciones: ['find', 'insert', ...ACCIONES_DE_ESQUEMA] })),
     ],
   },
 };
@@ -54,6 +56,9 @@ const PRUEBAS_APP = {
     { texto: 'modificar un evento del historial', db: BASE_DE_DATOS, comando: { update: 'producto_eventos', updates: [{ q: { _id: { $oid: NO_EXISTE } }, u: { $set: { tipo: 'x' } } }] } },
     { texto: 'borrar un evento del historial', db: BASE_DE_DATOS, comando: { delete: 'producto_eventos', deletes: [{ q: { _id: { $oid: NO_EXISTE } }, limit: 1 }] } },
     { texto: 'borrar la colección del historial', db: BASE_DE_DATOS, comando: { drop: 'producto_eventos' } },
+    { texto: 'modificar un registro de la auditoría de accesos', db: BASE_DE_DATOS, comando: { update: 'auditoria_acceso', updates: [{ q: { _id: { $oid: NO_EXISTE } }, u: { $set: { tipo: 'x' } } }] } },
+    { texto: 'borrar un registro de la auditoría de accesos', db: BASE_DE_DATOS, comando: { delete: 'auditoria_acceso', deletes: [{ q: { _id: { $oid: NO_EXISTE } }, limit: 1 }] } },
+    { texto: 'borrar la colección de la auditoría de accesos', db: BASE_DE_DATOS, comando: { drop: 'auditoria_acceso' } },
     { texto: 'borrar un producto', db: BASE_DE_DATOS, comando: { delete: 'productos', deletes: [{ q: { _id: { $oid: NO_EXISTE } }, limit: 1 }] } },
     { texto: 'borrar una base de datos', db: 'tiendaya_acceso_prueba', comando: { dropDatabase: 1 } },
     { texto: 'crear un usuario', db: BASE_DE_DATOS, comando: { createUser: 'intruso', pwd: 'x-no-se-crea-123456', roles: [] } },

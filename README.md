@@ -89,7 +89,16 @@ Entrega 2 incorpora Redis para carrito, ofertas y recomendaciones, **Cassandra**
    npm run seed
    ```
 
-7. **Levantar el servidor**:
+7. **Descargar el modelo de embeddings y calcular los vectores** (una sola vez; necesita internet solo esta vez; ≈135 MB; para los productos relacionados por significado):
+
+   ```bash
+   npm run modelo:descargar     # baja a backend/modelos/ (fuera de git) y comprueba el tamaño y el SHA-256 de cada archivo
+   npm run busqueda:backfill    # indexa el catálogo en Elasticsearch con el vector de cada producto
+   ```
+
+   Sin el modelo la tienda funciona igual: los productos relacionados se eligen por subcategoría en vez de por significado. Detalle en «Productos relacionados por significado (Entrega Final)».
+
+8. **Levantar el servidor**:
 
    ```bash
    npm run dev
@@ -103,11 +112,37 @@ Tres niveles, todos con la misma regla: **lista blanca**. Se parte de «nada per
 
 | Nivel | Qué hace | Dónde está |
 |---|---|---|
-| **API** | Cada ruta declara su acceso (pública, sesión opcional, sesión, roles). Una ruta nueva sin declarar hace fallar las pruebas, y se prueba por HTTP que sin sesión se responde 401 y que cada rol fuera de la lista de una ruta recibe 403. | `backend/src/config/politicaRutas.js`, `backend/tests/accesoRutas.test.js` |
+| **API** | Cada ruta declara su acceso (pública, sesión opcional, sesión, roles). Una ruta nueva sin declarar hace fallar las pruebas, y se prueba por HTTP que sin sesión se responde 401 y que cada rol fuera de la lista de una ruta recibe 403. Un administrador puede ajustar desde `/admin/permisos` qué roles entran a 13 acciones del panel (ver abajo). | `backend/src/config/politicaRutas.js`, `backend/tests/accesoRutas.test.js` |
 | **Redis** | El usuario `default` está apagado. Cada módulo del backend entra con su propia cuenta (`rd_carrito`, `rd_candados_r`, `rd_ofertas`…), que solo tiene los comandos y las llaves de ese módulo: el carrito no puede levantar una suspensión, la revisión de sesión no puede escribir, y nadie ejecuta `FLUSHALL`, `KEYS` ni `CONFIG`. | `backend/src/config/redisCuentas.js`, `docker/redis/users.acl` (generado) |
-| **MongoDB** | Autenticación activada. El servidor web entra como `mg_app`: lee y escribe el catálogo y las reseñas (sin borrar) y, del historial de cambios, **solo lee e inserta**: un evento no se puede modificar ni borrar, ni siquiera con un bug, porque la base de datos no lo permite. | `backend/src/config/mongoCuentas.js` |
+| **MongoDB** | Autenticación activada. El servidor web entra como `mg_app`: lee y escribe el catálogo y las reseñas (sin borrar) y, del historial de cambios y de la auditoría de accesos, **solo lee e inserta**: un registro no se puede modificar ni borrar, ni siquiera con un bug, porque la base de datos no lo permite. | `backend/src/config/mongoCuentas.js` |
 
 Redis y MongoDB se publican solo en `127.0.0.1`.
+
+### La pantalla de permisos (`/admin/permisos`)
+
+Una consola para **ver y ajustar quién puede qué** sin tocar el código, hecha tomando de las consolas reales lo que encaja (matriz de roles, simulador, registro filtrable; ver [ADR-007 §9](IA/ADR-007-control-de-acceso.md)). Solo entra un administrador, y esa pantalla no se le puede conceder a ningún otro rol.
+
+| Pestaña | Qué hace |
+|---|---|
+| **Permisos** | Matriz rol × acción, agrupada por módulo. Marcar una casilla la deja *sin guardar*; «Revisar y guardar» resume lo que concede y lo que **quita** y lo aplica todo o nada. Rige en segundos. «Restaurar» vuelve a lo que declara el código, por fila o completo |
+| **Simulador** | «¿Puede este rol —o esta cuenta— hacer esto?» Responde con la **misma decisión** que aplica la API y con el motivo (el código, una regla de un administrador, ruta fija…), más la lista de todo lo que ese rol puede hacer |
+| **Cuentas y roles** | Crea y borra roles propios (empiezan sin permisos más que los de un comprador), y cambia el rol de una cuenta. Nadie cambia su propio rol y siempre queda un administrador |
+| **Auditoría** | Quién cambió qué y qué accesos se negaron, con filtros (qué, quién, fechas) y descarga en CSV. Vive en una colección de MongoDB que el servidor solo puede leer e insertar |
+
+La base sigue siendo el código: `politicaRutas.js` declara cada ruta por roles como **editable** (13) o **fija** con su motivo (14: lo que depende del dueño del producto o del compromiso de no reventa, y la propia administración de permisos). La tabla `acl_regla` guarda solo las **diferencias**; el administrador conserva siempre todo. Un rol creado ahí ve en el panel solo lo que se le concedió.
+
+Si ya tenés el entorno andando, después de traer estos cambios (desde `backend/`), y reiniciá el backend:
+
+```bash
+npm run prisma:deploy     # la tabla acl_regla
+npm run prisma:generate
+npm run seguridad:mongo   # el rol de MongoDB suma la colección auditoria_acceso (solo lectura y alta)
+```
+
+```bash
+npm run test:permisos     # 103 pruebas aisladas (la decisión, MySQL caído, el lote todo o nada, la auditoría, las rutas, la interfaz)
+npm run verificar:permisos  # con el backend corriendo: concede, revoca, crea un rol, lo prueba, audita y deja todo como estaba
+```
 
 ### Preparar un entorno (o migrar uno que ya estaba andando)
 
@@ -155,6 +190,26 @@ Un rechazo de credenciales **no es una caída de la base**: reintentar no sirve,
 - Un `SCAN` lista los nombres de **todas** las llaves de Redis, y los ACL no pueden filtrarlo: solo `rd_candados_r` lo tiene (lo necesitan el panel de suspensiones y el catálogo).
 - Quien controle el proceso del backend tiene todas las contraseñas de su `.env`: las cuentas por módulo acotan un bug, un script mal escrito o una credencial filtrada de un módulo, no un servidor comprometido.
 - Elasticsearch, Cassandra, Neo4j y MySQL todavía no tienen cuentas por módulo (Neo4j Community no tiene roles).
+
+## Productos relacionados por significado (Entrega Final)
+
+La ficha de cada producto muestra «Productos relacionados»: los que se parecen **por lo que son**, no por las palabras del título ("celular" encuentra "Smartphone"). Cada producto tiene un vector de 384 números que calcula, dentro del propio backend y sin internet, el modelo `multilingual-e5-small`; Elasticsearch guarda el vector junto al documento del producto y busca los vecinos más cercanos (kNN, coseno). Los vectores **solo viven en Elasticsearch**: se reconstruyen con `npm run busqueda:backfill`. Diseño, alternativas medidas y límites en [IA/ADR-006](IA/ADR-006-recomendacion-semantica-vectorial.md); el plan, en [IA/PLAN-ENTREGA-FINAL.md §3](IA/PLAN-ENTREGA-FINAL.md).
+
+`GET /api/productos/:id/relacionados` (pública; con sesión no ofrece los productos del propio vendedor) responde `{ modo, subcategoria?, productos }`:
+
+| `modo` | Cuándo | Qué se muestra |
+|---|---|---|
+| `semantico` | Todo sano | Los vecinos por significado: activos, sin vendedores suspendidos, lo agotado al final, a lo sumo la mitad de la lista del mismo vendedor |
+| `subcategoria` | Elasticsearch apagado, el producto aún sin vector, o menos de 2 parecidos | «Misma subcategoría: Laptops», desde Mongo |
+| `ninguno` | Menos de 2 resultados en todas las capas | La sección se oculta («mejor nada que algo sin relación») |
+
+La carpeta del modelo es `backend/modelos/` (o la de `EMBEDDINGS_DIR`). Editar un producto con el modelo ausente **no pierde su vector**: se actualiza el resto del documento y el vector queda con el texto anterior hasta el siguiente `busqueda:backfill`. Al calcular los vectores el backend ocupa ≈ +400 MB de memoria mientras el modelo está cargado.
+
+```bash
+npm run modelo:verificar     # el modelo está completo y es el esperado (tamaño y SHA-256)
+npm run test:similares       # pruebas aisladas (sin Docker ni modelo): reglas, consultas, capas y contrato del modelo
+npm run verificar:similares  # contra el catálogo real: precisión@5, cobertura, BM25 contra vectores, consultas coloquiales y reglas de visibilidad en el motor
+```
 
 ## Panel de ventas con Cassandra (Entrega 2)
 
@@ -587,6 +642,9 @@ backend/
     verificarRespuestaEscalonada.js  Evidencia de la respuesta escalonada, el tope de pedidos por hora y el vendedor suspendido que se oculta: Redis, MySQL, Mongo, Elasticsearch y Neo4j reales
     backfillBusqueda.js       Reindexa el catálogo de Mongo en Elasticsearch (Entrega 3)
     verificarBusqueda.js      Evidencia del buscador contra el catálogo real: tolerancia a tipeos, autocompletado, facetas disyuntivas, paginación y paridad entre el motor y el respaldo en Mongo (Entrega 3)
+    descargarModelo.js        Baja y verifica el modelo de embeddings (revisión fija, tamaño y SHA-256); `--verificar` solo comprueba (Entrega Final)
+    verificarSimilares.js     Evaluación de los productos relacionados contra el catálogo real: precisión@5, cobertura, BM25 contra vectores, consultas coloquiales y visibilidad (Entrega Final)
+    verificarPermisos.js      Evidencia de la pantalla de permisos contra el backend y las bases reales: conceder y revocar con efecto inmediato, un rol nuevo, lo que no se puede cambiar, el simulador y la auditoría (Entrega Final)
     lib/datosPrueba.js        Cuentas, direcciones, métodos de pago y productos sintéticos compartidos por los scripts de verificación
   src/
     config/prisma.js      Cliente de Prisma (MySQL)
@@ -594,8 +652,9 @@ backend/
     config/redis.js         Cliente de ioredis (Redis, Entrega 2 — incluye el script Lua compartido por la oferta flash y las recomendaciones)
     config/cassandra.js      Cliente de cassandra-driver (analítica de ventas, Entrega 2)
     config/neo4j.js           Cliente de neo4j-driver (detección de fraude, Entrega 2)
+    config/embeddingsModelo.js  Manifiesto del modelo de embeddings: revisión, archivos, tamaños y SHA-256 (Entrega Final)
     models/mongo/           Esquemas de Mongoose (Categoria, Subcategoria, Producto, ProductoEvento, Resena)
-    services/              Lógica de negocio (auth, checkout + checkoutOferta, compromiso de no reventa, catálogo, carrito, ofertas y su caché en Redis, recomendaciones, reseñas, historial, outbox y analítica de ventas, sincronización y consultas de fraude, suspensión temporal de cuentas: `candadoRedis` es el candado genérico, `suspensionService` el de la suspensión y `restriccionService` el de los límites suaves, `bloqueoService` los casos y el barrido; `limitePedidosService` y `reautenticacionService` son el tope de pedidos por hora y la contraseña de una cuenta bajo vigilancia)
+    services/              Lógica de negocio (auth, checkout + checkoutOferta, compromiso de no reventa, catálogo, carrito, ofertas y su caché en Redis, recomendaciones, reseñas, historial, outbox y analítica de ventas, sincronización y consultas de fraude, suspensión temporal de cuentas: `candadoRedis` es el candado genérico, `suspensionService` el de la suspensión y `restriccionService` el de los límites suaves, `bloqueoService` los casos y el barrido; `limitePedidosService` y `reautenticacionService` son el tope de pedidos por hora y la contraseña de una cuenta bajo vigilancia; `embeddingService` calcula los vectores con el modelo local y `reglasRelacionados` son las reglas de los productos relacionados, ver ADR-006; `politicaAccesoService`, `usuarioAdminService` y `auditoriaAccesoService` son la política de permisos editable, las cuentas y roles, y su auditoría, ver ADR-007 §9)
     routes/                 Endpoints Express (incluye adminRoutes.js — ventas y fraude —, ofertaRoutes.js, recomendacionRoutes.js)
     app.js / server.js
 flash-sale-tests/

@@ -10,7 +10,7 @@ const EFECTOS = {
   mysql: 'Las cuentas, el carrito y los pedidos no están disponibles: por ahora no se puede iniciar sesión ni comprar. El catálogo y la búsqueda siguen funcionando.',
   mongo: 'El catálogo se muestra en modo de solo lectura: no hay reseñas ni ofertas flash, y los vendedores no pueden editar sus productos.',
   redis: 'Las ofertas flash y las compras con cupo personal no están disponibles. El resto de la tienda funciona con normalidad.',
-  elasticsearch: 'La búsqueda es básica: sigue funcionando, pero sin corrección de errores de tipeo ni autocompletado inteligente.',
+  elasticsearch: 'La búsqueda es básica: sigue funcionando, pero sin corrección de errores de tipeo ni autocompletado inteligente, y los productos relacionados se eligen por subcategoría en vez de por significado.',
   neo4j: { mensaje: 'El panel de fraude no está disponible.', roles: ['administrador'] },
   cassandra: { mensaje: 'El panel de ventas no está disponible.', roles: ['administrador'] },
 };

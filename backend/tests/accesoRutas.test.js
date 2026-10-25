@@ -42,6 +42,17 @@ Router.prototype.use = function use(...args) {
 const suspension = require('../src/services/suspensionService');
 suspension.exigirCuentaActiva = async () => {};
 
+// requireRole le pregunta a la política (que lee MySQL: el rol de hoy y las reglas que cambió un administrador) y,
+// si deniega, a la auditoría (que escribe en Mongo). Ninguna es lo que se prueba acá —tests/permisos*.test.js—:
+// la política se reemplaza por la decisión del código, sin reglas, y se anota por qué ruta preguntó cada llamada.
+const politica = require('../src/services/politicaAccesoService');
+const clavesConsultadas = new Set();
+politica.permite = async (usuario, clave, porDefecto) => {
+  clavesConsultadas.add(clave);
+  return { ...politica.decidir({ reglas: new Map() }, usuario.rol, clave, porDefecto), rol: usuario.rol };
+};
+require('../src/services/auditoriaAccesoService').registrarDenegacion = () => false;
+
 const app = require('../src/app');
 const { RUTAS, ROLES, clave } = require('../src/config/politicaRutas');
 
@@ -192,6 +203,29 @@ test('lista blanca: la lista declarada es coherente (sin duplicados, roles váli
   }
 });
 
+test('lista blanca: cada ruta por roles es editable desde la pantalla o explica por qué es fija, y siempre dice su grupo', () => {
+  const porRol = RUTAS.filter((r) => r.acceso === 'roles');
+  for (const r of porRol) {
+    assert.ok(typeof r.grupo === 'string' && r.grupo.length >= 3, `${clave(r)}: falta el grupo con el que se muestra en la matriz`);
+    if (r.editable) {
+      assert.equal(r.fija, undefined, `${clave(r)}: no puede ser editable y fija a la vez`);
+      assert.ok(!r.propios, `${clave(r)}: una ruta que comprueba el dueño no se concede a otros roles: no hay «dueño» que comprobar`);
+    } else {
+      assert.ok(typeof r.fija === 'string' && r.fija.length >= 20, `${clave(r)}: una ruta fija dice por qué no se puede cambiar`);
+    }
+    assert.ok(r.roles.includes('administrador'), `${clave(r)}: el administrador conserva todas las rutas por roles`);
+  }
+  const editables = porRol.filter((r) => r.editable);
+  assert.ok(editables.length >= 10 && editables.length < porRol.length, 'la matriz tiene filas editables y filas fijas');
+  // Lo que administra los permisos NUNCA es editable: quien lo recibiera podría concederse todo lo demás.
+  const deAdministracion = porRol.filter((r) => /^\/api\/admin\/(permisos|roles|usuarios|auditoria)/.test(r.ruta));
+  assert.ok(deAdministracion.length >= 10, 'el filtro no encontró las rutas de administración de permisos');
+  for (const r of deAdministracion) {
+    assert.equal(Boolean(r.editable), false, `${clave(r)}: administrar permisos no se concede`);
+    assert.deepEqual(r.roles, ['administrador'], clave(r));
+  }
+});
+
 test('accesoReal: deriva el acceso de la cadena de middleware, en orden', () => {
   const auth = { acceso: { sesion: true } };
   const opcional = { acceso: { sesionOpcional: true } };
@@ -253,4 +287,9 @@ test('HTTP: toda ruta por roles rechaza con 403 a cada rol que no está en su li
   }
   assert.ok(comprobaciones >= 30);
   assert.deepEqual(fallas, [], `Rutas por roles que dejan pasar a un rol que no figura en su lista:\n  ${fallas.join('\n  ')}`);
+
+  // La clave con la que requireRole le pregunta a la política sale de cómo se montó cada router; tiene que ser
+  // EXACTAMENTE la que declara la lista blanca, o las reglas de la pantalla no encontrarían la ruta.
+  const declaradas = porRol.map(clave).sort();
+  assert.deepEqual([...clavesConsultadas].sort(), declaradas, 'las claves por las que se consultó la política no son las de la lista blanca');
 });

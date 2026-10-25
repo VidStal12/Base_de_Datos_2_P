@@ -5,6 +5,9 @@ import { useCart } from '../../context/CartContext';
 import { categoriasApi } from '../../api/productos';
 import { busquedaApi } from '../../api/busqueda';
 import { CategoryMenu } from './CategoryMenu';
+import { RUTAS_DEL_PANEL } from '../../utils/permisos';
+
+const SECCIONES_DEL_PANEL = Object.values(RUTAS_DEL_PANEL);
 
 function CartIcon(props) {
   return (
@@ -26,7 +29,7 @@ function UserIcon(props) {
 }
 
 export function Header() {
-  const { usuario, estaAutenticado, logout } = useAuth();
+  const { usuario, estaAutenticado, logout, puedeAlguna } = useAuth();
   const { cantidadTotal } = useCart();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -186,9 +189,10 @@ export function Header() {
                     Mi tienda
                   </Link>
                 )}
-                {usuario?.rol?.tipo_rol === 'administrador' && (
+                {/* Quien puede usar alguna sección del panel (un administrador, o un rol al que se le concedió una). */}
+                {puedeAlguna(SECCIONES_DEL_PANEL) && (
                   <Link to="/admin" className="hidden font-medium hover:text-accent-300 sm:inline">
-                    Panel admin
+                    {usuario?.rol?.tipo_rol === 'administrador' ? 'Panel admin' : 'Panel'}
                   </Link>
                 )}
                 <Link to="/pedidos" className="flex items-center gap-1.5 hover:text-accent-300">

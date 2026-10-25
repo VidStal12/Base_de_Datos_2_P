@@ -22,3 +22,5 @@ Thumbs.db
 docker/redis/users.acl
 # MongoDB: llave del replica set (la genera npm run seguridad:inicializar)
 docker/mongo/keyfile
+# Modelo de embeddings (118 MB; lo baja npm run modelo:descargar)
+backend/modelos/

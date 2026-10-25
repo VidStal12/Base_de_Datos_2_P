@@ -34,13 +34,27 @@ test('NADIE puede borrar con el rol de la aplicación: ni una colección tiene `
   }
 });
 
-test('el historial de cambios (producto_eventos) es append-only: solo leer e insertar, más lo que Mongoose usa al cargar el modelo', () => {
-  const { actions } = mongo.privilegiosDe('app_tiendaya').find((p) => p.resource.collection === 'producto_eventos');
-  assert.deepEqual([...actions].sort(), ['createCollection', 'createIndex', 'find', 'insert', 'listIndexes']);
-  assert.ok(!actions.includes('update'), 'un evento no se modifica nunca');
-  assert.ok(!actions.includes('remove'), 'ni se borra');
-  const demas = mongo.privilegiosDe('app_tiendaya').filter((p) => p.resource.collection !== 'producto_eventos');
+// El historial de cambios y el registro de auditoría de accesos: se escriben una vez y no se tocan más.
+const SOLO_ALTA = ['producto_eventos', 'auditoria_acceso'];
+
+test('el historial de cambios y la auditoría de accesos son append-only: solo leer e insertar, más lo que Mongoose usa al cargar el modelo', () => {
+  for (const coleccion of SOLO_ALTA) {
+    const { actions } = mongo.privilegiosDe('app_tiendaya').find((p) => p.resource.collection === coleccion);
+    assert.deepEqual([...actions].sort(), ['createCollection', 'createIndex', 'find', 'insert', 'listIndexes'], coleccion);
+    assert.ok(!actions.includes('update'), `${coleccion}: un registro no se modifica nunca`);
+    assert.ok(!actions.includes('remove'), `${coleccion}: ni se borra`);
+  }
+  const demas = mongo.privilegiosDe('app_tiendaya').filter((p) => !SOLO_ALTA.includes(p.resource.collection));
+  assert.ok(demas.length >= 4);
   assert.ok(demas.every((p) => p.actions.includes('update')), 'el resto del catálogo sí se edita (precio, stock, reseñas…)');
+});
+
+test('la prueba contra el servidor intenta modificar, borrar y tirar tanto el historial como la auditoría', () => {
+  const textos = mongo.PRUEBAS_APP.denegado.map((p) => p.texto).join(' | ');
+  for (const coleccion of SOLO_ALTA) {
+    const comandos = mongo.PRUEBAS_APP.denegado.map((p) => p.comando).filter((c) => Object.values(c)[0] === coleccion).map((c) => Object.keys(c)[0]).sort();
+    assert.deepEqual(comandos, ['delete', 'drop', 'update'], `${coleccion}: ${textos}`);
+  }
 });
 
 test('el servidor web tiene un solo rol, el de la aplicación; solo mg_admin es root', () => {

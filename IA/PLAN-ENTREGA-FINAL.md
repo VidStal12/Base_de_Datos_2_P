@@ -1,6 +1,6 @@
 # Plan — Entrega Final (Vectorial, Seguridad y Cierre)
 
-> Creado: 2026-10-22. **Estado (2026-10-23): propuesta, con el ítem 2 (control de acceso) implementado —huecos de la API, lista blanca de rutas, cuentas de Redis y roles de MongoDB, ADR-007— y verificado que los vectores pueden vivir solo en Elasticsearch (§3.4b). Falta el ítem 1 (vectores: espera la aprobación de la descarga del modelo), el diagrama, la retrospectiva y la presentación.** Se armó a partir del PRD, del estado real del repositorio y de la nota de voz del catedrático del 2026-10-21, con dos investigaciones en paralelo (una técnica —vectores y control de acceso— y una de cierre —diagrama, retrospectiva, presentación y calendario—). Lo que el agente técnico **probó** en contenedores desechables con las mismas imágenes del proyecto está marcado como «probado»; las horas son estimaciones, no mediciones. Las fuentes están en §12 y deben abrirse antes de citarlas en el informe.
+> Creado: 2026-10-22. **Estado (2026-10-25): el ítem 2 (control de acceso, con su pantalla de permisos `/admin/permisos`) y el ítem 1 (recomendación semántica) están implementados y verificados —ADR-007 y ADR-006—; falta el diagrama, la retrospectiva y la presentación.** Se armó a partir del PRD, del estado real del repositorio y de la nota de voz del catedrático del 2026-10-21, con dos investigaciones en paralelo (una técnica —vectores y control de acceso— y una de cierre —diagrama, retrospectiva, presentación y calendario—). Lo que el agente técnico **probó** en contenedores desechables con las mismas imágenes del proyecto está marcado como «probado»; las horas son estimaciones, no mediciones. Las fuentes están en §12 y deben abrirse antes de citarlas en el informe.
 
 ## 0. Resumen
 
@@ -8,7 +8,7 @@ El PRD llama a esta entrega «Entrega Final — Vectorial, Seguridad y Cierre» 
 
 | Ítem | Pts | Decisión recomendada | Esfuerzo (persona-horas, estimado) | Riesgo principal |
 |---|---|---|---|---|
-| **1. Recomendación semántica** (§3) | 5 | Elasticsearch `dense_vector` + kNN con embeddings locales (`multilingual-e5-small`); **los vectores viven solo en Elasticsearch** (se recalculan desde el texto del producto); respaldo: misma subcategoría desde Mongo; ADR-006 | 20–24 (+ 2–3 de prueba previa) | Modelo de 118 MB en Windows/ONNX; calidad con títulos de ~21 caracteres |
+| **1. Recomendación semántica** (§3) | 5 | ✅ **Hecho el 2026-10-25** ([ADR-006](ADR-006-recomendacion-semantica-vectorial.md)): Elasticsearch `dense_vector` + kNN con embeddings locales (`multilingual-e5-small`); **los vectores viven solo en Elasticsearch** (se recalculan desde el texto del producto); respaldo: misma subcategoría desde Mongo | 20–24 (+ 2–3 de prueba previa) | Modelo de 118 MB en Windows/ONNX; calidad con títulos de ~21 caracteres → medidos, ver §3.9 |
 | **2. Control de acceso NoSQL** (§4) | 4 | Dos capas: **API** (arreglar huecos reales + política por rol probada) y **cuentas de servicio** en Redis y Mongo; ADR-007 | 17–20 piso · 25–30 completo | Mongo con auth + replica set; que un error de credencial se confunda con una caída |
 | **3. Diagrama final** (§5) | 3 | Cuatro vistas + una secuencia en Mermaid, con lista de chequeo contra el repo | 10–13 | Que se desfase del código |
 | **4. Retrospectiva** (§6) | 4 | Tabla de 15 decisiones citadas, veredicto con número, arquitectura v2 | 8–9 | Que se lea como lista de opiniones |
@@ -182,12 +182,27 @@ El equipo decidió **no guardar una copia de los vectores en Mongo**. Antes de c
 
 | # | Paso | Horas | Archivos |
 |---|---|---|---|
-| 0 | **Prueba previa** (con autorización de descargar el modelo, 118 MB, e instalar el paquete —con `onnxruntime-node`, ~430 MB en total— en una carpeta aparte): medir latencia y RAM; comparar e5-small vs MiniLM en precisión@5 y cobertura; repetir la línea base de §3.1 con los 109 productos | 2–3 | fuera del repo |
-| 1 | `embeddingService`: carga perezosa, prefijo, normalización, hash | 3 | `backend/src/services/embeddingService.js` |
-| 2 | Datos: `MAPPING` + `aDocumento` + prueba de alineación (campo `embedding`), `indexarProducto` con recálculo y `update` parcial si falta el modelo, `_source.excludes` en las consultas que no lo necesitan, backfill que recalcula | 4–5 | `config/elasticsearch.js`, `busquedaSyncService.js`, `tests/busquedaMapping.test.js`, `scripts/backfillBusqueda.js` |
-| 3 | Consulta: `similares()`, `conRespaldo` en `catalogoLecturaService`, ruta `GET /:id/relacionados`, pruebas con dobles | 4–5 | `busquedaService.js`, `catalogoLecturaService.js`, `routes/productoRoutes.js` |
-| 4 | UI: «Productos relacionados» en la ficha + aviso de modo | 3 | `frontend/src/components/product/ProductosRelacionados.jsx`, `pages/ProductDetailPage.jsx`, `api/productos.js`, `layout/AvisoServicios.jsx` |
-| 5 | Evaluación + ADR-006 + flujo en el diagrama | 4 | `scripts/verificarSimilares.js` (`npm run verificar:similares`), `tests/similares*.test.js`, `IA/ADR-006-…md` |
+| 0 | ✅ **Prueba previa** — hecha el 2026-10-25, con autorización del equipo para descargar el modelo (paquete + `onnxruntime-node` ≈ 300 MB; modelo 112,8 MiB + tokenizador 16,3 MiB) | 2–3 | fuera del repo; resultados en el ADR-006 §3.1 y §4 |
+| 1 | ✅ `embeddingService`: carga perezosa, solo local, prefijo `query: ` siempre, lotes de 16, un cálculo a la vez, error claro si falta el modelo, sin reintentar en cada edición; manifiesto con revisión fija y SHA-256 y `npm run modelo:descargar` / `modelo:verificar` | 3 | `backend/src/services/embeddingService.js`, `config/embeddingsModelo.js`, `scripts/descargarModelo.js` |
+| 2 | ✅ Datos: `MAPPING` + `aDocumento` + prueba de alineación (campo `embedding`), `indexarProducto` con recálculo y `update` parcial si falta el modelo, `_source.excludes` en las consultas, backfill que recalcula y se detiene si falta el modelo (121 productos, 5 s) | 4–5 | `config/elasticsearch.js`, `busquedaSyncService.js`, `busquedaService.js`, `tests/busquedaMapping.test.js`, `scripts/backfillBusqueda.js` |
+| 3 | ✅ Consulta: `similares()`, `relacionados()` con sus tres capas en `catalogoLecturaService`, reglas puras (`reglasRelacionados.js`), ruta `GET /:id/relacionados` declarada en la lista blanca, 66 pruebas con dobles | 4–5 | `busquedaService.js`, `catalogoLecturaService.js`, `reglasRelacionados.js`, `routes/productoRoutes.js`, `config/politicaRutas.js`, `tests/similares*.test.js` |
+| 4 | ✅ UI: «Productos relacionados» en la ficha (con la leyenda del modo) + aviso global actualizado | 3 | `frontend/src/components/product/ProductosRelacionados.jsx`, `pages/ProductDetailPage.jsx`, `api/productos.js`, `layout/AvisoServicios.jsx` |
+| 5 | ✅ Evaluación + ADR-006 (**falta** el flujo en el diagrama, que es del ítem 3) | 4 | `scripts/verificarSimilares.js` (`npm run verificar:similares`), `IA/ADR-006-…md` |
+
+### 3.9 Resultado (2026-10-25)
+
+Medido contra el catálogo real (106 productos, 16 subcategorías); detalle, tablas y límites en el [ADR-006](ADR-006-recomendacion-semantica-vectorial.md):
+
+| Qué | Resultado |
+|---|---|
+| Windows + ONNX | Funciona. Carga ≈ 0,8–0,9 s; ≈ 500 MB residentes con el modelo cargado; 2,5–3,8 ms por título |
+| Precisión@5 / Hit@5 / MRR (etiqueta = subcategoría) | **91,2 %** / 100 % / 0,959 (BM25: 71,1 %; con solo el título: 64,7 %) |
+| Productos con ≥ 2 parecidos por significado | 102 de 106; los otros 4, por subcategoría → **0 sin sección** (BM25: 15 sin vecino; `more_like_this` por defecto: 0 de 106 devuelven algo) |
+| Consultas coloquiales (≥ 4 de 5 correctos) | texto 0 de 14 · vectores 6 de 14; la jerga regional («playera», «compu», «pelota», «tenis») no se resuelve → sinónimos |
+| Latencia de `similares()` | p50 9 ms · p95 13 ms |
+| Degradación en vivo | Elasticsearch apagado → «misma subcategoría» (8–19 ms); solo Mongo apagado → sigue por significado; ambos → 503 |
+
+**Cambios respecto al diseño del §3.5:** el tope «2 por vendedor» pasó a «a lo sumo la mitad de la lista» (con dos vendedores reales y tres productos parecidos de cada uno, el tope fijo recortaba aciertos); el umbral quedó en **0,90** y no en el 0,88 que dio la prueba previa (0,90 es el punto en que un vecino pasa a ser más probablemente de la misma subcategoría que de otra: 51 % contra 27 %) y los 4 productos que así quedan sin 2 vecinos usan la subcategoría; el texto incrustado es título + subcategoría + categoría (sin atributos: no se midió que aportaran). **Pendiente del plan:** el juicio de dos personas sobre 20–30 productos (nDCG@5), que el informe deja listo como muestra.
 
 **Ideal (+25–35 h):** sinónimos (3) → historial y franja en la portada (6–8) → `descripcion_larga` (7) → señal por direcciones (10–14) → respaldo semántico para 0 resultados (3).
 
@@ -307,7 +322,7 @@ La degradación elegante (§2) asume que «error de base = caída». Con autenti
 | 3 | ✅ **Script de arranque idempotente** (`npm run seguridad:inicializar`) + **ADR-007** — **hecho el 2026-10-23** | 3–4 | `scripts/seguridad/inicializar.js`, `IA/ADR-007-control-de-acceso.md` |
 | 4 | ✅ **Mongo RBAC:** keyFile, roles y usuarios (`npm run seguridad:mongo`), healthcheck sin credenciales, credenciales aparte de `MONGO_URI`; `producto_eventos` solo `find` e `insert` — **hecho el 2026-10-23** | 6–8 | `docker-compose.yml`, `docker/mongo/init/01-roles.js`, `config/mongo.js` |
 | 5 | ✅ **`verificar:acceso`:** abre cada cuenta, ejecuta la tabla permitido/negado (incluye lo que **no** está en la lista blanca) e imprime la matriz (~10 s) — **hecho el 2026-10-23** (Redis y Mongo) | 2–3 | `scripts/verificarControlAcceso.js` |
-| 6 | *Ideal de la capa 1:* política `acl_regla` + `autorizar` + `/admin/permisos` + auditoría en Mongo | 8–10 | `prisma/schema.prisma` (+ migración), `middleware/autorizar.js`, `services/politicaAccesoService.js`, `pages/admin/AdminPermisosPage.jsx` |
+| 6 | ✅ *Ideal de la capa 1:* política `acl_regla` + `requireRole` que la consulta + `/admin/permisos` (matriz, simulador, cuentas y roles, auditoría) + auditoría en Mongo — **hecho el 2026-10-25**, ver [ADR-007 §9](ADR-007-control-de-acceso.md) y §4.5 | 8–10 | `prisma/schema.prisma` + migración `acl_politica_permisos`, `middleware/auth.js`, `services/politicaAccesoService.js`, `usuarioAdminService.js`, `auditoriaAccesoService.js`, `routes/adminAccesoRoutes.js`, `models/mongo/AuditoriaAcceso.js`, `frontend/src/pages/admin/AdminPermisosPage.jsx` |
 
 **Ideal (+16–20 h):** Elasticsearch (5–6), Cassandra (5–6), Neo4j autenticado (1), MySQL mínimo (2), secretos y puertos (2), matriz generada con `ACL DRYRUN` (2).
 
@@ -324,6 +339,14 @@ La degradación elegante (§2) asume que «error de base = caída». Con autenti
 **Casos reales para la presentación** (fuentes en §12): MongoDB sin contraseña (Victor Gevers, dic-2016, rescate; ola de sep-2017 con decenas de miles de servidores); «Meow» (jul-2020) borró más de 1.000 bases Elasticsearch/MongoDB abiertas — Elastic dijo que esos clústeres no tenían activada ninguna de sus funciones de seguridad.
 
 **Fuera de alcance.** mTLS/x509 entre servicios, Vault, cifrado en reposo o de campo, DLS/FLS de Elasticsearch (de pago), SSO/Keycloak/OPA/OpenFGA, WAF y límites globales de tasa, roles en Neo4j (Enterprise).
+
+### 4.5 La pantalla de permisos (hecho el 2026-10-25)
+
+Se pidió «una interfaz visual». Se estudiaron las consolas reales (Kubernetes RBAC y `kubectl auth can-i`, el simulador de AWS IAM, los roles y el registro de auditoría de GitHub, Auth0, la hoja de OWASP: las páginas abiertas están citadas en [ADR-007 §9.1](ADR-007-control-de-acceso.md)) y se tomó de cada una lo que encaja con este tamaño. Resultado: `/admin/permisos` con cuatro pestañas —**matriz** rol × acción con cambios sin guardar y resumen, **simulador**, **cuentas y roles**, **auditoría** con filtros y CSV—, y un panel que ofrece a cada cuenta solo lo que su rol puede usar.
+
+**Desvíos respecto del diseño de §4.1** (todos por proporción, comprobados): (1) la tabla guarda **diferencias** respecto del código, no una copia de la política: `acl_regla(rol_id, ruta, permitido, actualizado_por, actualizado_en)`, así una ruta nueva funciona de inmediato y «restaurar» es borrar filas; (2) no se agregó `autorizar()`: `requireRole` conserva su firma y consulta la política (cero cambios en las rutas); (3) la invalidación es una copia de 5 s y la invalidación inmediata del proceso que escribe, **sin** la clave `acl:version` en Redis (un solo proceso; evita otra cuenta de Redis y otra falla posible); (4) el rol de la cuenta se lee de MySQL (≤ 5 s) y no del token de 2 h; (5) lo editable se declara ruta por ruta (13 editables, 14 fijas con su motivo) en vez de «todo es editable»; (6) la columna del administrador es fija —es la forma de que `permisos:editar` no se pueda quitar—; (7) un rol creado nunca recibe rutas que dependen del dueño o del compromiso de no reventa. **La decisión «¿categorías solo del administrador?» (§4.1, fila 5) quedó como una casilla de la matriz** (*Crea una categoría*, columna vendedor), que se cambia sin tocar el código.
+
+**Evidencia:** 103 pruebas `test:permisos`, 68 mutaciones detectadas, `verificar:permisos` contra las bases reales (32 comprobaciones), el rol de MongoDB comprobado contra el servidor (la auditoría no se modifica ni se borra) y el recorrido en el navegador (cuenta con un rol propio que ve solo lo concedido).
 
 ## 5. Ítem 3 — Diagrama de arquitectura final (3 pts)
 

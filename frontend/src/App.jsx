@@ -4,6 +4,7 @@ import { CartProvider } from './context/CartContext';
 import { Layout } from './components/layout/Layout';
 import { RequireAuth } from './components/common/RequireAuth';
 import { RequireRole } from './components/common/RequireRole';
+import { RequirePermiso } from './components/common/RequirePermiso';
 import { HomePage } from './pages/HomePage';
 import { OfertasPage } from './pages/OfertasPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
@@ -22,11 +23,17 @@ import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminVentasPage } from './pages/admin/AdminVentasPage';
 import { AdminFraudePage } from './pages/admin/AdminFraudePage';
 import { AdminBloqueosPage } from './pages/admin/AdminBloqueosPage';
+import { AdminPermisosPage } from './pages/admin/AdminPermisosPage';
 import { TerminosPage } from './pages/TerminosPage';
+import { RUTAS_DEL_PANEL } from './utils/permisos';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 const ROLES_VENDEDOR = ['vendedor', 'administrador'];
 const ROLES_ADMIN = ['administrador'];
+// El panel y sus secciones se abren por lo que la cuenta puede usar (GET /api/auth/me → permisos), no por el nombre del
+// rol: un rol creado desde /admin/permisos entra a las secciones que se le concedieron. Publicar y editar productos sigue
+// siendo del dueño o del administrador (rutas fijas), así que esas páginas conservan su filtro por rol.
+const PANEL = Object.values(RUTAS_DEL_PANEL);
 
 export default function App() {
   return (
@@ -124,33 +131,41 @@ export default function App() {
               <Route
                 path="admin"
                 element={
-                  <RequireRole roles={ROLES_ADMIN}>
+                  <RequirePermiso permiso={PANEL}>
                     <AdminDashboardPage />
-                  </RequireRole>
+                  </RequirePermiso>
                 }
               />
               <Route
                 path="admin/ventas"
                 element={
-                  <RequireRole roles={ROLES_ADMIN}>
+                  <RequirePermiso permiso={RUTAS_DEL_PANEL.ventas}>
                     <AdminVentasPage />
-                  </RequireRole>
+                  </RequirePermiso>
                 }
               />
               <Route
                 path="admin/fraude"
                 element={
-                  <RequireRole roles={ROLES_ADMIN}>
+                  <RequirePermiso permiso={RUTAS_DEL_PANEL.fraude}>
                     <AdminFraudePage />
-                  </RequireRole>
+                  </RequirePermiso>
                 }
               />
               <Route
                 path="admin/bloqueos"
                 element={
-                  <RequireRole roles={ROLES_ADMIN}>
+                  <RequirePermiso permiso={RUTAS_DEL_PANEL.bloqueos}>
                     <AdminBloqueosPage />
-                  </RequireRole>
+                  </RequirePermiso>
+                }
+              />
+              <Route
+                path="admin/permisos"
+                element={
+                  <RequirePermiso permiso={RUTAS_DEL_PANEL.permisos}>
+                    <AdminPermisosPage />
+                  </RequirePermiso>
                 }
               />
               <Route

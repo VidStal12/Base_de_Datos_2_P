@@ -1,5 +1,6 @@
 const { Client } = require('@elastic/elasticsearch');
 const { crearCircuito } = require('../utils/resiliencia');
+const { DIMENSION } = require('./embeddingsModelo');
 
 let cliente;
 let preparacion;
@@ -78,6 +79,13 @@ const MAPPING = {
       type: 'completion',
       contexts: [{ name: 'estado', type: 'category' }],
     },
+    // Vector del producto para «productos parecidos» (ver IA/ADR-006-recomendacion-semantica-vectorial.md): lo calcula
+    // embeddingService con el modelo local y solo vive acá, no hay otra copia en Mongo. Coseno sobre vectores
+    // normalizados; el tipo de índice es el que Elasticsearch 8.15 usa por defecto (int8_hnsw). Un `index` completo
+    // del documento SIN este campo lo borra, por eso busquedaSyncService.indexarProducto() actualiza en vez de
+    // reemplazar cuando el modelo no está; y toda consulta que no lo necesite lo excluye de _source (ver
+    // SIN_VECTOR en busquedaService.js): con él, la misma respuesta pesa 13 veces más.
+    embedding: { type: 'dense_vector', dims: DIMENSION, index: true, similarity: 'cosine' },
   },
 };
 

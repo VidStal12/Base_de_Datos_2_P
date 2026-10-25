@@ -143,4 +143,30 @@ function compromisoFalso({ vendedores = [] } = {}) {
   };
 }
 
-module.exports = { cargar, redisFalso, productoFalso, compromisoFalso, ACEPTADO_EN };
+// Doble de politicaAccesoService para las pruebas del middleware de roles: decide como el código (la lista de
+// roles de requireRole) salvo lo que se le diga en `reglas` ({ 'GET /ruta': { comprador: true } }: un rol permitido
+// o negado a mano). La política real, con sus reglas de MySQL, se prueba en tests/permisos*.test.js.
+function politicaAccesoFalsa({ reglas = {} } = {}) {
+  return {
+    permite: async (usuario, clave, porDefecto) => {
+      const regla = reglas[clave]?.[usuario.rol];
+      return { permitido: regla ?? porDefecto.includes(usuario.rol), origen: regla === undefined ? 'codigo' : 'regla', rol: usuario.rol };
+    },
+  };
+}
+
+// Doble de auditoriaAccesoService: anota las denegaciones en vez de escribirlas en Mongo.
+function auditoriaAccesoFalsa() {
+  const denegaciones = [];
+  return {
+    denegaciones,
+    registrarDenegacion: (usuario, ruta, rol) => {
+      denegaciones.push({ id: usuario?.id_usuario, ruta, rol });
+      return true;
+    },
+    registrar: async () => true,
+    registrarVarios: async () => true,
+  };
+}
+
+module.exports = { cargar, redisFalso, productoFalso, compromisoFalso, politicaAccesoFalsa, auditoriaAccesoFalsa, ACEPTADO_EN };

@@ -9,6 +9,7 @@ const { conectar: conectarRedis } = require('../config/redis');
 const { componenteCaido, registrarFallo } = require('../utils/resiliencia');
 const { escaparRegex } = require('../utils/validation');
 const facetas = require('./facetasBusqueda');
+const reglas = require('./reglasRelacionados');
 
 // Lecturas del catálogo que SOBREVIVEN a la caída de Mongo o de Elasticsearch
 // (IA/ENTREGA-3-CONSISTENCIA.md §7). Los dos guardan una copia de lo que el catálogo
@@ -266,4 +267,61 @@ function categorias() {
   return conRespaldo(() => categoriaService.listar(), () => busquedaService.categoriasDelIndice(), 'mongo');
 }
 
-module.exports = { buscar, sugerir, listar, obtener, categorias, registrarVistaProducto };
+// ---------- Productos relacionados (ficha del producto) ----------
+//
+// Tres capas, de la mejor a la que siempre alcanza (IA/ADR-006-recomendacion-semantica-vectorial.md):
+//   1) por significado: los vecinos del vector del producto en el índice (`modo: 'semantico'`). Todo sale del
+//      índice, así que sigue funcionando con Mongo apagado (el stock vigente se relee de Mongo solo si responde);
+//   2) misma subcategoría, de Mongo (`modo: 'subcategoria'`): cuando Elasticsearch está apagado, cuando el producto
+//      todavía no tiene vector (se indexó sin el modelo) o cuando por significado no hay suficientes parecidos;
+//   3) nada (`modo: 'ninguno'`): con menos de MINIMO resultados la sección se oculta — mejor nada que algo sin
+//      relación. Con Elasticsearch y Mongo apagados a la vez se informa la caída del buscador (503), como en el resto.
+// Un producto inexistente, o de un vendedor suspendido, es un 404 (igual que su detalle para el público).
+const SIN_RELACIONADOS = { modo: 'ninguno', productos: [] };
+const bastan = (respuesta) => respuesta.productos.length >= reglas.MINIMO;
+
+async function relacionadosPorSignificado(id, usuarioId) {
+  let similares;
+  try {
+    similares = await busquedaService.similares(id, { vendedorPropioId: usuarioId });
+  } catch (err) {
+    // Un producto que el índice no conoce (se creó con Elasticsearch apagado y aún no hubo backfill) puede existir en
+    // Mongo: se deja la decisión a la capa siguiente, que lo confirma o responde 404.
+    if (err.status === 404) return { modo: 'semantico', productos: [] };
+    throw err;
+  }
+  // El índice no se entera de las ventas: se relee el stock vigente de Mongo (una consulta para todos los candidatos)
+  // para dejar lo agotado al final con datos de hoy, no de la última edición.
+  const { resultados } = await conExistenciasVigentes({ resultados: similares.candidatos });
+  return { modo: 'semantico', productos: reglas.elegir(resultados, { titulo: similares.origen.descripcion }) };
+}
+
+async function relacionadosPorSubcategoria(id, usuarioId) {
+  const producto = await productoService.obtener(id);
+  if (await productoService.vendedorOculto(producto.vendedor_id)) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+  const { id: subcategoriaId, subcategoria } = producto.subcategoria ?? {};
+  if (!subcategoriaId) return SIN_RELACIONADOS;
+  const delMismoTipo = (await productoService.listar({ subcategoriaId }))
+    .filter((otro) => otro.id !== producto.id && otro.vendedor_id !== Number(usuarioId))
+    .sort((a, b) => (b.total_vendido ?? 0) - (a.total_vendido ?? 0)); // sin una medida de parecido, los más vendidos primero
+  return { modo: 'subcategoria', subcategoria, productos: reglas.elegir(delMismoTipo, { titulo: producto.descripcion }) };
+}
+
+async function relacionados(id, usuarioId) {
+  const porSignificado = await conRespaldo(
+    () => relacionadosPorSignificado(id, usuarioId),
+    () => relacionadosPorSubcategoria(id, usuarioId),
+    'elasticsearch'
+  );
+  if (bastan(porSignificado)) return porSignificado;
+  if (porSignificado.modo === 'subcategoria') return SIN_RELACIONADOS; // ya era el respaldo: no hay otra capa
+  // El índice contestó, pero sin suficientes parecidos (o el producto no tiene vector): se prueba con la subcategoría.
+  // Si Mongo está apagado no se puede confirmar nada: la sección se oculta. Un 404 sí se informa.
+  const porSubcategoria = await relacionadosPorSubcategoria(id, usuarioId).catch((err) => {
+    if (cayo(err, 'mongo')) return SIN_RELACIONADOS;
+    throw err;
+  });
+  return bastan(porSubcategoria) ? porSubcategoria : SIN_RELACIONADOS;
+}
+
+module.exports = { buscar, sugerir, listar, obtener, categorias, registrarVistaProducto, relacionados };

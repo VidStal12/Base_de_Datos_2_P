@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const jwt = require('jsonwebtoken');
-const { cargar } = require('./redisHelpers');
+const { cargar, politicaAccesoFalsa, auditoriaAccesoFalsa } = require('./redisHelpers');
 
 // El middleware de autenticación hace cumplir la suspensión en cada petición
 // (suspensionService.exigirCuentaActiva). La prueba contra el stack real, con Redis,
@@ -19,7 +19,7 @@ function middleware(suspendidas = []) {
       throw err;
     },
   };
-  return cargar('../src/middleware/auth.js', { '../services/suspensionService': suspension }, { JWT_SECRET: SECRETO });
+  return cargar('../src/middleware/auth.js', { '../services/suspensionService': suspension, '../services/politicaAccesoService': politicaAccesoFalsa(), '../services/auditoriaAccesoService': auditoriaAccesoFalsa() }, { JWT_SECRET: SECRETO });
 }
 
 const token = (id, rol = 'comprador') => jwt.sign({ id_usuario: id, rol }, SECRETO);
@@ -88,6 +88,7 @@ test('requireAuth: un error inesperado de la consulta se pasa a Express, no se c
           throw new Error('algo raro');
         },
       },
+      '../services/politicaAccesoService': politicaAccesoFalsa(), '../services/auditoriaAccesoService': auditoriaAccesoFalsa(),
     },
     { JWT_SECRET: SECRETO }
   );

@@ -54,6 +54,19 @@ router.get('/:id', optionalAuth, async (req, res) => {
   }
 });
 
+// Productos parecidos por significado (ver IA/ADR-006-recomendacion-semantica-vectorial.md). Pública, con la misma
+// regla de visibilidad que el detalle; con sesión se descartan los productos del propio vendedor (nadie compra lo
+// que él mismo vende). `modo: 'ninguno'` no es un error: la ficha simplemente no muestra la sección.
+router.get('/:id/relacionados', optionalAuth, async (req, res) => {
+  try {
+    const productoId = Number(req.params.id);
+    if (!Number.isInteger(productoId) || productoId < 1) return res.status(404).json({ error: 'Producto no encontrado' });
+    res.json(await catalogoLectura.relacionados(productoId, req.usuario?.id_usuario));
+  } catch (err) {
+    responderError(res, err, 404);
+  }
+});
+
 // Historial de cambios (ver ADR-003). Sin ?fecha, devuelve la línea de tiempo
 // completa de eventos; con ?fecha=AAAA-MM-DD, el snapshot vigente en esa fecha.
 // Solo el vendedor DUEÑO del producto o un administrador: incluye precio/stock por

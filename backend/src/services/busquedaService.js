@@ -1,6 +1,11 @@
 const { conCircuito, indice } = require('../config/elasticsearch');
 const { vendedoresSuspendidos } = require('./suspensionService');
 const facetas = require('./facetasBusqueda');
+const reglas = require('./reglasRelacionados');
+
+// El documento indexado lleva el vector del producto (`embedding`, 384 números). Las consultas que no lo
+// necesitan lo dejan fuera de la respuesta: con él, la misma página de resultados pesa 13 veces más (medido).
+const SIN_VECTOR = { excludes: ['embedding'] };
 
 // Un atributo elegido, como filtro: `nested` mantiene nombre/valor pegados al MISMO elemento del
 // array (igual que $elemMatch en Mongo, ver config/elasticsearch.js) y `terms` deja elegir varios
@@ -103,7 +108,7 @@ function construirPedido(filtros, { suspendidos = [], vendedorId, incluirInactiv
     precioAsc: [{ precio: 'asc' }, { producto_id: 'asc' }],
     precioDesc: [{ precio: 'desc' }, { producto_id: 'asc' }],
   }[ordenarPor] ?? (q ? [{ _score: 'desc' }, { producto_id: 'asc' }] : [{ producto_id: 'asc' }]);
-  const base = { index: indice(), sort, from: (pagina - 1) * tamano, size: tamano, track_total_hits: true };
+  const base = { index: indice(), _source: SIN_VECTOR, sort, from: (pagina - 1) * tamano, size: tamano, track_total_hits: true };
 
   if (!conFacetas) return { ...base, query: { bool: { must, filter: [...filter, ...todos], must_not } } };
 
@@ -278,13 +283,17 @@ async function listarDesdeIndice({ categoriaId, subcategoriaId, q, vendedorId, a
   return resultados;
 }
 
+// El motor responde 404 al pedir por id un documento que no existe: para quien llama es «producto no encontrado»,
+// no una caída (el cortacircuitos ya distingue los dos).
+const productoNoEncontrado = () => Object.assign(new Error('Producto no encontrado'), { status: 404 });
+const noEncontrado = (err) => (err?.meta?.statusCode === 404 || err?.statusCode === 404 ? productoNoEncontrado() : err);
+
 async function obtenerDelIndice(id) {
   try {
-    const hit = await conCircuito((cliente) => cliente.get({ index: indice(), id: String(id) }));
+    const hit = await conCircuito((cliente) => cliente.get({ index: indice(), id: String(id), _source_excludes: SIN_VECTOR.excludes }));
     return aProducto(hit);
   } catch (err) {
-    if (err?.meta?.statusCode === 404 || err?.statusCode === 404) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
-    throw err;
+    throw noEncontrado(err);
   }
 }
 
@@ -344,4 +353,51 @@ async function publicacionDelIndice(productoIds) {
   );
 }
 
-module.exports = { buscar, construirPedido, sugerir, listarDesdeIndice, obtenerDelIndice, categoriasDelIndice, publicacionDelIndice };
+// ---------- Productos parecidos por significado ----------
+//
+// Dos consultas baratas: leer el vector del producto (por id) y buscar sus vecinos (kNN sobre `embedding`).
+// Los filtros de visibilidad van DENTRO de la búsqueda de vecinos, no después sobre los k más cercanos: así lo
+// oculto (inactivo, vendedor suspendido, el propio producto, lo del propio vendedor) no les quita lugar a los
+// que sí se pueden mostrar. `similarity` es el coseno mínimo; lo que queda por debajo no es un resultado.
+function construirPedidoSimilares(vector, { productoId, suspendidos = [], vendedorPropioId, k = reglas.CANDIDATOS, umbral = reglas.UMBRAL_COSENO } = {}) {
+  const excluir = [{ term: { producto_id: Number(productoId) } }];
+  if (suspendidos.length > 0) excluir.push({ terms: { vendedor_id: suspendidos } });
+  if (vendedorPropioId) excluir.push({ term: { vendedor_id: Number(vendedorPropioId) } });
+  return {
+    index: indice(),
+    size: k,
+    _source: SIN_VECTOR,
+    knn: {
+      field: 'embedding',
+      query_vector: vector,
+      k,
+      num_candidates: 100,
+      similarity: umbral,
+      filter: { bool: { filter: [{ term: { estado: 'activo' } }], must_not: excluir } },
+    },
+  };
+}
+
+// Los vecinos más cercanos de un producto, del más parecido al menos, tal cual los devuelve el motor: el recorte final
+// (repetidos, agotados, tope por vendedor) es de reglasRelacionados.elegir() porque necesita el stock vigente, que está
+// en Mongo. `sinVector`: el producto existe pero todavía no se le calculó (se indexó sin el modelo); quien llama
+// decide qué mostrar en su lugar. El de un vendedor suspendido "no existe" para el público, igual que su detalle.
+async function similares(productoId, { vendedorPropioId } = {}) {
+  let origen;
+  try {
+    origen = await conCircuito((cliente) => cliente.get({ index: indice(), id: String(productoId), _source_includes: ['embedding', 'descripcion', 'vendedor_id'] }));
+  } catch (err) {
+    throw noEncontrado(err);
+  }
+  const suspendidos = await vendedoresSuspendidos();
+  const { embedding, descripcion, vendedor_id: vendedorId } = origen._source;
+  if (suspendidos.has(vendedorId)) throw productoNoEncontrado();
+  const resumen = { id: Number(origen._id), descripcion };
+  if (!embedding) return { origen: resumen, candidatos: [], sinVector: true };
+
+  const pedido = construirPedidoSimilares(embedding, { productoId, suspendidos: [...suspendidos], vendedorPropioId });
+  const respuesta = await conCircuito((cliente) => cliente.search(pedido));
+  return { origen: resumen, candidatos: respuesta.hits.hits.map(aProducto), sinVector: false };
+}
+
+module.exports = { buscar, construirPedido, construirPedidoSimilares, sugerir, listarDesdeIndice, obtenerDelIndice, categoriasDelIndice, publicacionDelIndice, similares };

@@ -5,6 +5,7 @@ import { productosApi, categoriasApi } from '../../api/productos';
 import { formatCurrency } from '../../utils/format';
 import { Spinner } from '../../components/common/Spinner';
 import { Button } from '../../components/common/Button';
+import { RUTAS_DEL_PANEL } from '../../utils/permisos';
 
 const PERIODOS = [
   { label: 'Todo el tiempo', dias: null },
@@ -88,7 +89,9 @@ function EstadisticasEdicionesWidget() {
   );
 }
 
-export function AdminDashboardPage() {
+// La gestión del catálogo: buscar, filtrar y editar cualquier producto. Es del administrador (publicar y editar productos
+// es una ruta fija: dueño o administrador), así que solo se monta para él.
+function ProductosDelCatalogo() {
   const { token } = useAuth();
   const [productos, setProductos] = useState([]);
   const [categorias, setCategorias] = useState([]);
@@ -122,20 +125,6 @@ export function AdminDashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-neutral-900">Panel de administrador</h1>
-        <div className="flex flex-wrap gap-2">
-          <Button as={Link} to="/admin/ventas" variant="outline">Ventas y demanda</Button>
-          <Button as={Link} to="/admin/fraude" variant="outline">Señales de fraude</Button>
-          <Button as={Link} to="/admin/bloqueos" variant="outline">Cuentas bloqueadas</Button>
-          <Button as={Link} to="/admin/productos/nuevo" variant="accent">
-            + Nuevo producto
-          </Button>
-        </div>
-      </div>
-
-      <EstadisticasEdicionesWidget />
-
       <form onSubmit={handleBuscar} className="flex flex-wrap gap-3">
         <select
           value={categoriaId}
@@ -213,6 +202,45 @@ export function AdminDashboardPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Las secciones del panel que esta cuenta puede usar. La lista sale de /api/auth/me (las rutas por roles de la lista
+// blanca, más lo que un administrador ajustó en /admin/permisos): un rol creado ahí ve acá solo lo que se le concedió.
+const SECCIONES = [
+  { clave: RUTAS_DEL_PANEL.ventas, ruta: '/admin/ventas', texto: 'Ventas y demanda' },
+  { clave: RUTAS_DEL_PANEL.fraude, ruta: '/admin/fraude', texto: 'Señales de fraude' },
+  { clave: RUTAS_DEL_PANEL.bloqueos, ruta: '/admin/bloqueos', texto: 'Cuentas bloqueadas' },
+  { clave: RUTAS_DEL_PANEL.permisos, ruta: '/admin/permisos', texto: 'Permisos y accesos' },
+];
+
+export function AdminDashboardPage() {
+  const { usuario, puede } = useAuth();
+  const esAdmin = usuario?.rol?.tipo_rol === 'administrador';
+  const secciones = SECCIONES.filter((seccion) => puede(seccion.clave));
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-bold text-neutral-900">{esAdmin ? 'Panel de administrador' : 'Panel'}</h1>
+        <div className="flex flex-wrap gap-2">
+          {secciones.map((seccion) => (
+            <Button key={seccion.ruta} as={Link} to={seccion.ruta} variant="outline">
+              {seccion.texto}
+            </Button>
+          ))}
+          {esAdmin && (
+            <Button as={Link} to="/admin/productos/nuevo" variant="accent">
+              + Nuevo producto
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {puede(RUTAS_DEL_PANEL.estadisticas) && <EstadisticasEdicionesWidget />}
+
+      {esAdmin && <ProductosDelCatalogo />}
     </div>
   );
 }

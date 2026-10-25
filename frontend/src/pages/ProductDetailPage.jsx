@@ -9,6 +9,7 @@ import { Spinner } from '../components/common/Spinner';
 import { Button } from '../components/common/Button';
 import { HistorialSection } from '../components/product/HistorialSection';
 import { ResenasSection } from '../components/product/ResenasSection';
+import { ProductosRelacionados } from '../components/product/ProductosRelacionados';
 import { StarRating } from '../components/common/StarRating';
 
 const ROLES_VEN_HISTORIAL = ['vendedor', 'administrador'];
@@ -199,6 +200,8 @@ export function ProductDetailPage() {
           Estás viendo la versión resumida de este producto: las reseñas, el historial y las ofertas flash no están disponibles en este momento.
         </p>
       )}
+
+      <ProductosRelacionados key={producto.id} productoId={producto.id} titulo={producto.descripcion} token={token} />
 
       {!producto.desde_indice && puedeVerHistorial && (
         <HistorialSection

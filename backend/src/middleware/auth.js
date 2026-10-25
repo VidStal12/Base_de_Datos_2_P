@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { CODIGO_CUENTA_SUSPENDIDA, exigirCuentaActiva } = require('../services/suspensionService');
+const politica = require('../services/politicaAccesoService');
+const auditoria = require('../services/auditoriaAccesoService');
 const { esErrorDeAcceso, registrarFallo } = require('../utils/resiliencia');
 
 // Valida el token Y que la cuenta no esté suspendida (bloqueo temporal por fraude
@@ -34,11 +36,33 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-// Requiere requireAuth antes en la cadena (usa req.usuario.rol, que viene del token).
+const CODIGO_DENEGADO = 'ACL_DENEGADO';
+
+// La clave de la ruta en la lista blanca (config/politicaRutas.js): «GET /api/admin/ventas». Sale de cómo se montó
+// el router, así que ninguna ruta repite su propio nombre; tests/accesoRutas.test.js prueba que coincide con lo declarado.
+function claveDeLaRuta(req) {
+  const metodo = req.method === 'HEAD' ? 'GET' : req.method; // Express contesta un HEAD con el manejador del GET
+  const trozo = req.route?.path ?? req.path;
+  return `${metodo} ${req.baseUrl}${trozo === '/' ? '' : trozo}`; // router.post('/') de /api/productos es «POST /api/productos»
+}
+
+// Requiere requireAuth antes en la cadena. `rolesPermitidos` es lo que declara el CÓDIGO para la ruta (la lista
+// blanca); un administrador puede ajustar desde /admin/permisos qué roles entran a las rutas declaradas editables
+// (services/politicaAccesoService.js, que decide con el rol de HOY de la cuenta, no con el del token). Lo que se
+// deniega queda en el registro de auditoría.
 function requireRole(...rolesPermitidos) {
-  const middleware = (req, res, next) => {
-    if (!req.usuario || !rolesPermitidos.includes(req.usuario.rol)) {
-      return res.status(403).json({ error: 'No tenés permiso para esta acción' });
+  const middleware = async (req, res, next) => {
+    if (!req.usuario) return res.status(403).json({ error: 'No tenés permiso para esta acción', codigo: CODIGO_DENEGADO });
+    const ruta = claveDeLaRuta(req);
+    let decision;
+    try {
+      decision = await politica.permite(req.usuario, ruta, rolesPermitidos);
+    } catch (err) {
+      return next(err);
+    }
+    if (!decision.permitido) {
+      auditoria.registrarDenegacion(req.usuario, ruta, decision.rol);
+      return res.status(403).json({ error: 'No tenés permiso para esta acción', codigo: CODIGO_DENEGADO });
     }
     next();
   };
@@ -76,4 +100,4 @@ async function optionalAuth(req, res, next) {
 requireAuth.acceso = { sesion: true };
 optionalAuth.acceso = { sesionOpcional: true };
 
-module.exports = { requireAuth, requireRole, optionalAuth };
+module.exports = { requireAuth, requireRole, optionalAuth, CODIGO_DENEGADO, claveDeLaRuta };

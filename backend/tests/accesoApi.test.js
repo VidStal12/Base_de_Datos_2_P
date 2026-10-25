@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const { cargar } = require('./redisHelpers');
+const { cargar, politicaAccesoFalsa, auditoriaAccesoFalsa } = require('./redisHelpers');
 const { manejarErrores } = require('../src/utils/http');
 
 // Autorización de la API, de punta a punta con las piezas REALES: el middleware de autenticación (JWT + cuenta
@@ -29,6 +29,7 @@ const auth = cargar('../src/middleware/auth.js', {
       if (suspendidas.has(id)) throw Object.assign(new Error('Cuenta suspendida'), { codigo: 'CUENTA_SUSPENDIDA' });
     },
   },
+  '../services/politicaAccesoService': politicaAccesoFalsa(), '../services/auditoriaAccesoService': auditoriaAccesoFalsa(),
 }, { JWT_SECRET: SECRETO });
 
 // MySQL es la autoridad del dueño (verificarPermiso): el producto 1 es del vendedor 2 y el 3, del vendedor 5.

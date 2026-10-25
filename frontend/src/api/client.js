@@ -51,6 +51,27 @@ async function request(path, { method = 'GET', body, token } = {}) {
 export const api = {
   get: (path, token) => request(path, { token }),
   post: (path, body, token) => request(path, { method: 'POST', body, token }),
+  put: (path, body, token) => request(path, { method: 'PUT', body, token }),
   patch: (path, body, token) => request(path, { method: 'PATCH', body, token }),
   delete: (path, token) => request(path, { method: 'DELETE', token }),
+  // Un archivo que el servidor entrega con la sesión (el CSV de la auditoría): un enlace normal no manda el token.
+  // Devuelve { blob, nombre } para que quien llama lo guarde.
+  descargar: async (path, token) => {
+    let res;
+    try {
+      res = await fetch(`${BASE_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    } catch {
+      const err = new Error('No se pudo conectar con el servidor. Revisá tu conexión o probá de nuevo en unos instantes.');
+      err.codigo = 'SIN_CONEXION';
+      throw err;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      const err = new Error(data?.error || `Error ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    const nombre = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'descarga.csv';
+    return { blob: await res.blob(), nombre };
+  },
 };

@@ -8,6 +8,7 @@ const productoRoutes = require('./routes/productoRoutes');
 const checkoutRoutes = require('./routes/checkoutRoutes');
 const compraRoutes = require('./routes/compraRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const adminAccesoRoutes = require('./routes/adminAccesoRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const ofertaRoutes = require('./routes/ofertaRoutes');
 const recomendacionRoutes = require('./routes/recomendacionRoutes');
@@ -40,6 +41,7 @@ app.get('/', (req, res) => {
       'GET /api/productos (filtros: ?categoriaId=, ?subcategoriaId=, ?q=, ?vendedorId=, ?atributos=<JSON {nombre:valor}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos)',
       'GET /api/productos/estadisticas/ediciones (requiere token de administrador — agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
       'GET /api/productos/:id',
+      'GET /api/productos/:id/relacionados (productos parecidos por significado —vectores en Elasticsearch—; { modo: semantico | subcategoria | ninguno, subcategoria?, productos }; sesión opcional: con sesión no se ofrecen los productos del propio vendedor; ver IA/ADR-006)',
       'GET /api/productos/:id/historial (requiere token: el vendedor DUEÑO del producto o un administrador — ?fecha=AAAA-MM-DD para reconstrucción; sin fecha, línea de tiempo completa)',
             'GET /api/productos/:id/resenas (reseñas de un producto, público; el autor aparece como alias —«Ana G.»—, sin id ni nombre completo)',
       'POST /api/productos/:id/resenas (requiere token — {calificacion, comentario})',
@@ -66,6 +68,13 @@ app.get('/', (req, res) => {
       'POST /api/admin/bloqueos/:usuarioId/extender (solo administrador — {horas, nota?}, mantiene la suspensión y le suma tiempo)',
       'POST /api/admin/recalcular-ventas (requiere token, rol administrador — recalcula total_vendido desde compra_detalle, sobrescribe la caché)',
       'POST /api/admin/recalcular-inventario (requiere token, rol administrador — recalcula precio/cantidad desde inventario (MySQL), sobrescribe la caché)',
+      'GET /api/admin/permisos (solo administrador — la matriz de permisos: roles × rutas editables, lo que declara el código y lo que cambió un administrador; ver IA/ADR-007 §9)',
+      'PUT /api/admin/permisos (solo administrador — {cambios:[{clave, rol, permitido}]}, todo o nada, auditado)',
+      'POST /api/admin/permisos/restaurar (solo administrador — {clave?, rol?}: vuelve a lo que declara el código)',
+      'GET /api/admin/permisos/simular (solo administrador — ?clave=GET /api/admin/ventas&rol=vendedor, o &usuarioId=: la misma decisión que aplica la API, con el motivo)',
+      'POST /api/admin/roles | DELETE /api/admin/roles/:id (solo administrador — crea un rol sin permisos extra, o borra uno que nadie usa)',
+      'GET /api/admin/usuarios (solo administrador — ?q=, ?pagina=, ?tamano=) | PATCH /api/admin/usuarios/:id/rol ({rol}; no la propia cuenta, siempre queda otro administrador)',
+      'GET /api/admin/auditoria (solo administrador — ?tipo=cambios|regla|restaurar|rol_cuenta|rol_creado|rol_eliminado|denegacion, ?actor=, ?desde=, ?hasta=AAAA-MM-DD, ?pagina=) | GET /api/admin/auditoria/exportar (CSV)',
       'GET /api/ofertas/:productoId/stock (datos propios de la oferta en Redis y remanente en vivo)',
       'PATCH /api/ofertas/:productoId (requiere token, rol vendedor/administrador — dueño del producto o administrador; configura/pausa la oferta)',
       'POST /api/ofertas/:productoId/intentos (requiere token — prepara un intento compartido; {anteriorIntentoId} para otra compra explícita)',
@@ -88,6 +97,7 @@ app.use('/api/carrito', cartRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/compras', compraRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin', adminAccesoRoutes);
 app.use('/api/ofertas', ofertaRoutes);
 app.use('/api/recomendaciones', recomendacionRoutes);
 app.use('/api/busqueda', busquedaRoutes);

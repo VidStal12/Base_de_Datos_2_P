@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
-const { cargar } = require('./redisHelpers');
+const { cargar, politicaAccesoFalsa, auditoriaAccesoFalsa } = require('./redisHelpers');
 const { componenteCaido, esErrorDeAcceso, avisarCredencial, CredencialRechazada, ServicioNoDisponible, MENSAJE_PUBLICO_CREDENCIAL } = require('../src/utils/resiliencia');
 const { cuerpoDeError, estadoDeError, responderError, manejarErrores } = require('../src/utils/http');
 const { CUENTAS, usuarioDe, variableContrasena, reglas, lineaAcl, archivoAcl, sha256 } = require('../src/config/redisCuentas');
@@ -377,6 +377,7 @@ function authCon(falla) {
     entorno,
     ...cargar('../src/middleware/auth.js', {
       '../services/suspensionService': { CODIGO_CUENTA_SUSPENDIDA: 'CUENTA_SUSPENDIDA', exigirCuentaActiva: async () => { throw falla(); } },
+      '../services/politicaAccesoService': politicaAccesoFalsa(), '../services/auditoriaAccesoService': auditoriaAccesoFalsa(),
     }, entorno),
   };
 }

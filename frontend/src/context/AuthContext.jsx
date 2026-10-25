@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { authApi } from '../api/auth';
 import { EVENTO_CUENTA_SUSPENDIDA } from '../utils/suspension';
+import { puedeAlguna, puedeUsar } from '../utils/permisos';
 
 const AuthContext = createContext(null);
 const STORAGE_KEY = 'tiendaya_token';
@@ -100,10 +101,19 @@ export function AuthProvider({ children }) {
     setUsuario(null);
   }
 
+  // Lo que esta cuenta puede usar hoy (GET /api/auth/me → `permisos`: las rutas por roles de la lista blanca, con lo
+  // que un administrador ajustó desde /admin/permisos). Quien manda es la API en cada petición; esto solo decide qué se
+  // ofrece. Con el perfil armado desde el token (la base de cuentas apagada) un administrador sigue viendo sus secciones.
+  const adminSinPerfil = Boolean(usuario?.perfilIncompleto) && usuario?.rol?.tipo_rol === 'administrador';
+  const puede = (clave) => adminSinPerfil || puedeUsar(usuario?.permisos, clave);
+  const puedeAlgunaDe = (claves) => adminSinPerfil || puedeAlguna(usuario?.permisos, claves);
+
   const value = {
     token,
     usuario,
     cargando,
+    puede,
+    puedeAlguna: puedeAlgunaDe,
     estaAutenticado: Boolean(token),
     suspension,
     descartarSuspension: () => setSuspension(null),
