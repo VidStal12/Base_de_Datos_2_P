@@ -3,7 +3,10 @@ import { CODIGO_CUENTA_SUSPENDIDA, EVENTO_CUENTA_SUSPENDIDA } from '../utils/sus
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
 async function request(path, { method = 'GET', body, token } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
+  // Una lectura (GET) no lleva cuerpo, así que no declara tipo de contenido: con ese encabezado el navegador pide permiso al
+  // servidor (OPTIONS) antes de CADA dirección distinta, y las pantallas que leen muchas (el stock de cada oferta de la
+  // portada) pagaban el doble. Sin sesión, un GET es una petición «simple» y viaja directo.
+  const headers = method === 'GET' ? {} : { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;

@@ -54,6 +54,14 @@
   --font-sans: 'Segoe UI', system-ui, Roboto, sans-serif;
 }
 
+/* Una fila que se desliza (Carrusel) sin la barra de desplazamiento: las flechas, los puntos y el gesto táctil la reemplazan. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 body {
   margin: 0;
   background-color: var(--color-neutral-50);

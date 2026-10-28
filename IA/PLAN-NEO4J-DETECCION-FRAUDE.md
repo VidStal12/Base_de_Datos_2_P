@@ -394,7 +394,7 @@ Se aplica en **todos** los caminos de compra, no solo en uno:
 | Carrito | `cartService.guardar()` | `agregar` y `actualizarCantidad` — el carrito nunca llega a contener algo que el checkout va a rechazar |
 | Oferta flash | `ofertaFlashService.comprar()` | Antes de Redis: el rechazo no gasta (ni hay que devolver) una unidad del pool |
 | Recomendación | `tendenciaService.comprar()` | Antes del cupo personal; además `buscarCoincidencias` excluye los productos del propio vendedor (`vendedor_id: { $ne }`), así que nunca se le recomienda |
-| Interfaz | `ProductCard`, `ProductDetailPage`, `OfertasPage` | Se ocultan los controles de compra y se avisa "Es tu producto" — la UI es comodidad, el 403 es la garantía |
+| Interfaz | `ProductCard`, `ProductDetailPage`, `OfertaCard` (la portada y `OfertasPage`) | Se ocultan los controles de compra y se avisa "Es tu producto" — la UI es comodidad, el 403 es la garantía |
 
 Para que la tarjeta del buscador sepa si un resultado es propio, se agregó `vendedor_id` al mapping y al documento de Elasticsearch (reindexado: 108 productos).
 
