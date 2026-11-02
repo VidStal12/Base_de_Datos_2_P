@@ -26,7 +26,8 @@ async function conNombres(compras) {
         ...detalle,
         producto: {
           ...detalle.producto,
-          descripcion: producto?.descripcion ?? `Producto #${detalle.id_producto}`,
+          descripcion: producto?.descripcion ?? '',
+          nombre: producto?.nombre ?? `Producto #${detalle.id_producto}`,
           imagen_url: producto?.imagen_url ?? '',
         },
       };

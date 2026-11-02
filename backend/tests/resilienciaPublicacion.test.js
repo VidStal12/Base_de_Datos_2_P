@@ -42,8 +42,8 @@ function servicio({ mongo, indice }) {
 }
 
 const DOCS = [
-  { producto_id: 1, estado: 'activo', vendedor_id: 11, descripcion: 'Camiseta azul', imagenes: [{ principal: false, url: 'b.png' }, { principal: true, url: 'a.png' }] },
-  { producto_id: 2, estado: 'inactivo', vendedor_id: 12, descripcion: 'Gorra', imagenes: [] },
+  { producto_id: 1, estado: 'activo', vendedor_id: 11, nombre: 'Camiseta azul', descripcion: 'Prenda de algodón.', imagenes: [{ principal: false, url: 'b.png' }, { principal: true, url: 'a.png' }] },
+  { producto_id: 2, estado: 'inactivo', vendedor_id: 12, nombre: 'Gorra', descripcion: 'Visera curva.', imagenes: [] },
 ];
 
 test('con Mongo sano devuelve estado, vendedor, nombre e imagen principal, y el índice no se toca', async () => {
@@ -51,8 +51,8 @@ test('con Mongo sano devuelve estado, vendedor, nombre e imagen principal, y el 
   const s = servicio({ mongo, indice: () => assert.fail('no debe consultar el índice') });
   const m = await s.estadoPublicacion([1, 2]);
   assert.deepEqual(plano([...m]), [
-    [1, { estado: 'activo', vendedor_id: 11, descripcion: 'Camiseta azul', imagen_url: 'a.png' }],
-    [2, { estado: 'inactivo', vendedor_id: 12, descripcion: 'Gorra', imagen_url: '' }],
+    [1, { estado: 'activo', vendedor_id: 11, nombre: 'Camiseta azul', descripcion: 'Prenda de algodón.', imagen_url: 'a.png' }],
+    [2, { estado: 'inactivo', vendedor_id: 12, nombre: 'Gorra', descripcion: 'Visera curva.', imagen_url: '' }],
   ]);
   assert.deepEqual(s.llamadas.map(([quien]) => quien), ['mongo']);
 });
@@ -60,7 +60,7 @@ test('con Mongo sano devuelve estado, vendedor, nombre e imagen principal, y el 
 test('con Mongo apagado se pregunta al índice de búsqueda y la compra puede seguir', async () => {
   const mongo = () => assert.fail('Mongo está apagado: ni se le pregunta');
   mongo.caido = true;
-  const delIndice = new Map([[1, { estado: 'activo', vendedor_id: 11, descripcion: 'Camiseta azul', imagen_url: 'a.png' }]]);
+  const delIndice = new Map([[1, { estado: 'activo', vendedor_id: 11, nombre: 'Camiseta azul', descripcion: 'Prenda de algodón.', imagen_url: 'a.png' }]]);
   const s = servicio({ mongo, indice: () => delIndice });
   const m = await s.estadoPublicacion([1, 99]);
   assert.equal(m.get(1).estado, 'activo');

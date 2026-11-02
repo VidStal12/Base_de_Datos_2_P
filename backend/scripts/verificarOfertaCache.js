@@ -54,7 +54,7 @@ async function main() {
     afirmar((await redis.type(datos)) === 'hash', 'los datos de la oferta deben ser un HASH (como el carrito), no una cadena');
     const hash = await campos();
     afirmar(hash._formato === ofertaDatos.FORMATO, 'el hash debe llevar su marca de formato');
-    for (const campo of ['id', 'descripcion', 'estado', 'imagen_url', 'imagenes', 'atributos', 'subcategoria_id', 'vendedor_id', 'vendedor_nombre', 'precio_normal', 'resenas_resumen', 'version', 'oferta_flash', 'generado_en', 'vence_en']) {
+    for (const campo of ['id', 'nombre', 'descripcion', 'estado', 'imagen_url', 'imagenes', 'atributos', 'subcategoria_id', 'vendedor_id', 'vendedor_nombre', 'precio_normal', 'resenas_resumen', 'version', 'oferta_flash', 'generado_en', 'vence_en']) {
       afirmar(hash[campo] !== undefined, `falta el campo "${campo}" en el hash de la oferta`);
     }
     afirmar(JSON.parse(hash.atributos).length === 2 && hash.vendedor_id === String(mayorista.usuario.id_usuario) && Number(hash.precio_normal) === 25, 'el hash debe traer atributos, vendedor y precio normal');
@@ -83,7 +83,7 @@ async function main() {
     const regenerado = await ofertaDatos.obtener(id);
     afirmar(regenerado.descripcion === '[PRUEBA flash] Descripción editada', 'al vencer, la lectura debe regenerar con lo vigente del catálogo');
     const hashNuevo = await campos();
-    afirmar(hashNuevo._formato === '1' && hashNuevo.generado_en !== generadoAntes, 'y dejar publicado un hash nuevo');
+    afirmar(hashNuevo._formato === ofertaDatos.FORMATO && hashNuevo.generado_en !== generadoAntes, 'y dejar publicado un hash nuevo');
     afirmar((await redis.get(cupo)) === '3', 'regenerar los datos NO debe reiniciar el contador del cupo');
     console.log('OK 3: la clave venció → se regeneró sola con lo vigente, y el cupo siguió en 3.');
 
@@ -107,7 +107,7 @@ async function main() {
       const producto = await ofertaDatos.obtener(id);
       afirmar(producto.descripcion === '[PRUEBA flash] Producto de la caché de oferta', `${motivo}: debe regenerar con el catálogo`);
       const regenerada = await campos();
-      afirmar((await redis.type(datos)) === 'hash' && regenerada._formato === '1', `${motivo}: debe dejar un hash válido (sin WRONGTYPE)`);
+      afirmar((await redis.type(datos)) === 'hash' && regenerada._formato === ofertaDatos.FORMATO, `${motivo}: debe dejar un hash válido (sin WRONGTYPE)`);
       afirmar(Date.now() - Date.parse(regenerada.generado_en) < 30000, `${motivo}: la copia nueva debe haberse generado ahora`);
     }
     afirmar((await redis.get(cupo)) === '3', 'ninguna regeneración debe tocar el cupo');
@@ -124,12 +124,12 @@ async function main() {
     // --- 6) Publicar con una revisión vieja no pisa nada; y la concurrencia en frío converge ---
     const hashAntes = await campos();
     const vieja = String(Number(await redis.get(revision)) - 1);
-    const rechazada = await redis.publicarOferta(datos, revision, vieja, 450, JSON.stringify({ descripcion: 'DATOS VIEJOS' }), '1');
+    const rechazada = await redis.publicarOferta(datos, revision, vieja, 450, JSON.stringify({ descripcion: 'DATOS VIEJOS' }), ofertaDatos.FORMATO);
     afirmar(rechazada === 0 && (await campos()).descripcion === hashAntes.descripcion, 'publicar con una revisión vieja debe devolver 0 y no tocar los datos');
     await redis.del(datos);
     const lecturas = await Promise.all(Array.from({ length: 20 }, () => ofertaDatos.obtener(id)));
     afirmar(lecturas.every((p) => p.descripcion === '[PRUEBA flash] Tras la edición'), '20 lecturas simultáneas en frío deben devolver lo mismo');
-    afirmar((await campos())._formato === '1' && (await redis.get(cupo)) === '3', 'y dejar un solo hash válido, con el cupo intacto');
+    afirmar((await campos())._formato === ofertaDatos.FORMATO && (await redis.get(cupo)) === '3', 'y dejar un solo hash válido, con el cupo intacto');
     console.log('OK 6: una revisión vieja no publica (devuelve 0); 20 lecturas simultáneas en frío convergen en un hash válido.');
 
     // --- 7) El TTL nunca pasa del fin de la oferta ---

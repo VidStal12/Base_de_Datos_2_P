@@ -64,7 +64,7 @@ export function CartProvider({ children }) {
 
   async function agregar(producto, cantidad = 1) {
     if (!usuario) {
-      sessionStorage.setItem(PENDIENTE_KEY, JSON.stringify({ productoId: producto.id, cantidad, descripcion: producto.descripcion }));
+      sessionStorage.setItem(PENDIENTE_KEY, JSON.stringify({ productoId: producto.id, cantidad, nombre: producto.nombre }));
       const next = encodeURIComponent(location.pathname + location.search);
       navigate(`/login?next=${next}`);
       return false;

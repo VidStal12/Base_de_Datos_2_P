@@ -58,13 +58,14 @@ const largo = (texto) => `query: ${texto}`.length;
 
 // ── Qué se incrusta ─────────────────────────────────────────────────────────
 
-test('el texto de un producto es su título, la subcategoría y la categoría', () => {
+test('el texto de un producto es su descripción, la subcategoría y la categoría', () => {
   const { textoDeProducto } = servicio();
-  assert.equal(textoDeProducto({ descripcion: 'Camiseta polo clásica', subcategoria: { subcategoria: 'Camisetas', categoria: 'Ropa' } }), 'Camiseta polo clásica. Camisetas. Ropa.');
+  assert.equal(textoDeProducto({ nombre: 'Marca A', descripcion: 'Camiseta polo clásica', subcategoria: { subcategoria: 'Camisetas', categoria: 'Ropa' } }), 'Camiseta polo clásica. Camisetas. Ropa.');
 });
 
 test('lo que falta se omite, sin escribir «undefined» ni «null»', () => {
   const { textoDeProducto } = servicio();
+  assert.equal(textoDeProducto({ nombre: 'Solo título', subcategoria: { categoria: 'Ropa' } }), '');
   assert.equal(textoDeProducto({ descripcion: 'Producto sin datos' }), 'Producto sin datos.');
   assert.equal(textoDeProducto({ descripcion: 'X', subcategoria: { subcategoria: null, categoria: 'Ropa' } }), 'X. Ropa.');
 });

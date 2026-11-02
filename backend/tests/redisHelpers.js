@@ -39,7 +39,7 @@ function redisFalso() {
     },
     async publicarCarrito(k, revision, esperado, ttl, payload) {
       if ((valores.get(revision) || '0') !== esperado) return 0;
-      hashes.set(k, { _formato: '3', ...JSON.parse(payload) }); ttls.set(k, ttl); return 1;
+      hashes.set(k, { _formato: '4', ...JSON.parse(payload) }); ttls.set(k, ttl); return 1;
     },
     async invalidarCarrito(k, revision) {
       const siguiente = Number(valores.get(revision) || 0) + 1;
@@ -104,7 +104,7 @@ function productoFalso({ propios = [], suspendidos = [], catalogo, ...resto } = 
       const docs = catalogo ? await catalogo.find({ producto_id: { $in: productoIds } }).select().lean() : [];
       return new Map(docs.map((doc) => {
         const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
-        return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, descripcion: doc.descripcion, imagen_url: principal?.url || '' }];
+        return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, nombre: doc.nombre, descripcion: doc.descripcion, imagen_url: principal?.url || '' }];
       }));
     },
     ...resto,

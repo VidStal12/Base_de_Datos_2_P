@@ -30,15 +30,16 @@ function SnapshotPreviewCard({ snapshot, etiqueta, productoId, vendedorNombre, s
         <Link to={`/productos/${productoId}`} className="size-24 shrink-0 overflow-hidden rounded-lg bg-neutral-100">
           <img
             src={principal?.url || 'https://placehold.co/200x200?text=TiendaYa'}
-            alt={snapshot.descripcion}
+            alt={snapshot.nombre}
             className="size-full object-cover"
           />
         </Link>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           {subcategoriaNombre && <span className="text-xs text-neutral-500">{subcategoriaNombre}</span>}
           <Link to={`/productos/${productoId}`} className="line-clamp-2 text-sm font-medium text-neutral-800 hover:text-brand-700">
-            {snapshot.descripcion}
+            {snapshot.nombre}
           </Link>
+          {snapshot.descripcion && <p className="whitespace-pre-line text-sm text-neutral-700">{snapshot.descripcion}</p>}
           {vendedorNombre && <p className="text-xs text-neutral-500">Vendido por {vendedorNombre}</p>}
 
           <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -162,7 +163,8 @@ export function HistorialSection({ productoId, vendedorId, vendedorNombre, subca
               {ev.campos_modificados?.length > 0 && (
                 <p className="mt-1 text-xs text-neutral-500">Cambió: {ev.campos_modificados.join(', ')}</p>
               )}
-              <p className="mt-1 text-sm text-neutral-700">{ev.snapshot.descripcion}</p>
+              <p className="mt-1 text-sm text-neutral-700">{ev.snapshot.nombre}</p>
+              {ev.snapshot.descripcion && <p className="whitespace-pre-line text-sm text-neutral-600">{ev.snapshot.descripcion}</p>}
               {ev.snapshot.inventario && (
                 <p className="mt-0.5 text-xs text-neutral-500">
                   {formatCurrency(ev.snapshot.inventario.precio)} · {ev.snapshot.inventario.cantidad} en stock (en ese momento)

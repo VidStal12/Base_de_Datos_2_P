@@ -187,7 +187,7 @@ export function RecomendacionCheckoutPage() {
         <span className="inline-block rounded-full bg-accent-600 px-2.5 py-0.5 text-xs font-bold uppercase tracking-wide text-white">
           Recomendado para vos
         </span>
-        <h2 className="mt-3 font-bold text-neutral-900">{producto.descripcion}</h2>
+        <h2 className="mt-3 font-bold text-neutral-900">{producto.nombre}</h2>
         <p className="text-sm text-neutral-500">{producto.vendedor_nombre}</p>
         <div className="mt-2 flex items-baseline gap-2">
           <span className="text-2xl font-bold text-neutral-900">{formatCurrency(producto.precio_recomendado)}</span>

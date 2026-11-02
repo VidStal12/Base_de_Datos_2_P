@@ -49,7 +49,8 @@ const productoSchema = new Schema(
     // Entero de `producto.id` en MySQL, no un ObjectId — es lo que conecta
     // este documento con su fila relacional (id_vendedor, inventario).
     producto_id: { type: Number, required: true, unique: true },
-    descripcion: { type: String, required: true },
+    nombre: { type: String, required: true, trim: true },
+    descripcion: { type: String, default: '', trim: true },
     estado: { type: String, default: 'activo' },
     subcategoria_id: { type: Schema.Types.ObjectId, ref: 'Subcategoria', required: true },
     // Referencia cruzada hacia MySQL (usuarios.id_usuario) — no hay FK real

@@ -25,8 +25,8 @@ const tendenciaService = require('../src/services/tendenciaService');
 // subcategoría, no hay nada que la consulta de tendencia pueda encontrar.
 // También sembrado (permanente) en prisma/seed.js para que un clon nuevo
 // tenga esto desde el principio.
-async function asegurarProductoCompetidor({ vendedorCorreo, descripcion, subcategoriaNombre, precio, cantidad, atributos }) {
-  const yaExiste = await Producto.findOne({ descripcion });
+async function asegurarProductoCompetidor({ vendedorCorreo, nombre, descripcion, subcategoriaNombre, precio, cantidad, atributos }) {
+  const yaExiste = await Producto.findOne({ nombre });
   if (yaExiste) return yaExiste;
 
   const vendedor = await prisma.usuarios.findFirst({ where: { correo: vendedorCorreo } });
@@ -40,6 +40,7 @@ async function asegurarProductoCompetidor({ vendedorCorreo, descripcion, subcate
   });
   const doc = await Producto.create({
     producto_id: productoRelacional.id,
+    nombre,
     descripcion,
     estado: 'activo',
     subcategoria_id: subcategoria._id,
@@ -57,9 +58,9 @@ async function asegurarProductoCompetidor({ vendedorCorreo, descripcion, subcate
     fecha: doc.actualizado_en,
     usuario_id: vendedor.id_usuario,
     campos_modificados: [],
-    snapshot: { descripcion: doc.descripcion, estado: doc.estado, atributos: doc.atributos, imagenes: doc.imagenes, inventario: { precio, cantidad } },
+    snapshot: { nombre: doc.nombre, descripcion: doc.descripcion, estado: doc.estado, atributos: doc.atributos, imagenes: doc.imagenes, inventario: { precio, cantidad } },
   });
-  console.log(`Sembrado: "${descripcion}" (producto ${productoRelacional.id}, vendedor ${vendedor.nombres}).`);
+  console.log(`Sembrado: "${nombre}" (producto ${productoRelacional.id}, vendedor ${vendedor.nombres}).`);
   return doc;
 }
 
@@ -70,7 +71,8 @@ async function main() {
 
   await asegurarProductoCompetidor({
     vendedorCorreo: 'marta.diaz@example.com',
-    descripcion: 'Camiseta de algodón pima',
+    nombre: 'Camiseta de algodón pima',
+    descripcion: 'Prenda de algodón pima suave, en azul y talla M.',
     subcategoriaNombre: 'Camisetas',
     precio: 79.5,
     cantidad: 30,
@@ -110,9 +112,9 @@ async function main() {
   const { productos } = await tendenciaService.recomendar(usuario.id_usuario);
   console.log(
     `Recomendaciones (${productos.length}):`,
-    productos.map((p) => `${p.descripcion} · ${p.vendedor_nombre} · Q${p.precio_recomendado} (antes Q${p.precio_normal})`)
+    productos.map((p) => `${p.nombre} · ${p.vendedor_nombre} · Q${p.precio_recomendado} (antes Q${p.precio_normal})`)
   );
-  const cruzada = productos.find((p) => p.vendedor_nombre?.includes('Marta') || p.descripcion === 'Camiseta de algodón pima');
+  const cruzada = productos.find((p) => p.vendedor_nombre?.includes('Marta') || p.nombre === 'Camiseta de algodón pima');
   if (!cruzada) {
     throw new Error('FALLO: no apareció ningún producto de un vendedor distinto — la comparación entre vendedores no está funcionando');
   }

@@ -65,7 +65,8 @@ export function SellerProductFormPage() {
   const [categorias, setCategorias] = useState([]);
   const [categoriaId, setCategoriaId] = useState('');
   const [subcategoriaId, setSubcategoriaId] = useState('');
-  const [form, setForm] = useState({ descripcion: '', imagen_url: '', estado: 'activo', precio: '', cantidad: '' });
+  const [form, setForm] = useState({ nombre: '', descripcion: '', imagen_url: '', estado: 'activo', precio: '', cantidad: '' });
+  const [textosIniciales, setTextosIniciales] = useState({ nombre: '', descripcion: '' });
   const [valoresAtributos, setValoresAtributos] = useState({});
   // Nombre nuevo pendiente para un atributo existente, indexado por su nombre
   // ORIGINAL (no cambia mientras se escribe, evita que el input pierda foco).
@@ -92,7 +93,9 @@ export function SellerProductFormPage() {
 
       if (modoEdicion) {
         const producto = await productosApi.obtener(id);
+        setTextosIniciales({ nombre: producto.nombre, descripcion: producto.descripcion });
         setForm({
+          nombre: producto.nombre,
           descripcion: producto.descripcion,
           imagen_url: producto.imagen_url || '',
           estado: producto.estado,
@@ -200,7 +203,8 @@ export function SellerProductFormPage() {
         await productosApi.actualizar(
           id,
           {
-            descripcion: form.descripcion,
+            ...(form.nombre !== textosIniciales.nombre && { nombre: form.nombre }),
+            ...(form.descripcion !== textosIniciales.descripcion && { descripcion: form.descripcion }),
             imagen_url: form.imagen_url,
             estado: form.estado,
             precio: Number(form.precio),
@@ -213,6 +217,7 @@ export function SellerProductFormPage() {
         if (!subcategoriaId) throw new Error('Elegí una categoría y subcategoría');
         await productosApi.crear(
           {
+            nombre: form.nombre,
             descripcion: form.descripcion,
             imagen_url: form.imagen_url,
             estado: form.estado,
@@ -264,8 +269,12 @@ export function SellerProductFormPage() {
       <h1 className="mb-6 text-xl font-bold text-neutral-900">{modoEdicion ? 'Editar producto' : 'Nuevo producto'}</h1>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <Field label="Nombre del producto">
+          <Input required value={form.nombre} onChange={(e) => actualizarCampo('nombre', e.target.value)} />
+        </Field>
+
         <Field label="Descripción">
-          <Input required value={form.descripcion} onChange={(e) => actualizarCampo('descripcion', e.target.value)} />
+          <textarea required={!modoEdicion || Boolean(textosIniciales.descripcion)} rows={4} className="rounded-lg border border-neutral-300 px-3 py-2.5 focus:border-brand-500" value={form.descripcion} onChange={(e) => actualizarCampo('descripcion', e.target.value)} />
         </Field>
 
         <Field label="URL de imagen">

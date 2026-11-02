@@ -30,7 +30,7 @@ async function main() {
   // 1) Tolerancia ortográfica: "camiceta" (typo a propósito de "camiseta")
   // sigue encontrando productos con "camiseta" en la descripción.
   const conTypo = await busquedaService.buscar({ q: 'camiceta' });
-  const encontroConTypo = conTypo.resultados.some((p) => p.descripcion.toLowerCase().includes('camiseta'));
+  const encontroConTypo = conTypo.resultados.some((p) => p.nombre.toLowerCase().includes('camiseta'));
   console.log(
     (encontroConTypo ? 'OK' : 'FALLA') +
       ` — "camiceta" (con error) encontró ${conTypo.resultados.length} resultado(s); incluye "camiseta": ${encontroConTypo}`
@@ -43,8 +43,8 @@ async function main() {
   // (coincide en las DOS palabras) antes que la segunda (coincide en una).
   const porRelevancia = await busquedaService.buscar({ q: 'camiseta premium' });
   const primero = porRelevancia.resultados[0];
-  const relevanciaOk = primero?.descripcion === 'Camiseta premium de algodón orgánico';
-  console.log((relevanciaOk ? 'OK' : 'FALLA') + ` — "camiseta premium" rankeó primero: "${primero?.descripcion}"`);
+  const relevanciaOk = primero?.nombre === 'Camiseta premium de algodón orgánico';
+  console.log((relevanciaOk ? 'OK' : 'FALLA') + ` — "camiseta premium" rankeó primero: "${primero?.nombre}"`);
   todasOk &&= relevanciaOk;
 
   // 3) Agregación real, no decorativa: dentro de la subcategoría Camisetas,

@@ -14,13 +14,13 @@ const PERIODOS = [
 ];
 
 // Agregación de Entrega 1 (ver ADR-003 §3.4 / ENTREGA-1-TRAZABILIDAD §2.4).
-// estadisticas/ediciones no trae descripción, solo producto_id — se resuelve
+// estadisticas/ediciones no trae nombre, solo producto_id — se resuelve
 // contra un listado propio sin filtros (no el `productos` de la página, que
 // puede estar filtrado por categoría/búsqueda y dejaría ids sin resolver).
 function EstadisticasEdicionesWidget() {
   const { token } = useAuth();
   const [stats, setStats] = useState([]);
-  const [descripciones, setDescripciones] = useState({});
+  const [nombres, setNombres] = useState({});
   const [periodo, setPeriodo] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -31,12 +31,12 @@ function EstadisticasEdicionesWidget() {
     const dias = PERIODOS[periodo].dias;
     const desde = dias ? new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10) : undefined;
     // Token de administrador acá también: un producto editado y luego
-    // desactivado tiene que poder seguir resolviendo su descripción real acá,
+    // desactivado tiene que poder seguir resolviendo su nombre acá,
     // no caer al "Producto #N" solo porque ya no está activo.
     Promise.all([productosApi.estadisticasEdiciones(desde, token), productosApi.listar({}, token)])
       .then(([stats, productos]) => {
         setStats(stats);
-        setDescripciones(Object.fromEntries(productos.map((p) => [p.id, p.descripcion])));
+        setNombres(Object.fromEntries(productos.map((p) => [p.id, p.nombre])));
       })
       .catch(() => setError('No se pudieron cargar las estadísticas.'))
       .finally(() => setCargando(false));
@@ -75,7 +75,7 @@ function EstadisticasEdicionesWidget() {
           {stats.slice(0, 5).map((s) => (
             <li key={s.producto_id} className="flex items-center justify-between gap-3 text-sm">
               <Link to={`/admin/productos/${s.producto_id}/editar`} className="truncate text-brand-700 hover:underline">
-                {descripciones[s.producto_id] || `Producto #${s.producto_id}`}
+                {nombres[s.producto_id] || `Producto #${s.producto_id}`}
               </Link>
               <span className="shrink-0 text-xs text-neutral-500">
                 {s.total_eventos} {s.total_eventos === 1 ? 'evento' : 'eventos'} · v{s.version_actual} ·{' '}
@@ -141,7 +141,7 @@ function ProductosDelCatalogo() {
         <input
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="Buscar por descripción..."
+          placeholder="Buscar por nombre o descripción..."
           className="min-w-0 flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm"
         />
         <Button type="submit" variant="outline">
@@ -163,11 +163,11 @@ function ProductosDelCatalogo() {
             <div key={producto.id} className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-4">
               <img
                 src={producto.imagen_url || 'https://placehold.co/100x100?text=TiendaYa'}
-                alt={producto.descripcion}
+                alt={producto.nombre}
                 className="size-16 shrink-0 rounded-lg object-cover"
               />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-medium text-neutral-800">{producto.descripcion}</p>
+                <p className="truncate font-medium text-neutral-800">{producto.nombre}</p>
                 <p className="text-sm text-neutral-500">
                   {producto.subcategoria?.subcategoria || 'Sin categoría'} · Vendedor: {producto.vendedor_nombre}
                 </p>

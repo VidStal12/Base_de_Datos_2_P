@@ -32,23 +32,23 @@ function servicio(estadoPublicacion) {
 }
 
 const CATALOGO = new Map([
-  [125, { descripcion: 'Camiseta azul', imagen_url: 'a.png' }],
-  [9, { descripcion: 'Taza', imagen_url: '' }],
+  [125, { nombre: 'Camiseta azul', imagen_url: 'a.png' }],
+  [9, { nombre: 'Taza', imagen_url: '' }],
 ]);
 
 test('cada línea del pedido trae el nombre y la imagen de su producto, con UNA sola consulta al catálogo', async () => {
   const s = servicio(() => CATALOGO);
   const pedido = plano(await s.obtener(7, 306));
-  assert.deepEqual(pedido.compra_detalles.map((d) => [d.producto.descripcion, d.producto.imagen_url, d.producto.id_vendedor]), [['Camiseta azul', 'a.png', 51], ['Taza', '', 5]]);
+  assert.deepEqual(pedido.compra_detalles.map((d) => [d.producto.nombre, d.producto.imagen_url, d.producto.id_vendedor]), [['Camiseta azul', 'a.png', 51], ['Taza', '', 5]]);
   assert.deepEqual(s.consultas, [[125, 9]]);
   const lista = plano(await s.listarPorUsuario(7));
-  assert.equal(lista[0].compra_detalles[0].producto.descripcion, 'Camiseta azul');
+  assert.equal(lista[0].compra_detalles[0].producto.nombre, 'Camiseta azul');
 });
 
 test('con el catálogo apagado (Mongo y su copia) el pedido se muestra igual, con cada producto por su número', async () => {
   const s = servicio(() => { throw new ServicioNoDisponible('mongo'); });
   const pedido = plano(await s.obtener(7, 306));
-  assert.deepEqual(pedido.compra_detalles.map((d) => d.producto.descripcion), ['Producto #125', 'Producto #9']);
+  assert.deepEqual(pedido.compra_detalles.map((d) => d.producto.nombre), ['Producto #125', 'Producto #9']);
   assert.equal(pedido.total, '300', 'el resto del pedido, de MySQL, no cambia');
 });
 

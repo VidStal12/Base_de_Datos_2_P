@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { textosParaGrafo } = require('../src/utils/textosProducto');
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const neo4j = require('../src/config/neo4j');
@@ -42,12 +43,12 @@ async function limpiarModeloAnterior() {
 async function backfillProductos() {
   let procesados = 0;
   let omitidos = 0;
-  const productos = Producto.find({}).select('producto_id descripcion subcategoria_id vendedor_id vendedor_nombre').lean().cursor();
+  const productos = Producto.find({}).select('producto_id nombre descripcion subcategoria_id vendedor_id vendedor_nombre').lean().cursor();
   for await (const producto of productos) {
     try {
       await fraudeSyncService.registrarProducto({
         productoId: producto.producto_id,
-        productoDescripcion: producto.descripcion,
+        ...textosParaGrafo(producto),
         subcategoriaId: producto.subcategoria_id,
         vendedorId: producto.vendedor_id,
         vendedorNombre: producto.vendedor_nombre,
@@ -74,7 +75,7 @@ async function backfillCompras() {
   }
   async function productoDe(id) {
     if (!cacheProductos.has(id)) {
-      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
+      const p = await Producto.findOne({ producto_id: id }).select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
       cacheProductos.set(id, p);
     }
     return cacheProductos.get(id);
@@ -108,7 +109,7 @@ async function backfillCompras() {
         vendedorId: producto.vendedor_id,
         vendedorNombre: producto.vendedor_nombre,
         productoId: detalle.id_producto,
-        productoDescripcion: producto.descripcion,
+        ...textosParaGrafo(producto),
         subcategoriaId: producto.subcategoria_id,
         fecha: detalle.compra.fecha,
         monto: detalle.precio_final,
@@ -133,7 +134,7 @@ async function backfillResenas() {
   }
   async function productoDe(id) {
     if (!cacheProductos.has(id)) {
-      const p = await Producto.findOne({ producto_id: id }).select('descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
+      const p = await Producto.findOne({ producto_id: id }).select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
       cacheProductos.set(id, p);
     }
     return cacheProductos.get(id);
@@ -156,7 +157,7 @@ async function backfillResenas() {
       vendedorId: producto.vendedor_id,
       vendedorNombre: producto.vendedor_nombre,
       productoId: resena.producto_id,
-      productoDescripcion: producto.descripcion,
+      ...textosParaGrafo(producto),
       subcategoriaId: producto.subcategoria_id,
       calificacion: resena.calificacion,
       fecha: resena.fecha,
@@ -168,9 +169,12 @@ async function backfillResenas() {
 
 async function main() {
   await conectarMongo();
-  await limpiarModeloAnterior();
+  const soloProductos = process.argv.includes('--solo-productos');
+  if (!soloProductos) await limpiarModeloAnterior();
   const productos = await backfillProductos();
   console.log(`Productos: ${productos.procesados} reenviados, ${productos.omitidos} omitidos.`);
+  if (productos.omitidos) process.exitCode = 1;
+  if (soloProductos) return;
   const compras = await backfillCompras();
   console.log(`Compras: ${compras.procesados} reenviadas, ${compras.omitidos} omitidas (sin usuario/producto resoluble).`);
   const resenas = await backfillResenas();

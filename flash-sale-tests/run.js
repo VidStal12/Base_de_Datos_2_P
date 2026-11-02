@@ -174,12 +174,12 @@ async function resolveTestProduct(baseUrl, scenario, sellerToken, timeoutMs) {
     return scenario.productId;
   }
 
-  const productsResult = await httpJson(baseUrl, `/productos?q=${encodeURIComponent(spec.description)}`, {
+  const productsResult = await httpJson(baseUrl, `/productos?q=${encodeURIComponent(spec.name)}`, {
     token: sellerToken,
     timeoutMs,
   });
   const products = requireHttp(productsResult, 'No se pudo buscar el producto sintético', [200]);
-  const existingProduct = products.find((product) => product.descripcion === spec.description);
+  const existingProduct = products.find((product) => product.nombre === spec.name);
   if (existingProduct) return existingProduct.id;
 
   const categoriesResult = await httpJson(baseUrl, '/categorias', { timeoutMs });
@@ -212,6 +212,7 @@ async function resolveTestProduct(baseUrl, scenario, sellerToken, timeoutMs) {
     token: sellerToken,
     timeoutMs,
     body: {
+      nombre: spec.name,
       descripcion: spec.description,
       estado: 'activo',
       subcategoriaId: subcategory.id,

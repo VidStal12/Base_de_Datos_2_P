@@ -1,3 +1,4 @@
+const { textosParaGrafo } = require('../utils/textosProducto');
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
@@ -99,7 +100,7 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
   }
 
   await conectar();
-  const producto = await Producto.findOne({ producto_id: productoId }).select('_id descripcion subcategoria_id vendedor_id vendedor_nombre');
+  const producto = await Producto.findOne({ producto_id: productoId }).select('_id nombre descripcion subcategoria_id vendedor_id vendedor_nombre');
   if (!producto) throw new Error('Producto no encontrado');
 
   const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuario.id_usuario } });
@@ -157,7 +158,7 @@ async function crear(usuario, productoId, { calificacion, comentario }) {
       vendedorId: producto.vendedor_id,
       vendedorNombre: producto.vendedor_nombre,
       productoId,
-      productoDescripcion: producto.descripcion,
+      ...textosParaGrafo(producto),
       subcategoriaId: producto.subcategoria_id,
       calificacion,
       fecha: doc.fecha,

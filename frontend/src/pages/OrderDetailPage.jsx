@@ -59,7 +59,7 @@ export function OrderDetailPage() {
           {pedido.compra_detalles.map((linea) => (
             <li key={linea.id} className="flex justify-between text-sm">
               <span className="text-neutral-700">
-                {linea.producto?.descripcion} × {linea.cantidad}
+                {linea.producto?.nombre} × {linea.cantidad}
               </span>
               <span className="font-medium text-neutral-900">{formatCurrency(linea.precio_final)}</span>
             </li>

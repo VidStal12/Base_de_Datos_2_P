@@ -19,9 +19,9 @@ const CAMISETAS = 'sub-camisetas';
 const VAJILLA = 'sub-vajilla';
 const subCamisetas = { id: CAMISETAS, subcategoria: 'Camisetas', categoria_id: ROPA, categoria: 'Ropa' };
 const PRODUCTOS = [
-  { id: 1, descripcion: 'Camiseta azul', total_vendido: 5, inventario: { precio: 50, cantidad: 9 }, subcategoria: subCamisetas, atributos: [{ nombre: 'Talla', valor: 'M' }, { nombre: 'Color', valor: 'Azul' }] },
-  { id: 2, descripcion: 'Camiseta roja', total_vendido: 9, inventario: { precio: 60, cantidad: 9 }, subcategoria: subCamisetas, atributos: [{ nombre: 'Talla', valor: 'M' }, { nombre: 'Color', valor: 'Rojo' }] },
-  { id: 3, descripcion: 'Taza', total_vendido: 1, inventario: { precio: 15, cantidad: 9 }, subcategoria: { id: VAJILLA, subcategoria: 'Vajilla', categoria_id: HOGAR, categoria: 'Hogar' }, atributos: [] },
+  { id: 1, nombre: 'Camiseta azul', total_vendido: 5, inventario: { precio: 50, cantidad: 9 }, subcategoria: subCamisetas, atributos: [{ nombre: 'Talla', valor: 'M' }, { nombre: 'Color', valor: 'Azul' }] },
+  { id: 2, nombre: 'Camiseta roja', total_vendido: 9, inventario: { precio: 60, cantidad: 9 }, subcategoria: subCamisetas, atributos: [{ nombre: 'Talla', valor: 'M' }, { nombre: 'Color', valor: 'Rojo' }] },
+  { id: 3, nombre: 'Taza', total_vendido: 1, inventario: { precio: 15, cantidad: 9 }, subcategoria: { id: VAJILLA, subcategoria: 'Vajilla', categoria_id: HOGAR, categoria: 'Hogar' }, atributos: [] },
 ];
 
 // `actividad` precarga la lista de actividad reciente de Redis por usuario ({ 7: [{ tipo, valor }, …] }, la más
@@ -40,7 +40,7 @@ function servicio({ busqueda = {}, producto = {}, categoria = {}, tendencia = {}
         limit: () => ({
           lean: async () => {
             llamadas.push(['Producto.find', filtro]);
-            return docs.filter((d) => filtro.descripcion.test(d.descripcion) && (!filtro.vendedor_id || !filtro.vendedor_id.$nin.includes(d.vendedor_id)));
+            return docs.filter((d) => filtro.nombre.test(d.nombre) && (!filtro.vendedor_id || !filtro.vendedor_id.$nin.includes(d.vendedor_id)));
           },
         }),
         lean: async () => {
@@ -100,8 +100,8 @@ test('con Elasticsearch sano la búsqueda es la de siempre; Mongo solo se consul
 
 const RESPUESTA_INDICE = {
   resultados: [
-    { id: 1, descripcion: 'Camiseta azul', inventario: { precio: 50, cantidad: 21 }, total_vendido: 153 },
-    { id: 2, descripcion: 'Camiseta roja', inventario: { precio: 60, cantidad: 9 }, total_vendido: 9 },
+    { id: 1, nombre: 'Camiseta azul', inventario: { precio: 50, cantidad: 21 }, total_vendido: 153 },
+    { id: 2, nombre: 'Camiseta roja', inventario: { precio: 60, cantidad: 9 }, total_vendido: 9 },
   ],
   total: 2, pagina: 1, tamano: 60, paginas: 1, arbol: [], ruta: [], atributos: [], precio: {}, filtros: {}, facetas: {}, categorias: [], subcategorias: [],
 };
@@ -218,7 +218,7 @@ test('con Elasticsearch Y Mongo apagados se informa la caída del buscador (el o
 });
 
 test('el autocompletado cae a Mongo por prefijo, sin los vendedores suspendidos, sin repetidos y con a lo sumo 8', async () => {
-  const docs = Array.from({ length: 12 }, (_, i) => ({ descripcion: `Camiseta ${i % 10}`, vendedor_id: i < 2 ? 7 : 8 }));
+  const docs = Array.from({ length: 12 }, (_, i) => ({ nombre: `Camiseta ${i % 10}`, vendedor_id: i < 2 ? 7 : 8 }));
   const s = servicio({ busqueda: { sugerir: () => { throw caidaElastic(); } }, suspendidos: [7], docs });
   const sugerencias = plano(await s.sugerir('camis'));
   assert.equal(sugerencias.length, 8);
@@ -226,12 +226,12 @@ test('el autocompletado cae a Mongo por prefijo, sin los vendedores suspendidos,
   assert.ok(!sugerencias.includes('Camiseta 0') && !sugerencias.includes('Camiseta 1'), 'las del vendedor suspendido no se sugieren');
   const [, filtro] = s.llamadas.find((l) => Array.isArray(l));
   assert.equal(filtro.estado, 'activo');
-  assert.ok(filtro.descripcion.test('CAMISETA roja') && !filtro.descripcion.test('una camiseta'), 'prefijo, sin distinguir mayúsculas');
+  assert.ok(filtro.nombre.test('CAMISETA roja') && !filtro.nombre.test('una camiseta'), 'prefijo, sin distinguir mayúsculas');
   assert.deepEqual(plano(await servicio({ busqueda: { sugerir: () => { throw caidaElastic(); } } }).sugerir('   ')), [], 'un texto vacío no consulta nada');
 });
 
 test('el texto de las sugerencias es literal: un paréntesis suelto no rompe la consulta', async () => {
-  const s = servicio({ busqueda: { sugerir: () => { throw caidaElastic(); } }, docs: [{ descripcion: 'Camiseta (azul)', vendedor_id: 1 }] });
+  const s = servicio({ busqueda: { sugerir: () => { throw caidaElastic(); } }, docs: [{ nombre: 'Camiseta (azul)', vendedor_id: 1 }] });
   assert.deepEqual(plano(await s.sugerir('camiseta (a')), ['Camiseta (azul)']);
 });
 
@@ -281,7 +281,7 @@ test('las sugerencias por búsqueda reciente muestran el stock vigente de Mongo,
 test('con sesión, si lo último que hizo fue ver un producto, ese producto es la sugerencia', async () => {
   const s = servicio({
     busqueda: { buscar: motorSegunTexto },
-    producto: { obtener: (id) => ({ id, descripcion: 'Smartphone', estado: 'activo', vendedor_id: 3 }) },
+    producto: { obtener: (id) => ({ id, nombre: 'Smartphone', estado: 'activo', vendedor_id: 3 }) },
     actividad: { 7: [{ tipo: 'producto', valor: 5 }, { tipo: 'busqueda', valor: 'camiseta' }] },
   });
   const r = plano(await s.buscar({ q: 'zzz' }, 7));
@@ -290,7 +290,7 @@ test('con sesión, si lo último que hizo fue ver un producto, ese producto es l
 });
 
 test('un producto visto que ya está pausado, o cuyo vendedor se suspendió, NO se sugiere: se sigue con el historial de compras', async () => {
-  const historial = { productos: [{ id: 8, descripcion: 'Parecido', precio_recomendado: 40, precio_normal: 50 }] };
+  const historial = { productos: [{ id: 8, nombre: 'Parecido', precio_recomendado: 40, precio_normal: 50 }] };
   const casos = [
     ['pausado (inactivo)', { obtener: (id) => ({ id, estado: 'inactivo', vendedor_id: 3 }) }],
     ['de un vendedor suspendido', { obtener: (id) => ({ id, estado: 'activo', vendedor_id: 3 }), vendedorOculto: true }],
@@ -391,14 +391,14 @@ test('con Mongo apagado el catálogo, el detalle y las categorías salen del ín
     producto: { listar: () => { throw caidaMongo(); }, obtener: () => { throw caidaMongo(); } },
     categoria: { listar: () => { throw caidaMongo(); } },
     busqueda: {
-      listarDesdeIndice: [{ id: 5, descripcion: 'Desde el índice' }],
-      obtenerDelIndice: { id: 5, descripcion: 'Desde el índice' },
+      listarDesdeIndice: [{ id: 5, nombre: 'Desde el índice' }],
+      obtenerDelIndice: { id: 5, nombre: 'Desde el índice' },
       categoriasDelIndice: [{ id: 'c1', categoria: 'Ropa', subcategorias: [] }],
     },
   });
-  assert.deepEqual(plano(await s.listar({ q: 'x' })), [{ id: 5, descripcion: 'Desde el índice' }]);
+  assert.deepEqual(plano(await s.listar({ q: 'x' })), [{ id: 5, nombre: 'Desde el índice' }]);
   const detalle = plano(await s.obtener(5));
-  assert.equal(detalle.descripcion, 'Desde el índice');
+  assert.equal(detalle.nombre, 'Desde el índice');
   assert.equal(detalle.desde_indice, true, 'la pantalla avisa que reseñas, historial y oferta flash no están');
   assert.deepEqual(plano(await s.categorias()), [{ id: 'c1', categoria: 'Ropa', subcategorias: [] }]);
 });

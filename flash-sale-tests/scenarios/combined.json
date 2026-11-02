@@ -6,7 +6,8 @@
   "startDelayMs": 1000,
   "prepare": {
     "product": {
-      "description": "Producto sintético para prueba de oferta flash",
+      "name": "Producto sintético para prueba de oferta flash",
+      "description": "Artículo reservado para simular compras simultáneas con cupo limitado.",
       "category": "Pruebas automatizadas",
       "subcategory": "Oferta flash",
       "normalPrice": 89.99

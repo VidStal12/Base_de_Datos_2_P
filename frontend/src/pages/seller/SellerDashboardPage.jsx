@@ -47,11 +47,11 @@ export function SellerDashboardPage() {
                 <div className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-4">
                   <img
                     src={producto.imagen_url || 'https://placehold.co/100x100?text=TiendaYa'}
-                    alt={producto.descripcion}
+                    alt={producto.nombre}
                     className="size-16 shrink-0 rounded-lg object-cover"
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-neutral-800">{producto.descripcion}</p>
+                    <p className="truncate font-medium text-neutral-800">{producto.nombre}</p>
                     <p className="text-sm text-neutral-500">{producto.subcategoria?.subcategoria || 'Sin categoría'}</p>
                   </div>
                   <div className="hidden text-right sm:block">

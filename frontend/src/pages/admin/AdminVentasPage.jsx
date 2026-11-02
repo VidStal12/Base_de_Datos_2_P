@@ -219,7 +219,7 @@ export function AdminVentasPage() {
   const opcionesProductos = useMemo(() => {
     const opciones = [...productos];
     if (borrador.productoId && !opciones.some((producto) => String(producto.id) === String(borrador.productoId))) {
-      opciones.push({ id: Number(borrador.productoId), descripcion: `Producto #${borrador.productoId} (sin ventas en el rango)` });
+      opciones.push({ id: Number(borrador.productoId), nombre: `Producto #${borrador.productoId} (sin ventas en el rango)` });
     }
     return opciones;
   }, [productos, borrador.productoId]);
@@ -267,7 +267,7 @@ export function AdminVentasPage() {
           <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-700">Producto
             <select className={controlClase} value={borrador.productoId} onChange={(evento) => cambiar('productoId', evento.target.value)}>
               <option value="">Todos los productos</option>
-              {opcionesProductos.map((producto) => <option key={producto.id} value={producto.id}>{producto.descripcion}</option>)}
+              {opcionesProductos.map((producto) => <option key={producto.id} value={producto.id}>{producto.nombre}</option>)}
             </select>
           </label>
           <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-700">Mínimo de unidades para el ranking
@@ -292,7 +292,7 @@ export function AdminVentasPage() {
           <div className="text-sm text-neutral-600">
             <p><span className="font-medium text-neutral-900">Período consultado:</span> {rango(datos.filtros.desde, datos.filtros.hasta)}</p>
             <p className="mt-1"><span className="font-medium text-neutral-900">Comparado con:</span> {rango(datos.comparacion.desde, datos.comparacion.hasta)} (misma cantidad de días).</p>
-            {datos.filtros.productoId && <p className="mt-1">Producto: {opcionesProductos.find((producto) => producto.id === datos.filtros.productoId)?.descripcion || `Producto #${datos.filtros.productoId}`}</p>}
+            {datos.filtros.productoId && <p className="mt-1">Producto: {opcionesProductos.find((producto) => producto.id === datos.filtros.productoId)?.nombre || `Producto #${datos.filtros.productoId}`}</p>}
             {datos.filtros.hasta === hoy && <p className="mt-2 rounded-lg bg-amber-50 p-3 text-amber-800">El período incluye hoy y todavía puede recibir ventas. Su crecimiento es provisional hasta que termine el día.</p>}
           </div>
 
@@ -331,7 +331,7 @@ export function AdminVentasPage() {
                   <tbody className="divide-y divide-neutral-100">
                     {datos.tendencias.map((producto) => (
                       <tr key={producto.productoId} className="hover:bg-neutral-50">
-                        <th scope="row" className="max-w-72 px-5 py-4 font-medium text-neutral-900">{producto.descripcion}</th>
+                        <th scope="row" className="max-w-72 px-5 py-4 font-medium text-neutral-900">{producto.nombre}</th>
                         <td className="px-5 py-4 text-right tabular-nums">{numero.format(producto.unidadesAnteriores)}</td>
                         <td className="px-5 py-4 text-right tabular-nums">{numero.format(producto.unidadesActuales)}</td>
                         <td className="px-5 py-4 text-right font-medium tabular-nums text-accent-700">+{numero.format(producto.aumentoUnidades)}</td>

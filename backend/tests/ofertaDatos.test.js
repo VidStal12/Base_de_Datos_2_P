@@ -12,7 +12,7 @@ function escenario({ vigenteHastaEnMs = 3600000 } = {}) {
   const redis = redisFalso();
   const ahora = Date.now();
   const doc = {
-    producto_id: 1, descripcion: 'Flash', estado: 'activo', vendedor_id: 2, vendedor_nombre: 'Luis Ramírez', version: 3,
+    producto_id: 1, nombre: 'Oferta azul', descripcion: 'Flash', estado: 'activo', vendedor_id: 2, vendedor_nombre: 'Luis Ramírez', version: 3,
     imagenes: [{ principal: true, url: 'imagen', alt: 'Flash', orden: 1 }, { principal: false, url: 'otra', alt: 'Flash 2', orden: 2 }],
     atributos: [{ nombre: 'Talla', valor: 'M' }, { nombre: 'Color', valor: 'Azul' }],
     subcategoria_id: 'sub-1', resenas_resumen: { promedio: 4.5, cantidad: 2 },
@@ -35,7 +35,8 @@ test('la oferta activa guarda en Redis TODOS los datos del producto: un hash con
   const e = escenario();
   const producto = await e.servicio.obtener(1);
   const hash = e.redis.hashes.get(DATOS);
-  assert.equal(hash._formato, '1');
+  assert.equal(hash._formato, '2');
+  assert.equal(hash.nombre, 'Oferta azul');
   assert.equal(hash.descripcion, 'Flash');
   assert.equal(hash.estado, 'activo');
   assert.equal(hash.imagen_url, 'imagen');
@@ -102,7 +103,7 @@ test('una clave de otro formato, de un formato anterior, dañada, incompleta o d
     const producto = await e.servicio.obtener(1);
     assert.equal(producto.descripcion, 'Flash', motivo);
     assert.equal(e.consultas(), antes + 1, `${motivo}: debía regenerar desde el catálogo`);
-    assert.equal(e.redis.hashes.get(DATOS)._formato, '1', `${motivo}: y dejar un hash válido`);
+    assert.equal(e.redis.hashes.get(DATOS)._formato, '2', `${motivo}: y dejar un hash válido`);
   };
   await regenera((h) => { h._formato = '0'; }, 'formato distinto');
   await regenera((h) => { h.oferta_flash = '{inválido'; }, 'JSON dañado');
@@ -116,7 +117,7 @@ test('una clave de otro formato, de un formato anterior, dañada, incompleta o d
   e.redis.valores.set(DATOS, JSON.stringify({ id: 1, descripcion: 'cadena vieja' }));
   assert.equal((await e.servicio.obtener(1)).descripcion, 'Flash');
   assert.equal(e.redis.valores.has(DATOS), false);
-  assert.equal(e.redis.hashes.get(DATOS)._formato, '1');
+  assert.equal(e.redis.hashes.get(DATOS)._formato, '2');
 });
 
 test('una copia demasiado vieja se regenera aunque se siga leyendo: acota una invalidación perdida', async () => {

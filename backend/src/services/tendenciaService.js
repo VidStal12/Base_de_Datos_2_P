@@ -1,3 +1,4 @@
+const { textosProducto } = require('../utils/textosProducto');
 const prisma = require('../config/prisma');
 const { conectar: conectarMongo } = require('../config/mongo');
 const { conectar: conectarRedis } = require('../config/redis');
@@ -145,7 +146,7 @@ async function calcularRecomendaciones(usuarioId) {
     const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
     return {
       id: doc.producto_id,
-      descripcion: doc.descripcion,
+      ...textosProducto(doc),
       imagen_url: principal?.url || '',
       vendedor_id: doc.vendedor_id,
       vendedor_nombre: doc.vendedor_nombre,
@@ -172,7 +173,10 @@ async function recomendar(usuarioId) {
   } catch (err) {
     avisarCaida('redis', err);
   }
-  if (cacheado) return sinVendedoresOcultos(JSON.parse(cacheado));
+  if (cacheado) {
+    const guardado = JSON.parse(cacheado);
+    if (guardado.productos.every((p) => p.nombre != null)) return sinVendedoresOcultos(guardado);
+  }
 
   const resultado = await calcularRecomendaciones(usuarioId);
   try {

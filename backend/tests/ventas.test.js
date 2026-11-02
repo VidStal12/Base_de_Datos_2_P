@@ -47,7 +47,7 @@ test('ascenso exige mínimo, excluye estables/bajas y no divide entre cero', () 
     venta(6, 4, '2026-08-22T12:00:00Z', 10), venta(7, 4, '2026-08-29T12:00:00Z', 10),
     venta(8, 5, '2026-08-22T12:00:00Z', 10), venta(9, 5, '2026-08-29T12:00:00Z', 5),
   ];
-  const reporte = construirReporte(filas, validarFiltros(base, ahora), [{ id: 1, descripcion: 'Café' }]);
+  const reporte = construirReporte(filas, validarFiltros(base, ahora), [{ id: 1, nombre: 'Café' }]);
   assert.deepEqual(reporte.tendencias.map((p) => p.productoId), [1, 2]);
   assert.equal(reporte.tendencias[0].crecimientoPorcentaje, 50);
   assert.equal(reporte.tendencias[1].crecimientoPorcentaje, null);

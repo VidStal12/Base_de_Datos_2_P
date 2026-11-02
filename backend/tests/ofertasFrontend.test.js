@@ -102,7 +102,7 @@ test('el nivel de stock avisa al quedar el 25 % y el 10 % del cupo, o muy pocas 
 
 const producto = (extra = {}) => ({
   id: 7,
-  descripcion: 'Audífonos Bluetooth',
+  nombre: 'Audífonos Bluetooth', descripcion: 'Escucha sin cables.',
   vendedor_id: 3,
   vendedor_nombre: 'Ana',
   imagen_url: 'https://img.example/7.jpg',
@@ -115,7 +115,7 @@ const stock = (extra = {}) => ({ activo: true, producto: 7, precio_oferta: 150, 
 test('una oferta se arma con el precio normal del producto y lo que dice AHORA el stock (restante y fin)', () => {
   assert.deepEqual(plano(o.normalizarOferta({ producto: producto(), stock: stock() })), {
     id: 7,
-    descripcion: 'Audífonos Bluetooth',
+    nombre: 'Audífonos Bluetooth', descripcion: 'Escucha sin cables.',
     vendedorId: 3,
     vendedor: 'Ana',
     imagen: 'https://img.example/7.jpg',

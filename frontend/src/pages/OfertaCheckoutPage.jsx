@@ -263,9 +263,9 @@ export function OfertaCheckoutPage() {
             ofertaDatosService.js): imagen, vendedor y atributos ya no hay que
             pedirlos aparte al catálogo. */}
         {producto.imagen_url && (
-          <img src={producto.imagen_url} alt={producto.descripcion} className="mt-3 aspect-square w-full rounded-lg bg-white object-cover" />
+          <img src={producto.imagen_url} alt={producto.nombre} className="mt-3 aspect-square w-full rounded-lg bg-white object-cover" />
         )}
-        <h2 className="mt-3 font-bold text-neutral-900">{producto.descripcion}</h2>
+        <h2 className="mt-3 font-bold text-neutral-900">{producto.nombre}</h2>
         {producto.vendedor_nombre && <p className="text-sm text-neutral-500">Vendido por {producto.vendedor_nombre}</p>}
         {producto.atributos?.length > 0 && (
           <ul className="mt-2 flex flex-wrap gap-1.5 text-xs text-neutral-600">

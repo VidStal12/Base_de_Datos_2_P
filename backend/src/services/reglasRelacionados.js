@@ -27,7 +27,7 @@ const hayStock = (producto) => (producto.inventario?.cantidad ?? 0) > 0;
 function elegir(candidatos, { titulo, limite = MOSTRAR } = {}) {
   const vistos = new Set(titulo ? [comoTitulo(titulo)] : []);
   const unicos = candidatos.filter((producto) => {
-    const clave = comoTitulo(producto.descripcion);
+    const clave = comoTitulo(producto.nombre);
     if (vistos.has(clave)) return false;
     vistos.add(clave);
     return true;

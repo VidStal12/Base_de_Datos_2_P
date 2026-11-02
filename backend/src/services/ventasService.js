@@ -48,9 +48,9 @@ async function resolverProductos() {
   const { conectar } = require('../config/mongo');
   const Producto = require('../models/mongo/Producto');
   await conectar();
-  const productos = await Producto.find().select('producto_id descripcion').maxTimeMS(3000).lean();
+  const productos = await Producto.find().select('producto_id nombre descripcion').maxTimeMS(3000).lean();
   // Incluye inactivos: desactivar un producto no borra sus ventas pasadas.
-  return productos.map((p) => ({ id: p.producto_id, descripcion: p.descripcion }));
+  return productos.map((p) => ({ id: p.producto_id, nombre: p.nombre ?? p.descripcion }));
 }
 
 // Inyectar dependencias permite probar fallos sin escribir en las bases reales.

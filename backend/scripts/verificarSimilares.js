@@ -44,7 +44,7 @@ async function leerIndice() {
     index: elasticsearch.indice(),
     size: 1000,
     sort: [{ producto_id: 'asc' }],
-    _source: ['producto_id', 'descripcion', 'categoria', 'subcategoria', 'estado', 'vendedor_id', 'embedding'],
+    _source: ['producto_id', 'nombre', 'descripcion', 'categoria', 'subcategoria', 'estado', 'vendedor_id', 'embedding'],
   }));
   return respuesta.hits.hits.map((hit) => ({ id: Number(hit._id), ...hit._source }));
 }
@@ -53,7 +53,7 @@ async function main() {
   await elasticsearch.conectar();
   const todos = await leerIndice();
   const activos = todos.filter((d) => d.estado === 'activo');
-  const reales = activos.filter((d) => !DE_PRUEBA.test(d.descripcion) && d.embedding);
+  const reales = activos.filter((d) => !DE_PRUEBA.test(d.nombre) && d.embedding);
   const inactivos = new Set(todos.filter((d) => d.estado !== 'activo').map((d) => d.id));
   const deSubcategoria = (doc, otro) => otro.subcategoria === doc.subcategoria;
   let todasOk = true;
@@ -62,9 +62,9 @@ async function main() {
   console.log(`Índice ${elasticsearch.indice()}: ${todos.length} documentos, ${activos.length} activos (${reales.length} del catálogo real, sin los productos de prueba).`);
 
   // ── 1. Vectores ─────────────────────────────────────────────────────────────
-  linea('1. Todo producto activo tiene su vector');
-  const sinVector = activos.filter((d) => !d.embedding);
-  criterio(sinVector.length === 0, `${activos.length - sinVector.length} de ${activos.length} productos activos con vector${sinVector.length ? `; sin vector: ${sinVector.map((d) => `#${d.id}`).join(' ')} (correr npm run busqueda:backfill)` : ''}`);
+  linea('1. Todo producto activo con descripción tiene su vector');
+  const sinVector = activos.filter((d) => d.descripcion && !d.embedding);
+  criterio(sinVector.length === 0, `${activos.filter((d) => d.embedding).length} vectores; ${sinVector.length} pendientes entre los activos con descripción${sinVector.length ? `; sin vector: ${sinVector.map((d) => `#${d.id}`).join(' ')} (correr npm run busqueda:backfill)` : ''}`);
   if (reales.length < 10) throw new Error('Hay muy pocos productos con vector para evaluar: correr npm run busqueda:backfill');
 
   // ── 2. La cadena real: busquedaService.similares + reglas de negocio ────────
@@ -75,7 +75,7 @@ async function main() {
     const t = performance.now();
     const { candidatos } = await busquedaService.similares(doc.id);
     latencias.push(performance.now() - t);
-    const mostrados = reglas.elegir(candidatos.filter((c) => !DE_PRUEBA.test(c.descripcion)), { titulo: doc.descripcion });
+    const mostrados = reglas.elegir(candidatos.filter((c) => !DE_PRUEBA.test(c.nombre)), { titulo: doc.nombre });
     filas.push({ doc, mostrados, aciertos: mostrados.slice(0, 5).map((c) => c.subcategoria.subcategoria === doc.subcategoria) });
   }
   const conSeccion = filas.filter((f) => f.mostrados.length >= reglas.MINIMO);
@@ -88,7 +88,7 @@ async function main() {
   console.log(`umbral de coseno ${reglas.UMBRAL_COSENO}, a lo sumo ${reglas.MOSTRAR} a mostrar, mínimo ${reglas.MINIMO}`);
   console.log(`  precisión@5 ${pct(precision)} · Hit@5 ${pct(hit5)} · MRR ${mrr.toFixed(3)}   (sobre los ${conSeccion.length} productos que muestran sección)`);
   console.log(`  por significado alcanzan ≥ ${reglas.MINIMO} parecidos: ${conSeccion.length} de ${filas.length} (${pct(conSeccion.length / filas.length)})`);
-  if (sinParecidos.length > 0) console.log(`  caen a «misma subcategoría»: ${sinParecidos.map((f) => `#${f.doc.id} ${f.doc.descripcion}`).join(' · ')}`);
+  if (sinParecidos.length > 0) console.log(`  caen a «misma subcategoría»: ${sinParecidos.map((f) => `#${f.doc.id} ${f.doc.nombre}`).join(' · ')}`);
   console.log(`  latencia de similares() (leer el vector + kNN): p50 ${cuantil(latencias, 0.5).toFixed(0)} ms · p95 ${cuantil(latencias, 0.95).toFixed(0)} ms · máx ${Math.max(...latencias).toFixed(0)} ms`);
   criterio(precision >= PRECISION_MINIMA, `precisión@5 ${pct(precision)} (mínimo ${pct(PRECISION_MINIMA)})`);
   criterio(sinSeccion.length === 0, `ningún producto queda sin sección (${filas.length - sinParecidos.length} por significado + ${sinParecidos.length - sinSeccion.length} por subcategoría)${sinSeccion.length ? `; sin sección: ${sinSeccion.map((f) => `#${f.doc.id}`).join(' ')}` : ''}`);
@@ -99,10 +99,10 @@ async function main() {
   for (const doc of reales) {
     const filtros = { filter: [{ term: { estado: 'activo' } }], must_not: [{ term: { producto_id: doc.id } }] };
     const [texto, similar] = await Promise.all([
-      elasticsearch.conCircuito((c) => c.search({ index: elasticsearch.indice(), size: 5, _source: ['subcategoria', 'descripcion'], query: { bool: { must: [{ match: { descripcion: doc.descripcion } }], ...filtros } } })),
-      elasticsearch.conCircuito((c) => c.search({ index: elasticsearch.indice(), size: 5, _source: ['subcategoria'], query: { bool: { must: [{ more_like_this: { fields: ['descripcion'], like: [{ _index: elasticsearch.indice(), _id: String(doc.id) }] } }], ...filtros } } })),
+      elasticsearch.conCircuito((c) => c.search({ index: elasticsearch.indice(), size: 5, _source: ['subcategoria', 'nombre'], query: { bool: { must: [{ match: { nombre: doc.nombre } }], ...filtros } } })),
+      elasticsearch.conCircuito((c) => c.search({ index: elasticsearch.indice(), size: 5, _source: ['subcategoria'], query: { bool: { must: [{ more_like_this: { fields: ['nombre'], like: [{ _index: elasticsearch.indice(), _id: String(doc.id) }] } }], ...filtros } } })),
     ]);
-    const vecinos = texto.hits.hits.map((h) => h._source).filter((s) => !DE_PRUEBA.test(s.descripcion));
+    const vecinos = texto.hits.hits.map((h) => h._source).filter((s) => !DE_PRUEBA.test(s.nombre));
     if (vecinos.length === 0) bm25Huerfanos += 1;
     else { bm25Con += 1; bm25Aciertos += vecinos.filter((s) => s.subcategoria === doc.subcategoria).length / vecinos.length; }
     if (similar.hits.hits.length > 0) mltDefecto += 1;
@@ -112,14 +112,14 @@ async function main() {
   console.log(`  vectores: ${filas.length - sinParecidos.length} de ${filas.length} con ≥ ${reglas.MINIMO} parecidos · precisión@5 ${pct(precision)}`);
 
   // ── 4. Qué aporta el texto de la subcategoría (fuga de etiqueta) ────────────
-  linea('4. Qué se incrusta: solo el título (A) o título + subcategoría + categoría (B)');
+  linea('4. Qué se incrusta: solo la descripción (A) o descripción + subcategoría + categoría (B)');
   const precisionExacta = (vectores) => media(reales.map((doc, i) => {
     const top = reales.map((o, j) => ({ j, s: j === i ? -2 : coseno(vectores[i], vectores[j]) })).sort((a, b) => b.s - a.s).slice(0, 5);
     return top.filter((x) => deSubcategoria(doc, reales[x.j])).length / 5;
   }));
-  const soloTitulos = await embeddingService.incrustar(reales.map((d) => d.descripcion));
+  const soloDescripciones = await embeddingService.incrustar(reales.map((d) => d.descripcion));
   const conCategoria = reales.map((d) => d.embedding);
-  console.log(`  precisión@5 exacta (coseno en memoria, sin umbral): A solo título ${pct(precisionExacta(soloTitulos))} · B con subcategoría y categoría ${pct(precisionExacta(conCategoria))}`);
+  console.log(`  precisión@5 exacta (coseno en memoria, sin umbral): A solo descripción ${pct(precisionExacta(soloDescripciones))} · B con subcategoría y categoría ${pct(precisionExacta(conCategoria))}`);
   console.log('  Ojo: B incluye la etiqueta que se mide, así que parte de esa diferencia es la pista y no «entendimiento».');
 
   // ── 5. Consultas coloquiales: donde el texto exacto falla ───────────────────
@@ -186,8 +186,8 @@ async function main() {
   // ── 8. Muestra para juzgar a ojo ────────────────────────────────────────────
   linea('8. Muestra para juzgar a ojo (1 de cada 9 productos): ¿son razonables estos parecidos?');
   filas.filter((_, i) => i % 9 === 0).forEach(({ doc, mostrados }) => {
-    console.log(`  «${doc.descripcion}» [${doc.subcategoria}]`);
-    for (const c of mostrados) console.log(`      ${(2 * c._score - 1).toFixed(3)}  ${c.descripcion} [${c.subcategoria.subcategoria}]${c.subcategoria.subcategoria === doc.subcategoria ? '' : '  ← otra subcategoría'}`);
+    console.log(`  «${doc.nombre}» [${doc.subcategoria}]`);
+    for (const c of mostrados) console.log(`      ${(2 * c._score - 1).toFixed(3)}  ${c.nombre} [${c.subcategoria.subcategoria}]${c.subcategoria.subcategoria === doc.subcategoria ? '' : '  ← otra subcategoría'}`);
     if (mostrados.length < reglas.MINIMO) console.log('      (no alcanza el mínimo por significado: se mostraría la misma subcategoría)');
   });
 

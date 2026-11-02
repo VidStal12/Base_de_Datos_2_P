@@ -48,7 +48,7 @@ export function OfertaCard({ oferta }) {
       <div className="flex flex-1 flex-col gap-2 p-3">
         <div className="flex flex-col gap-0.5">
           <Link to={destino} className="line-clamp-2 text-sm font-medium text-neutral-800 hover:text-brand-700">
-            {oferta.descripcion}
+            {oferta.nombre}
           </Link>
           {oferta.vendedor && <p className="truncate text-xs text-neutral-500">{oferta.vendedor}</p>}
         </div>

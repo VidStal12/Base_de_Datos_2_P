@@ -1,3 +1,4 @@
+const { textosProducto } = require('../utils/textosProducto');
 const { conCircuito, indice } = require('../config/elasticsearch');
 const { vendedoresSuspendidos } = require('./suspensionService');
 const facetas = require('./facetasBusqueda');
@@ -27,9 +28,9 @@ function aProducto(hit) {
   const s = hit._source;
   return {
     id: Number(hit._id),
-    descripcion: s.descripcion,
+    ...textosProducto(s),
     imagen_url: s.imagen_url || '',
-    imagenes: s.imagen_url ? [{ url: s.imagen_url, alt: s.descripcion, orden: 1, principal: true }] : [],
+    imagenes: s.imagen_url ? [{ url: s.imagen_url, alt: s.nombre ?? s.descripcion, orden: 1, principal: true }] : [],
     vendedor_id: s.vendedor_id,
     vendedor_nombre: s.vendedor_nombre,
     atributos: s.atributos || [],
@@ -70,10 +71,9 @@ function construirPedido(filtros, { suspendidos = [], vendedorId, incluirInactiv
   const nombres = Object.keys(atributos);
 
   // fuzziness:'AUTO': tolerancia a errores de tipeo (requerimiento técnico
-  // de Entrega 3, ver PLAN-ELASTICSEARCH-BUSQUEDA.md §4). descripcion^2:
-  // más peso que el nombre del vendedor, que solo debería desempatar.
+  // de Entrega 3, ver PLAN-ELASTICSEARCH-BUSQUEDA.md §4). El nombre pesa más que la descripción; el vendedor tiene el peso menor.
   const must = q
-    ? [{ multi_match: { query: q, fields: ['descripcion^2', 'vendedor_nombre'], fuzziness: 'AUTO' } }]
+    ? [{ multi_match: { query: q, fields: ['nombre^4', 'descripcion^2', 'vendedor_nombre'], fuzziness: 'AUTO' } }]
     : [{ match_all: {} }];
   const filter = incluirInactivos ? [] : [{ term: { estado: 'activo' } }];
   if (vendedorId) filter.push({ term: { vendedor_id: Number(vendedorId) } });
@@ -331,7 +331,7 @@ async function categoriasDelIndice() {
   }));
 }
 
-// { productoId → { estado, vendedor_id, descripcion, imagen_url } } de los que el índice
+// { productoId → { estado, vendedor_id, nombre, descripcion, imagen_url } } de los que el índice
 // conoce. Lo usan el carrito y el checkout para saber si un producto está publicado cuando
 // no pueden preguntárselo a Mongo (productoService.estadoPublicacion).
 async function publicacionDelIndice(productoIds) {
@@ -339,7 +339,7 @@ async function publicacionDelIndice(productoIds) {
   const respuesta = await conCircuito((cliente) => cliente.mget({
     index: indice(),
     ids: productoIds.map(String),
-    _source: ['estado', 'vendedor_id', 'descripcion', 'imagen_url'],
+    _source: ['estado', 'vendedor_id', 'nombre', 'descripcion', 'imagen_url'],
   }));
   return new Map(
     (respuesta.docs ?? [])
@@ -347,7 +347,7 @@ async function publicacionDelIndice(productoIds) {
       .map((doc) => [Number(doc._id), {
         estado: doc._source.estado,
         vendedor_id: doc._source.vendedor_id,
-        descripcion: doc._source.descripcion,
+        ...textosProducto(doc._source),
         imagen_url: doc._source.imagen_url || '',
       }])
   );
@@ -373,7 +373,7 @@ function construirPedidoSimilares(vector, { productoId, suspendidos = [], vended
       k,
       num_candidates: 100,
       similarity: umbral,
-      filter: { bool: { filter: [{ term: { estado: 'activo' } }], must_not: excluir } },
+      filter: { bool: { filter: [{ term: { estado: 'activo' } }, { exists: { field: 'nombre' } }], must_not: excluir } },
     },
   };
 }
@@ -385,15 +385,15 @@ function construirPedidoSimilares(vector, { productoId, suspendidos = [], vended
 async function similares(productoId, { vendedorPropioId } = {}) {
   let origen;
   try {
-    origen = await conCircuito((cliente) => cliente.get({ index: indice(), id: String(productoId), _source_includes: ['embedding', 'descripcion', 'vendedor_id'] }));
+    origen = await conCircuito((cliente) => cliente.get({ index: indice(), id: String(productoId), _source_includes: ['embedding', 'nombre', 'descripcion', 'vendedor_id'] }));
   } catch (err) {
     throw noEncontrado(err);
   }
   const suspendidos = await vendedoresSuspendidos();
-  const { embedding, descripcion, vendedor_id: vendedorId } = origen._source;
+  const { embedding, vendedor_id: vendedorId } = origen._source;
   if (suspendidos.has(vendedorId)) throw productoNoEncontrado();
-  const resumen = { id: Number(origen._id), descripcion };
-  if (!embedding) return { origen: resumen, candidatos: [], sinVector: true };
+  const resumen = { id: Number(origen._id), ...textosProducto(origen._source) };
+  if (!embedding || !resumen.descripcion) return { origen: resumen, candidatos: [], sinVector: true };
 
   const pedido = construirPedidoSimilares(embedding, { productoId, suspendidos: [...suspendidos], vendedorPropioId });
   const respuesta = await conCircuito((cliente) => cliente.search(pedido));

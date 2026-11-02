@@ -65,7 +65,7 @@ function normalizarCorreo(correo) {
 }
 
 // Dos productos son "el mismo artículo" para la señal de reventa cuando sus
-// descripciones dicen lo mismo — la clave canónica de abajo. Es una coincidencia
+// nombres dicen lo mismo — la clave canónica de abajo. Es una coincidencia
 // de TÍTULO, nunca una prueba de que sea la misma pieza física (el catálogo no
 // tiene un código de producto compartido entre vendedores), así que la señal
 // que la usa parte como "posible" y sube con corroboración (ver fraudeService).
@@ -80,10 +80,10 @@ function normalizarCorreo(correo) {
 // del título, o agregue un adjetivo, deja de coincidir.
 const PALABRAS_VACIAS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'e', 'o', 'u', 'con', 'sin', 'para', 'por', 'en', 'al']);
 
-function claveArticulo(descripcion) {
-  const palabras = normalizarNombre(descripcion).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+function claveArticulo(nombre) {
+  const palabras = normalizarNombre(nombre).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   const significativas = palabras.filter((palabra) => !PALABRAS_VACIAS.has(palabra));
-  // Una descripción hecha solo de palabras vacías ("de la") no puede quedar con
+  // Un nombre hecho solo de palabras vacías ("de la") no puede quedar con
   // clave vacía: colisionaría con cualquier otra igual de vacía.
   return [...new Set(significativas.length > 0 ? significativas : palabras)].sort().join(' ');
 }
@@ -144,8 +144,8 @@ FOREACH (ignorar IN CASE WHEN $correoHash IS NULL THEN [] ELSE [1] END |
 // hasta que esa misma cuenta compre o reseñe. `coalesce` para no pisar un
 // nombre ya sincronizado con el cacheado en el producto (vendedor_nombre).
 //
-// El producto se enlaza a su Articulo (la clave canónica de su descripción, ver
-// claveArticulo) y se DESENLAZA del anterior si la descripción cambió: un
+// El producto se enlaza a su Articulo (la clave canónica de su nombre, ver
+// claveArticulo) y se DESENLAZA del anterior si el nombre cambió: un
 // producto pertenece a un solo artículo — y si ese artículo se queda sin ningún
 // producto, se borra, para que editar títulos no vaya dejando nodos huérfanos. Es una subconsulta "unitaria" (sin
 // RETURN), así que no cambia las filas ni las variables de la consulta que la
@@ -153,7 +153,7 @@ FOREACH (ignorar IN CASE WHEN $correoHash IS NULL THEN [] ELSE [1] END |
 // de producto, y el enlace queda al día sin importar por cuál camino se tocó.
 const MERGE_PRODUCTO_Y_VENDEDOR = `
 MERGE (p:Producto {producto_id: $productoId})
-  SET p.descripcion = $productoDescripcion, p.subcategoria = $subcategoriaId, p.categoria = $categoriaId
+  SET p.nombre = $productoNombre, p.descripcion = $productoDescripcion, p.subcategoria = $subcategoriaId, p.categoria = $categoriaId
 MERGE (v:Usuario {id_usuario: $vendedorId})
   SET v.nombre = coalesce(v.nombre, $vendedorNombre)
 MERGE (nv:Nombre {clave: $vendedorNombreClave})
@@ -201,6 +201,7 @@ async function registrarCompra({
   vendedorId,
   vendedorNombre,
   productoId,
+  productoNombre,
   productoDescripcion,
   subcategoriaId,
   fecha,
@@ -224,8 +225,9 @@ async function registrarCompra({
     vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
+    productoNombre,
     productoDescripcion,
-    articuloClave: claveArticulo(productoDescripcion),
+    articuloClave: claveArticulo(productoNombre),
     subcategoriaId: String(subcategoriaId),
     categoriaId,
     fecha: new Date(fecha).toISOString(),
@@ -251,6 +253,7 @@ async function registrarResena({
   vendedorId,
   vendedorNombre,
   productoId,
+  productoNombre,
   productoDescripcion,
   subcategoriaId,
   calificacion,
@@ -272,8 +275,9 @@ async function registrarResena({
     vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
+    productoNombre,
     productoDescripcion,
-    articuloClave: claveArticulo(productoDescripcion),
+    articuloClave: claveArticulo(productoNombre),
     subcategoriaId: String(subcategoriaId),
     categoriaId,
     calificacion,
@@ -285,13 +289,13 @@ async function registrarResena({
 // la reventa se ve justamente en la publicación que un vendedor hace DESPUÉS de
 // comprarle a otro, y esa publicación casi nunca tiene una sola compra. Se llama
 // al crear y al editar un producto (productoService) y desde el backfill — así
-// la descripción nueva se vuelve a enlazar a su Articulo. El estado (activo /
+// el nombre nuevo se vuelve a enlazar a su Articulo. El estado (activo /
 // inactivo), la fecha de publicación y los atributos NO se copian acá: cambian
 // por otros caminos y se leen EN VIVO de Mongo al armar el hallazgo, para que
 // "hoy lo está vendiendo" sea siempre lo que dice el catálogo y no una copia.
 const MERGE_PRODUCTO = MERGE_PRODUCTO_Y_VENDEDOR;
 
-async function registrarProducto({ productoId, productoDescripcion, subcategoriaId, vendedorId, vendedorNombre }) {
+async function registrarProducto({ productoId, productoNombre, productoDescripcion, subcategoriaId, vendedorId, vendedorNombre }) {
   const [categoriaId, vendedorCorreoHash] = await Promise.all([resolverCategoriaId(subcategoriaId), hashCorreoDe(vendedorId)]);
   await neo4j.escribir(MERGE_PRODUCTO, {
     vendedorId,
@@ -299,8 +303,9 @@ async function registrarProducto({ productoId, productoDescripcion, subcategoria
     vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
+    productoNombre,
     productoDescripcion,
-    articuloClave: claveArticulo(productoDescripcion),
+    articuloClave: claveArticulo(productoNombre),
     subcategoriaId: String(subcategoriaId),
     categoriaId,
   });

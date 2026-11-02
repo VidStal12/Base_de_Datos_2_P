@@ -269,7 +269,7 @@ export function CheckoutPage() {
           {items.map(({ producto, cantidad }) => (
             <li key={producto.id} className="flex justify-between">
               <span className="line-clamp-1">
-                {producto.descripcion} × {cantidad}
+                {producto.nombre} × {cantidad}
               </span>
               <span>{formatCurrency(Number(producto.precio ?? 0) * cantidad)}</span>
             </li>

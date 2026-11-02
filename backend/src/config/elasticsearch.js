@@ -35,6 +35,7 @@ const MAPPING = {
   dynamic: 'strict',
   properties: {
     producto_id: { type: 'integer' },
+    nombre: { type: 'text', analyzer: 'spanish' },
     descripcion: {
       type: 'text',
       analyzer: 'spanish',

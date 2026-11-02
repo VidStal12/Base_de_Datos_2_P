@@ -20,13 +20,13 @@ export function TarjetaConDescuento({ producto }) {
       <div className="aspect-square overflow-hidden bg-neutral-100">
         <img
           src={producto.imagen_url || 'https://placehold.co/400x400?text=TiendaYa'}
-          alt={producto.descripcion}
+          alt={producto.nombre}
           loading="lazy"
           className="size-full object-cover"
         />
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
-        <p className="line-clamp-2 text-sm font-medium text-neutral-800">{producto.descripcion}</p>
+        <p className="line-clamp-2 text-sm font-medium text-neutral-800">{producto.nombre}</p>
         <p className="text-xs text-neutral-500">{producto.vendedor_nombre}</p>
         <div className="mt-auto flex items-baseline gap-2">
           <span className="font-bold text-neutral-900">{formatCurrency(producto.precio_recomendado)}</span>

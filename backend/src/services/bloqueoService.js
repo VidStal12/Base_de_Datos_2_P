@@ -176,8 +176,8 @@ function candidatosDeHallazgos(datos) {
         ...r.originales.map((o) => involucrada(o.vendedor.id, o.vendedor.nombre, o.vendedor.ficha, 'vendedor original')),
       ],
       datosClave: {
-        publicacion: { id: r.publicacion.id, descripcion: r.publicacion.descripcion },
-        originales: r.originales.map((o) => ({ producto: { id: o.producto.id, descripcion: o.producto.descripcion }, vendedor: { id: o.vendedor.id, nombre: o.vendedor.nombre } })),
+        publicacion: { id: r.publicacion.id, nombre: r.publicacion.nombre },
+        originales: r.originales.map((o) => ({ producto: { id: o.producto.id, nombre: o.producto.nombre }, vendedor: { id: o.vendedor.id, nombre: o.vendedor.nombre } })),
         listadaDespues: r.listadaDespues,
         mismosAtributos: r.mismosAtributos,
       },

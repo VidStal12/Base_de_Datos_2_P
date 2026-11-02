@@ -9,6 +9,7 @@ const plano = (valor) => JSON.parse(JSON.stringify(valor));
 const VECTOR = [0.6, 0.8];
 const PRODUCTO = {
   id: 7,
+  nombre: 'Polo',
   descripcion: 'Camiseta polo clásica',
   vendedor_id: 2,
   vendedor_nombre: 'Luis Ramírez',
@@ -72,11 +73,11 @@ test('SIN el modelo se actualiza en vez de reemplazar: el documento nunca se ind
   const [tipo, cuerpo] = s.operaciones[0];
   assert.equal(tipo, 'update', 'un `index` completo sin `embedding` borraría el vector que el documento ya tiene');
   assert.equal(cuerpo.id, '7');
-  assert.equal(cuerpo.doc_as_upsert, true, 'un producto nuevo se crea, sin vector');
+  assert.deepEqual(cuerpo.upsert, cuerpo.script.params.doc, 'un producto nuevo se crea, sin vector');
   assert.ok(cuerpo.retry_on_conflict >= 1, 'dos ediciones seguidas no se pisan con un error de versión');
-  assert.equal('embedding' in cuerpo.doc, false, 'ni siquiera como null: un null lo borraría igual');
-  assert.equal(cuerpo.doc.descripcion, 'Camiseta polo clásica', 'el resto del documento sí se actualiza');
-  assert.deepEqual(cuerpo.doc.atributos, [{ nombre: 'Talla', valor: 'M' }]);
+  assert.equal('embedding' in cuerpo.script.params.doc, false, 'ni siquiera como null: un null lo borraría igual');
+  assert.equal(cuerpo.script.params.doc.descripcion, 'Camiseta polo clásica', 'el resto del documento sí se actualiza');
+  assert.deepEqual(cuerpo.script.params.doc.atributos, [{ nombre: 'Talla', valor: 'M' }]);
 });
 
 test('el update parcial lleva todos los campos del documento menos el vector (si falta alguno, quedaría desactualizado)', async () => {
@@ -86,7 +87,7 @@ test('el update parcial lleva todos los campos del documento menos el vector (si
   await sinModeloSvc.indexarProducto(PRODUCTO);
   const completo = { ...conModelo.operaciones[0][1].document };
   delete completo.embedding;
-  assert.deepEqual(sinModeloSvc.operaciones[0][1].doc, completo);
+  assert.deepEqual(sinModeloSvc.operaciones[0][1].script.params.doc, completo);
 });
 
 test('un solo aviso por caída del modelo, no uno por cada producto que se edite mientras dure; al volver, vuelve a avisar', async () => {

@@ -51,11 +51,11 @@ async function main() {
   }
   const direccion = usuario.direcciones[0] || await prisma.direcciones.create({ data: { id_usuario: usuarioId, pais: 'Guatemala', direccion: 'Dirección sintética carrito', codigo_postal: '00000' } });
   const metodo = usuario.metodos_pago[0] || await prisma.metodo_pago.create({ data: { id_usuario: usuarioId, titular: 'Prueba sintética', token_pasarela: 'carrito-test-sintetico', ultimos_4_digitos: '0000', marca: 'PRUEBA' } });
-  const descripcion = '[PRUEBA SINTÉTICA] Persistencia carrito y caché flash';
-  let doc = await Producto.findOne({ descripcion });
+  const nombre = '[PRUEBA SINTÉTICA] Persistencia carrito y caché flash';
+  let doc = await Producto.findOne({ nombre });
   if (!doc) {
     const sql = await prisma.producto.create({ data: { id_vendedor: base.vendedor_id, inventario: { create: { precio: 10, cantidad: 20 } } } });
-    doc = await Producto.create({ producto_id: sql.id, descripcion, estado: 'activo', subcategoria_id: base.subcategoria_id, vendedor_id: base.vendedor_id, vendedor_nombre: base.vendedor_nombre, inventario: { precio: 10, cantidad: 20 }, imagenes: [], atributos: [] });
+    doc = await Producto.create({ producto_id: sql.id, nombre, descripcion: 'Producto de prueba del carrito y la oferta.', estado: 'activo', subcategoria_id: base.subcategoria_id, vendedor_id: base.vendedor_id, vendedor_nombre: base.vendedor_nombre, inventario: { precio: 10, cantidad: 20 }, imagenes: [], atributos: [] });
   }
   const productoId = doc.producto_id;
   await prisma.inventario.update({ where: { id_producto: productoId }, data: { precio: 10, cantidad: 20 } });
@@ -124,13 +124,13 @@ async function main() {
   const vendedor = { id_usuario: base.vendedor_id, rol: 'vendedor' };
   await oferta.actualizar(vendedor, productoId, { activo: true, precio_oferta: 8, stock_oferta: 5, vigente_desde: new Date(Date.now() - 1000), vigente_hasta: new Date(Date.now() + 60000) });
   const infoFlash = await peticion(`/ofertas/${productoId}/stock`);
-  assert.equal(infoFlash.producto.descripcion, descripcion);
+  assert.equal(infoFlash.producto.nombre, nombre);
   // Los datos de la oferta son un hash con la estructura del carrito (un campo cada
   // uno, los anidados en JSON), no una cadena: ver ofertaDatosService.js.
   assert.equal(await redis.type(`oferta:${productoId}:datos`), 'hash');
   const flash = await redis.hgetall(`oferta:${productoId}:datos`);
   assert.equal(flash._formato, cache.FORMATO);
-  assert.equal(flash.descripcion, descripcion);
+  assert.equal(flash.nombre, nombre);
   assert.equal(JSON.parse(flash.oferta_flash).precio_oferta, 8);
   assert.equal(Object.keys(flash).some((campo) => /inventario|cantidad/.test(campo)), false, 'el inventario real no se copia');
   const intentoFlash = await peticion(`/ofertas/${productoId}/intentos`, { metodo: 'POST', body: {} });

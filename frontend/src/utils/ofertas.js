@@ -70,6 +70,7 @@ export function normalizarOferta({ producto, stock }) {
   const precioOferta = Number(stock.precio_oferta);
   return {
     id: producto.id,
+    nombre: producto.nombre,
     descripcion: producto.descripcion,
     vendedorId: producto.vendedor_id,
     vendedor: producto.vendedor_nombre,

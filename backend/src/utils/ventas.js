@@ -91,7 +91,7 @@ function porcentaje(actual, anterior) {
 // Cálculo puro: recibe ventas de Cassandra y se prueba sin bases. La demanda
 // se aproxima con unidades; pedidos se cuentan DISTINCT, no por cada línea.
 function construirReporte(filas, filtros, productos = []) {
-  const nombres = new Map(productos.map((p) => [p.id, p.descripcion]));
+  const nombres = new Map(productos.map((p) => [p.id, p.nombre]));
   const serie = new Map();
   for (const dia of listarDias(filtros.desde, filtros.hasta)) {
     const periodo = periodoDeDia(dia, filtros.intervalo);
@@ -130,7 +130,7 @@ function construirReporte(filas, filtros, productos = []) {
   if (![centavos, unidades, unidadesAnteriores].every(Number.isSafeInteger)) throw new Error('Totales fuera de rango');
   const tendencias = [...porProducto.values()]
     .filter((p) => p.unidadesActuales >= filtros.minUnidades && p.unidadesActuales > p.unidadesAnteriores)
-    .map((p) => ({ ...p, descripcion: nombres.get(p.productoId),
+    .map((p) => ({ ...p, nombre: nombres.get(p.productoId),
       aumentoUnidades: p.unidadesActuales - p.unidadesAnteriores,
       crecimientoPorcentaje: porcentaje(p.unidadesActuales, p.unidadesAnteriores), sinBaseAnterior: p.unidadesAnteriores === 0 }))
     // Priorizar aumento absoluto evita que pasar de 1 a 2 opaque +50 unidades.
@@ -141,7 +141,7 @@ function construirReporte(filas, filtros, productos = []) {
     resumen: { unidades, ingresos: centavos / 100, pedidos: pedidos.size, unidadesAnteriores,
       crecimientoPorcentaje: porcentaje(unidades, unidadesAnteriores) },
     serie: [...serie.values()].map((p) => ({ periodo: p.periodo, unidades: p.unidades, ingresos: p.centavos / 100, pedidos: p.pedidos.size })),
-    productos: [...nombres].map(([id, descripcion]) => ({ id, descripcion })).sort((a, b) => a.descripcion.localeCompare(b.descripcion, 'es')),
+    productos: [...nombres].map(([id, nombre]) => ({ id, nombre })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')),
     tendencias,
   };
 }

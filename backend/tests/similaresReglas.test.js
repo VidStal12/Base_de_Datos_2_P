@@ -4,7 +4,7 @@ const reglas = require('../src/services/reglasRelacionados');
 
 // Las reglas de negocio de «productos relacionados», sin motor ni base: lo que se prueba es qué se queda y qué
 // se descarta de una lista de candidatos que ya viene en orden de relevancia.
-const producto = (id, descripcion, vendedor_id, cantidad = 5) => ({ id, descripcion, vendedor_id, inventario: { precio: 10, cantidad } });
+const producto = (id, nombre, vendedor_id, cantidad = 5) => ({ id, nombre, vendedor_id, inventario: { precio: 10, cantidad } });
 const ids = (lista) => lista.map((p) => p.id);
 
 test('los valores por omisión son los del diseño: 6 a mostrar, ocultar con menos de 2, coseno mínimo en el rango útil del modelo', () => {
@@ -51,7 +51,7 @@ test('lo agotado va al final, con el orden de relevancia conservado dentro de ca
 });
 
 test('un producto sin inventario conocido cuenta como agotado, no rompe nada', () => {
-  const sinInventario = { id: 9, descripcion: 'Sin datos', vendedor_id: 1 };
+  const sinInventario = { id: 9, nombre: 'Sin datos', vendedor_id: 1 };
   assert.deepEqual(ids(reglas.elegir([sinInventario, producto(1, 'A', 2)])), [1, 9]);
 });
 

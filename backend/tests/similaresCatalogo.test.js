@@ -14,8 +14,8 @@ const noEncontrado = () => Object.assign(new Error('Producto no encontrado'), { 
 
 const CAMISETAS = 'sub-camisetas';
 const subCamisetas = { id: CAMISETAS, subcategoria: 'Camisetas', categoria_id: 'cat-ropa', categoria: 'Ropa' };
-const producto = (id, descripcion, vendedor_id, { cantidad = 5, total_vendido = 0 } = {}) => ({
-  id, descripcion, vendedor_id, total_vendido, inventario: { precio: 50, cantidad }, subcategoria: subCamisetas,
+const producto = (id, nombre, vendedor_id, { cantidad = 5, total_vendido = 0 } = {}) => ({
+  id, nombre, vendedor_id, total_vendido, inventario: { precio: 50, cantidad }, subcategoria: subCamisetas,
 });
 // El producto que se está mirando, tal como lo entrega productoService.obtener().
 const ORIGEN = { ...producto(1, 'Camiseta azul', 2), estado: 'activo' };
@@ -39,7 +39,7 @@ function servicio({ parecidos, delMismoTipo = [], origen = ORIGEN, oculto = fals
     }),
   };
   const modulo = cargar('../src/services/catalogoLecturaService.js', {
-    './busquedaService': { similares: registrar('es.similares', parecidos ?? { origen: { id: 1, descripcion: 'Camiseta azul' }, candidatos: [], sinVector: false }) },
+    './busquedaService': { similares: registrar('es.similares', parecidos ?? { origen: { id: 1, nombre: 'Camiseta azul' }, candidatos: [], sinVector: false }) },
     './productoService': {
       obtener: registrar('mongo.obtener', origen),
       listar: registrar('mongo.listar', delMismoTipo),
@@ -56,7 +56,7 @@ function servicio({ parecidos, delMismoTipo = [], origen = ORIGEN, oculto = fals
   return { ...modulo, llamadas };
 }
 
-const respuestaDeIndice = (candidatos, origen = { id: 1, descripcion: 'Camiseta azul' }) => ({ origen, candidatos, sinVector: false });
+const respuestaDeIndice = (candidatos, origen = { id: 1, nombre: 'Camiseta azul' }) => ({ origen, candidatos, sinVector: false });
 const ids = (r) => plano(r).productos.map((p) => p.id);
 
 // ── Por significado ─────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ test('con menos de 2 resultados la sección se oculta (mejor nada que algo sin r
 });
 
 test('un producto sin vector (se indexó sin el modelo) cae a la subcategoría aunque el índice esté sano', async () => {
-  const s = servicio({ parecidos: { origen: { id: 1, descripcion: 'Camiseta azul' }, candidatos: [], sinVector: true }, delMismoTipo: MISMA_SUBCATEGORIA });
+  const s = servicio({ parecidos: { origen: { id: 1, nombre: 'Camiseta azul' }, candidatos: [], sinVector: true }, delMismoTipo: MISMA_SUBCATEGORIA });
   const r = plano(await s.relacionados(1));
   assert.equal(r.modo, 'subcategoria');
   assert.deepEqual(ids(r), [3, 4, 2]);
@@ -198,7 +198,7 @@ test('un producto que no existe en ninguna parte es un 404 (no una sección vac�
 });
 
 test('el producto de un vendedor suspendido no tiene relacionados: es un 404, como su detalle para el público', async () => {
-  const sinVector = { origen: { id: 1, descripcion: 'Camiseta azul' }, candidatos: [], sinVector: true };
+  const sinVector = { origen: { id: 1, nombre: 'Camiseta azul' }, candidatos: [], sinVector: true };
   const s = servicio({ parecidos: sinVector, oculto: true, delMismoTipo: MISMA_SUBCATEGORIA });
   await assert.rejects(s.relacionados(1), (err) => err.status === 404);
   assert.ok(!s.llamadas.includes('mongo.listar'), 'ni se listó la subcategoría');

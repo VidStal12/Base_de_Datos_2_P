@@ -91,13 +91,14 @@ async function main() {
   // --- productos: fila mínima en MySQL (ancla de FK + inventario) + documento
   // completo en Mongo (descripción/atributos/imágenes/precio/cantidad) + evento
   // inicial de creación — mismo trío que arma productoService.crear() en runtime.
-  async function crearProducto({ vendedorId, vendedorNombre, descripcion, imagenUrl, subcategoriaId, precio, cantidad, atributos }) {
+  async function crearProducto({ vendedorId, vendedorNombre, nombre, descripcion, imagenUrl, subcategoriaId, precio, cantidad, atributos }) {
     const productoRelacional = await prisma.producto.create({
       data: { id_vendedor: vendedorId, inventario: { create: { precio, cantidad } } },
     });
 
     const doc = await Producto.create({
       producto_id: productoRelacional.id,
+      nombre,
       descripcion,
       estado: 'activo',
       subcategoria_id: subcategoriaId,
@@ -105,7 +106,7 @@ async function main() {
       vendedor_nombre: vendedorNombre,
       inventario: { precio, cantidad },
       atributos,
-      imagenes: imagenUrl ? [{ url: imagenUrl, alt: descripcion, orden: 1, principal: true }] : [],
+      imagenes: imagenUrl ? [{ url: imagenUrl, alt: nombre, orden: 1, principal: true }] : [],
       version: 1,
     });
 
@@ -117,6 +118,7 @@ async function main() {
       usuario_id: vendedorId,
       campos_modificados: [],
       snapshot: {
+        nombre: doc.nombre,
         descripcion: doc.descripcion,
         estado: doc.estado,
         atributos: doc.atributos,
@@ -133,7 +135,8 @@ async function main() {
   const { doc: camiseta } = await crearProducto({
     vendedorId: luis.id_usuario,
     vendedorNombre,
-    descripcion: 'Camiseta básica de algodón',
+    nombre: 'Camiseta básica de algodón',
+    descripcion: 'Prenda de algodón azul en talla M para uso diario.',
     imagenUrl: 'https://picsum.photos/seed/camiseta/400',
     subcategoriaId: subcatCamisetas._id,
     precio: 89.99,
@@ -147,7 +150,8 @@ async function main() {
   const { doc: smartphone } = await crearProducto({
     vendedorId: luis.id_usuario,
     vendedorNombre,
-    descripcion: 'Smartphone X100',
+    nombre: 'Smartphone X100',
+    descripcion: 'Teléfono móvil con 128 GB de almacenamiento y 8 GB de memoria RAM.',
     imagenUrl: 'https://picsum.photos/seed/smartphone/400',
     subcategoriaId: subcatCelulares._id,
     precio: 2499.0,
@@ -182,7 +186,8 @@ async function main() {
   await crearProducto({
     vendedorId: marta.id_usuario,
     vendedorNombre: martaNombre,
-    descripcion: 'Camiseta de algodón pima',
+    nombre: 'Camiseta de algodón pima',
+    descripcion: 'Prenda de algodón pima suave, en azul y talla M.',
     imagenUrl: 'https://picsum.photos/seed/camiseta-marta/400',
     subcategoriaId: subcatCamisetas._id,
     precio: 79.5,
@@ -196,7 +201,8 @@ async function main() {
   await crearProducto({
     vendedorId: marta.id_usuario,
     vendedorNombre: martaNombre,
-    descripcion: 'Smartphone Z9',
+    nombre: 'Smartphone Z9',
+    descripcion: 'Teléfono inteligente para llamadas, mensajería y aplicaciones.',
     imagenUrl: 'https://picsum.photos/seed/smartphone-marta/400',
     subcategoriaId: subcatCelulares._id,
     precio: 2299.0,
@@ -211,7 +217,7 @@ async function main() {
   console.log('Seed completado:');
   console.log({
     usuarios: [usuario1.correo, marta.correo],
-    productos: [camiseta.descripcion, smartphone.descripcion, 'Camiseta de algodón pima', 'Smartphone Z9'],
+    productos: [camiseta.nombre, smartphone.nombre, 'Camiseta de algodón pima', 'Smartphone Z9'],
   });
 }
 

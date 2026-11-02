@@ -33,6 +33,7 @@
 // ============================================================
 
 require('dotenv').config();
+const { textosParaGrafo } = require('../src/utils/textosProducto');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
@@ -240,7 +241,7 @@ async function reenviarCompraANeo4j(compraId) {
   const compra = await prisma.compra.findUnique({ where: { id: compraId }, include: { compra_detalles: true } });
   const usuario = await prisma.usuarios.findUnique({ where: { id_usuario: compra.id_usuario }, include: { rol: true } });
   for (const detalle of compra.compra_detalles) {
-    const producto = await Producto.findOne({ producto_id: detalle.id_producto }).select('descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
+    const producto = await Producto.findOne({ producto_id: detalle.id_producto }).select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre').lean();
     await fraudeSync.registrarCompra({
       detalleId: detalle.id,
       compraId: compra.id,
@@ -250,7 +251,7 @@ async function reenviarCompraANeo4j(compraId) {
       vendedorId: producto.vendedor_id,
       vendedorNombre: producto.vendedor_nombre,
       productoId: detalle.id_producto,
-      productoDescripcion: producto.descripcion,
+      ...textosParaGrafo(producto),
       subcategoriaId: producto.subcategoria_id,
       fecha: compra.fecha,
       monto: detalle.precio_final,

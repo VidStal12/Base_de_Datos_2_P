@@ -16,6 +16,7 @@ const { aDocumento } = require('../src/services/busquedaSyncService');
 // documento de búsqueda solo debe llevar nombre y valor.
 const completo = {
   id: 1,
+  nombre: 'Polo Lino',
   descripcion: 'Camiseta polo clásica',
   vendedor_id: 2,
   vendedor_nombre: 'Luis Ramírez',
@@ -28,7 +29,7 @@ const completo = {
 };
 
 // El mínimo que puede llegar: sin subcategoría, sin inventario, sin atributos.
-const minimo = { id: 2, descripcion: 'Producto sin datos', estado: 'inactivo' };
+const minimo = { id: 2, nombre: 'Muestra', descripcion: 'Producto sin datos', estado: 'inactivo' };
 
 const declarados = Object.keys(MAPPING.properties);
 const sinDeclarar = (claves, permitidas) => claves.filter((clave) => !permitidas.includes(clave));
@@ -61,6 +62,8 @@ test('el campo de autocompletado solo usa los contextos declarados', () => {
   const faltan = sinDeclarar(Object.keys(doc.sugerencia.contexts), contextos);
   assert.deepEqual(faltan, [], `sugerencia usa contextos sin declarar: ${faltan.join(', ')}`);
   assert.deepEqual(doc.sugerencia.contexts.estado, ['activo']);
+  assert.deepEqual(doc.sugerencia.input, ['Polo Lino']);
+  assert.equal(doc.descripcion, 'Camiseta polo clásica');
 });
 
 test('todo campo declarado en el mapping lo llena aDocumento() (si no, buscar por él nunca encuentra nada)', () => {

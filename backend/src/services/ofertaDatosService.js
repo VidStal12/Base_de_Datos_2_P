@@ -1,3 +1,4 @@
+const { textosProducto } = require('../utils/textosProducto');
 const { conectar } = require('../config/redis');
 const { conectar: conectarMongo } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
@@ -45,7 +46,7 @@ const Producto = require('../models/mongo/Producto');
 // Regenerar solo toca `datos`: el contador del cupo no se reinicia.
 const TTL_SEGUNDOS = 450; // por inactividad, como el carrito; cada lectura lo renueva
 const VIDA_MAXIMA_SEGUNDOS = 600; // edad máxima de una copia, se lea o no (señal d)
-const FORMATO = '1';
+const FORMATO = '2';
 const INTENTOS = 3;
 const clave = (id) => `oferta:${id}:datos`;
 const revisionClave = (id) => `oferta:${id}:revision`;
@@ -60,7 +61,7 @@ function datos(doc) {
   const oferta = doc.oferta_flash;
   return {
     id: doc.producto_id,
-    descripcion: doc.descripcion,
+    ...textosProducto(doc),
     estado: doc.estado,
     imagen_url: principal?.url || '',
     imagenes: (doc.imagenes || []).map(({ url, alt, orden, principal: esPrincipal }) => ({ url, alt, orden, principal: esPrincipal })),
@@ -91,7 +92,7 @@ const LECTORES = {
   resenas_resumen: JSON.parse,
   oferta_flash: JSON.parse,
 };
-const CAMPOS = ['id', 'descripcion', 'estado', 'imagen_url', 'imagenes', 'atributos', 'subcategoria_id', 'vendedor_id', 'vendedor_nombre', 'precio_normal', 'resenas_resumen', 'version', 'oferta_flash'];
+const CAMPOS = ['id', 'nombre', 'descripcion', 'estado', 'imagen_url', 'imagenes', 'atributos', 'subcategoria_id', 'vendedor_id', 'vendedor_nombre', 'precio_normal', 'resenas_resumen', 'version', 'oferta_flash'];
 const JSON_CAMPOS = new Set(['imagenes', 'atributos', 'resenas_resumen', 'oferta_flash']);
 
 // `vence_en` (epoch en segundos) lo usa el script de lectura para no renovar el
@@ -172,7 +173,7 @@ async function obtener(id) {
     // regenera desde Mongo.
     await conectarMongo();
     const doc = await Producto.findOne({ producto_id: id })
-      .select('producto_id descripcion estado imagenes atributos subcategoria_id vendedor_id vendedor_nombre inventario.precio resenas_resumen version oferta_flash')
+      .select('producto_id nombre descripcion estado imagenes atributos subcategoria_id vendedor_id vendedor_nombre inventario.precio resenas_resumen version oferta_flash')
       .lean();
     if (!doc) throw new Error('Producto no encontrado');
     producto = datos(doc);

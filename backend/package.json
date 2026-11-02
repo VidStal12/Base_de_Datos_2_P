@@ -37,6 +37,7 @@
     "ventas:sincronizar": "node scripts/sincronizarVentas.js",
     "ventas:historico": "node scripts/sincronizarVentas.js --historico",
     "fraude:backfill": "node scripts/backfillNeo4j.js",
+    "catalogo:migrar-textos": "node scripts/migrarTextosProducto.js",
     "busqueda:backfill": "node scripts/backfillBusqueda.js",
     "test:ventas": "node --test tests/ventas*.test.js",
     "test:busqueda": "node --test tests/busqueda*.test.js",

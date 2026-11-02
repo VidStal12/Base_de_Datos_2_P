@@ -43,7 +43,7 @@ async function main() {
   const metodo = await prisma.metodo_pago.create({ data: { id_usuario: comprador, titular: 'Prueba', token_pasarela: `prueba-${marca}`, ultimos_4_digitos: '0000', marca: 'PRUEBA' } });
   const producto = await prisma.producto.create({ data: { id_vendedor: vendedor, inventario: { create: { precio: 20, cantidad: 10 } } } });
   productoId = producto.id;
-  await Producto.create({ producto_id: productoId, descripcion: `[PRUEBA idempotencia ${marca}]`, estado: 'activo',
+  await Producto.create({ producto_id: productoId, descripcion: 'Producto de prueba para repetir un pedido.', nombre: `[PRUEBA idempotencia ${marca}]`, estado: 'activo',
     vendedor_id: vendedor, vendedor_nombre: 'Vendedor sintético', subcategoria_id: subcategoria._id, inventario: { precio: 20, cantidad: 10 } });
   const token = jwt.sign({ id_usuario: comprador, rol_id: rol.id, rol: 'comprador' }, process.env.JWT_SECRET, { expiresIn: '10m' });
   const tokenAjeno = jwt.sign({ id_usuario: vendedor, rol_id: rol.id, rol: 'comprador' }, process.env.JWT_SECRET, { expiresIn: '10m' });

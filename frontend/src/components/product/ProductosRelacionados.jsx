@@ -34,7 +34,7 @@ export function ProductosRelacionados({ productoId, titulo, token }) {
         </h2>
         <p className="text-sm text-neutral-500">
           {datos.modo === 'semantico'
-            ? `Parecidos a «${titulo}» por lo que son, no solo por las palabras del título.`
+            ? `Parecidos a «${titulo}» por su descripción.`
             : `Misma subcategoría: ${datos.subcategoria}.`}
         </p>
       </div>

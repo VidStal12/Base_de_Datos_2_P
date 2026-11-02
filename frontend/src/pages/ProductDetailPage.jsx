@@ -75,7 +75,7 @@ export function ProductDetailPage() {
         <div className="aspect-square overflow-hidden rounded-2xl bg-neutral-100">
           <img
             src={producto.imagen_url || 'https://placehold.co/600x600?text=TiendaYa'}
-            alt={producto.descripcion}
+            alt={producto.nombre}
             className="size-full object-cover"
           />
         </div>
@@ -87,7 +87,8 @@ export function ProductDetailPage() {
                 {subcategoria.subcategoria}
               </Link>
             )}
-                        <h1 className="mt-1 text-2xl font-bold text-neutral-900">{producto.descripcion}</h1>
+            <h1 className="mt-1 text-2xl font-bold text-neutral-900">{producto.nombre}</h1>
+            {producto.descripcion && <p className="mt-2 whitespace-pre-line text-neutral-700">{producto.descripcion}</p>}
             {producto.resenas_resumen?.cantidad > 0 && (
               <div className="mt-1 flex items-center gap-1.5">
                 <StarRating valor={producto.resenas_resumen.promedio} />
@@ -201,7 +202,7 @@ export function ProductDetailPage() {
         </p>
       )}
 
-      <ProductosRelacionados key={producto.id} productoId={producto.id} titulo={producto.descripcion} token={token} />
+      <ProductosRelacionados key={producto.id} productoId={producto.id} titulo={producto.nombre} token={token} />
 
       {!producto.desde_indice && puedeVerHistorial && (
         <HistorialSection

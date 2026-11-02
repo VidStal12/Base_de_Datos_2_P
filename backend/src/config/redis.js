@@ -131,7 +131,7 @@ return {redis.call('GET', KEYS[2]) or '0', contenido}
 const LUA_PUBLICAR_CARRITO = `
 if (redis.call('GET', KEYS[2]) or '0') ~= ARGV[1] then return 0 end
 redis.call('DEL', KEYS[1])
-redis.call('HSET', KEYS[1], '_formato', '3')
+redis.call('HSET', KEYS[1], '_formato', '4')
 local contenido = cjson.decode(ARGV[3])
 for campo, valor in pairs(contenido) do redis.call('HSET', KEYS[1], campo, valor) end
 redis.call('EXPIRE', KEYS[1], ARGV[2])

@@ -234,10 +234,10 @@ async function sugerirEnCatalogo(q) {
   if (!q || !q.trim()) return [];
   await conectar();
   const suspendidos = await suspension.vendedoresSuspendidos();
-  const filtro = { estado: 'activo', descripcion: new RegExp(`^${escaparRegex(q.trim())}`, 'i') };
+  const filtro = { estado: 'activo', nombre: new RegExp(`^${escaparRegex(q.trim())}`, 'i') };
   if (suspendidos.size > 0) filtro.vendedor_id = { $nin: [...suspendidos] };
-  const docs = await Producto.find(filtro).select('descripcion').limit(40).lean();
-  return [...new Set(docs.map((doc) => doc.descripcion))].slice(0, 8);
+  const docs = await Producto.find(filtro).select('nombre').limit(40).lean();
+  return [...new Set(docs.map((doc) => doc.nombre))].slice(0, 8);
 }
 
 function sugerir(q) {
@@ -293,7 +293,7 @@ async function relacionadosPorSignificado(id, usuarioId) {
   // El índice no se entera de las ventas: se relee el stock vigente de Mongo (una consulta para todos los candidatos)
   // para dejar lo agotado al final con datos de hoy, no de la última edición.
   const { resultados } = await conExistenciasVigentes({ resultados: similares.candidatos });
-  return { modo: 'semantico', productos: reglas.elegir(resultados, { titulo: similares.origen.descripcion }) };
+  return { modo: 'semantico', productos: reglas.elegir(resultados, { titulo: similares.origen.nombre }) };
 }
 
 async function relacionadosPorSubcategoria(id, usuarioId) {
@@ -304,7 +304,7 @@ async function relacionadosPorSubcategoria(id, usuarioId) {
   const delMismoTipo = (await productoService.listar({ subcategoriaId }))
     .filter((otro) => otro.id !== producto.id && otro.vendedor_id !== Number(usuarioId))
     .sort((a, b) => (b.total_vendido ?? 0) - (a.total_vendido ?? 0)); // sin una medida de parecido, los más vendidos primero
-  return { modo: 'subcategoria', subcategoria, productos: reglas.elegir(delMismoTipo, { titulo: producto.descripcion }) };
+  return { modo: 'subcategoria', subcategoria, productos: reglas.elegir(delMismoTipo, { titulo: producto.nombre }) };
 }
 
 async function relacionados(id, usuarioId) {

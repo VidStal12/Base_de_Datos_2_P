@@ -40,14 +40,14 @@ export function CartPage() {
               <Link to={`/productos/${producto.id}`} className="size-24 shrink-0 overflow-hidden rounded-lg bg-neutral-100">
                 <img
                   src={producto.imagen_url || 'https://placehold.co/200x200?text=TiendaYa'}
-                  alt={producto.descripcion}
+                  alt={producto.nombre}
                   className="size-full object-cover"
                 />
               </Link>
               <div className="flex flex-1 flex-col justify-between">
                 <div>
                   <Link to={`/productos/${producto.id}`} className="font-medium text-neutral-800 hover:text-brand-700">
-                    {producto.descripcion}
+                    {producto.nombre}
                   </Link>
                   <p className="text-sm text-neutral-500">{formatCurrency(producto.precio)} c/u</p>
                 </div>

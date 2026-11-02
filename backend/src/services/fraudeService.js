@@ -82,7 +82,7 @@ MATCH (u1:Usuario)-[r1:RESEÑÓ]->(p:Producto)<-[r2:RESEÑÓ]-(u2:Usuario)
 WHERE u1.id_usuario < u2.id_usuario
   AND abs(duration.inSeconds(r1.fecha, r2.fecha).seconds) < $ventanaSegundos
   AND r1.calificacion >= $calificacionMinima AND r2.calificacion >= $calificacionMinima
-WITH u1, u2, collect(DISTINCT p.descripcion) AS productos,
+WITH u1, u2, collect(DISTINCT coalesce(p.nombre, p.descripcion)) AS productos,
      avg(r1.calificacion) AS promedio1, avg(r2.calificacion) AS promedio2,
      max(r1.fecha) AS ultima1, max(r2.fecha) AS ultima2
 WHERE size(productos) >= $minimoProductosCompartidos
@@ -123,7 +123,7 @@ async function buscarResenasCoordinadas(parametros) {
 const CONSULTA_GASTO_ANOMALO = `
 MATCH (u:Usuario)-[c:COMPRÓ]->(p:Producto)
 WITH u, c.compra_id AS compraId, min(c.fecha) AS fecha, sum(c.monto) AS total,
-     collect({productoId: p.producto_id, descripcion: p.descripcion, categoria: c.categoria, monto: c.monto}) AS lineas
+     collect({productoId: p.producto_id, nombre: coalesce(p.nombre, p.descripcion), categoria: c.categoria, monto: c.monto}) AS lineas
 ORDER BY fecha
 WITH u, collect({compraId: compraId, fecha: fecha, total: total, lineas: lineas}) AS ordenes
 UNWIND range(0, size(ordenes) - 1) AS i
@@ -187,7 +187,7 @@ CALL {
 MATCH (u)-[c1:COMPRÓ]->(p1:Producto)
 WHERE c1.categoria = categoria AND c1.fecha = primeraFecha
 WITH u, categoria, primeraFecha, ordenesPrevias, inicioHistorial, habituales, c1.compra_id AS compraId,
-     collect({productoId: p1.producto_id, descripcion: p1.descripcion, subcategoria: c1.subcategoria, monto: c1.monto}) AS productos
+     collect({productoId: p1.producto_id, nombre: coalesce(p1.nombre, p1.descripcion), subcategoria: c1.subcategoria, monto: c1.monto}) AS productos
 RETURN u.id_usuario AS usuarioId, u.nombre AS usuarioNombre, categoria, primeraFecha AS fecha,
        compraId, productos, ordenesPrevias,
        duration.inDays(inicioHistorial, primeraFecha).days AS diasHistorial, habituales
@@ -248,7 +248,7 @@ CALL {
          min(c.fecha) AS primeraCompra,
          max(c.fecha) AS ultimaCompra,
          collect(DISTINCT c.categoria) AS categorias,
-         collect(DISTINCT p.descripcion)[0..5] AS productos
+         collect(DISTINCT coalesce(p.nombre, p.descripcion))[0..5] AS productos
 }
 WITH g, collect({id: u.id_usuario, nombre: u.nombre, rol: u.rol, ordenes: ordenes, gastado: gastado,
                  primeraCompra: primeraCompra, ultimaCompra: ultimaCompra, categorias: categorias, productos: productos}) AS miembros
@@ -409,7 +409,7 @@ WHERE mismaCuenta OR mismoNombre OR mismoBuzon
 WITH comprador, vendedor, mismaCuenta, mismoNombre, mismoBuzon,
      count(DISTINCT c.compra_id) AS pedidos, sum(c.monto) AS total,
      min(c.fecha) AS primera, max(c.fecha) AS ultima,
-     collect(DISTINCT p.descripcion)[0..5] AS productos
+     collect(DISTINCT coalesce(p.nombre, p.descripcion))[0..5] AS productos
 RETURN comprador.id_usuario AS compradorId, comprador.nombre AS compradorNombre,
        vendedor.id_usuario AS vendedorId, vendedor.nombre AS vendedorNombre,
        mismaCuenta, mismoNombre, mismoBuzon, pedidos, total, primera, ultima, productos
@@ -439,7 +439,7 @@ async function buscarAutocompra() {
 
 // Un vendedor (una cuenta que PUEDE vender) le compra un producto a OTRO vendedor
 // y tiene publicado un producto del mismo artículo — la misma clave canónica de
-// descripción (fraudeSyncService.claveArticulo):
+// nombre (fraudeSyncService.claveArticulo):
 //   (vendedor)-[:COMPRÓ]->(original)<-[:VENDE]-(otro vendedor)
 //   (original)-[:ES_ARTICULO]->(artículo)<-[:ES_ARTICULO]-(publicación)<-[:VENDE]-(vendedor)
 // Seis saltos que ninguna tabla relacional contesta con un solo JOIN, y el tipo
@@ -463,10 +463,10 @@ WITH s, q, p, v,
      collect(DISTINCT c.detalle_id) AS detalles,
      collect(DISTINCT c.compra_id) AS compras
 WITH s, q,
-     collect({productoId: p.producto_id, descripcion: p.descripcion, vendedorId: v.id_usuario, vendedorNombre: v.nombre,
+     collect({productoId: p.producto_id, nombre: coalesce(p.nombre, p.descripcion), vendedorId: v.id_usuario, vendedorNombre: v.nombre,
               pedidos: pedidos, primera: primera, ultima: ultima, detalles: detalles, compras: compras}) AS originales
 RETURN s.id_usuario AS vendedorId, s.nombre AS vendedorNombre,
-       q.producto_id AS publicacionId, q.descripcion AS publicacionDescripcion,
+       q.producto_id AS publicacionId, coalesce(q.nombre, q.descripcion) AS publicacionNombre,
        originales
 ORDER BY vendedorId, publicacionId
 `;
@@ -477,9 +477,9 @@ async function buscarReventa() {
     const f = aPlano(r.toObject());
     return {
       vendedor: { id: f.vendedorId, nombre: f.vendedorNombre },
-      publicacion: { id: f.publicacionId, descripcion: f.publicacionDescripcion },
+      publicacion: { id: f.publicacionId, nombre: f.publicacionNombre },
       originales: f.originales.map((o) => ({
-        producto: { id: o.productoId, descripcion: o.descripcion },
+        producto: { id: o.productoId, nombre: o.nombre },
         vendedor: { id: o.vendedorId, nombre: o.vendedorNombre },
         pedidos: o.pedidos,
         primera: o.primera,
@@ -713,7 +713,7 @@ function notaCuentaReciente(ficha, nombre) {
 }
 
 function construirMotivoGasto(g, ficha, corroboradores) {
-  const productos = g.lineas.map((l) => `"${l.descripcion}"`).join(', ');
+  const productos = g.lineas.map((l) => `"${l.nombre}"`).join(', ');
   return [
     `${g.usuario.nombre} hizo una compra de ${formatoQ(g.total)} el ${formatoFecha(g.fecha)} (${productos}): ${textoVeces(g)} su compra promedio de ${formatoQ(g.promedio)} y por encima de la más alta que había hecho hasta entonces (${formatoQ(g.maximo)}), medido sobre sus ${g.ordenesPrevias} compras anteriores.`,
     'Es la lógica con que un banco vigila el gasto de un cliente: cada movimiento se compara contra el patrón histórico de esa misma persona, no contra un promedio general. Un salto así puede ser legítimo (un regalo, una compra planeada), pero también es lo que deja una cuenta tomada por un tercero o usada para mover dinero en montos que no corresponden a su historial.',
@@ -723,7 +723,7 @@ function construirMotivoGasto(g, ficha, corroboradores) {
 }
 
 function construirMotivoCategoria(c, ficha, corroboradores) {
-  const productos = c.productos.map((p) => `"${p.descripcion}"`).join(', ');
+  const productos = c.productos.map((p) => `"${p.nombre}"`).join(', ');
   const habituales = c.habituales.map((h) => `${h.categoria} (${pluralCompras(h.ordenes)}, ${h.porcentaje}%)`).join(', ');
   return [
     `${c.usuario.nombre} compró ${productos} el ${formatoFecha(c.fecha)} — su primera compra registrada en la categoría "${c.categoria}". Hasta ese momento acumulaba ${pluralCompras(c.ordenesPrevias)} a lo largo de ${diasATexto(c.diasHistorial)}, siempre en: ${habituales}.`,
@@ -816,11 +816,11 @@ const pluralUnidades = (n) => `${n} unidad${n === 1 ? '' : 'es'}`;
 
 function construirMotivoReventa(h, corroboradores) {
   const compras = h.originales
-    .map((o) => `"${o.producto.descripcion}" a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}) el ${formatoFecha(o.primera)}, ${pluralUnidades(o.unidades)}${o.precioUnitario !== null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}`)
+    .map((o) => `"${o.producto.nombre}" a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}) el ${formatoFecha(o.primera)}, ${pluralUnidades(o.unidades)}${o.precioUnitario !== null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}`)
     .join('; y ');
   const p = h.publicacion;
   const frases = [
-    `${h.vendedor.nombre} (cuenta #${h.vendedor.id}) compró ${compras}, y hoy tiene publicado y activo un producto equivalente: "${p.descripcion}" (producto #${p.id}${p.precio !== null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFecha(p.creadaEn)}` : ''}).`,
+    `${h.vendedor.nombre} (cuenta #${h.vendedor.id}) compró ${compras}, y hoy tiene publicado y activo un producto equivalente: "${p.nombre}" (producto #${p.id}${p.precio !== null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFecha(p.creadaEn)}` : ''}).`,
   ];
   if (h.variacionPrecio !== null) {
     const porcentaje = Math.round(Math.abs(h.variacionPrecio) * 100);

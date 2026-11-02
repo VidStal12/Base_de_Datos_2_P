@@ -1,3 +1,4 @@
+const { textosParaGrafo } = require('../utils/textosProducto');
 const prisma = require('../config/prisma');
 const { esEnteroPositivo } = require('../utils/validation');
 const { conectar } = require('../config/mongo');
@@ -219,7 +220,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
       const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
       for (const detalle of resultado.compra.compra_detalles) {
         const producto = await Producto.findOne({ producto_id: detalle.id_producto })
-          .select('descripcion subcategoria_id vendedor_id vendedor_nombre')
+          .select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre')
           .lean();
         if (!producto) continue;
         await fraudeSyncService.registrarCompra({
@@ -231,7 +232,7 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
           vendedorId: producto.vendedor_id,
           vendedorNombre: producto.vendedor_nombre,
           productoId: detalle.id_producto,
-          productoDescripcion: producto.descripcion,
+          ...textosParaGrafo(producto),
           subcategoriaId: producto.subcategoria_id,
           fecha: resultado.compra.fecha,
           monto: detalle.precio_final,
@@ -377,7 +378,7 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
       await conectar();
       const usuarioDb = await prisma.usuarios.findUnique({ where: { id_usuario: usuarioId }, include: { rol: true } });
       const producto = await Producto.findOne({ producto_id: productoId })
-        .select('descripcion subcategoria_id vendedor_id vendedor_nombre')
+        .select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre')
         .lean();
       const detalle = resultado.compra.compra_detalles[0];
       if (producto && detalle) {
@@ -390,7 +391,7 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
           vendedorId: producto.vendedor_id,
           vendedorNombre: producto.vendedor_nombre,
           productoId,
-          productoDescripcion: producto.descripcion,
+          ...textosParaGrafo(producto),
           subcategoriaId: producto.subcategoria_id,
           fecha: resultado.compra.fecha,
           monto: detalle.precio_final,

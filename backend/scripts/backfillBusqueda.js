@@ -29,17 +29,16 @@ require('../src/models/mongo/Categoria');
 // con uno viejo, y el resumen diría «indexados» como si estuviera todo bien.
 async function main() {
   await elasticsearch.conectar(); // asegura que el índice exista con el mapping explícito antes de indexar nada
-  await embeddingService.incrustar(['comprobación del modelo']);
+  const soloTexto = process.argv.includes('--solo-texto');
+  if (!soloTexto) await embeddingService.incrustar(['comprobación del modelo']);
   const productos = await productoService.listar({ mostrarInactivos: true });
-  let conVector = 0;
+  let correctos = 0;
   for (const producto of productos) {
-    if (await busquedaSyncService.indexarProducto(producto)) conVector += 1;
+    if (await busquedaSyncService.indexarProducto(producto, { soloTexto })) correctos += 1;
   }
-  console.log(`Productos: ${productos.length} indexados en Elasticsearch, ${conVector} con su vector recalculado.`);
-  if (conVector < productos.length) {
-    console.error(`Quedaron ${productos.length - conVector} productos sin vector nuevo (mira los errores de arriba); correlo de nuevo.`);
-    process.exitCode = 1;
-  }
+  const sinDescripcion = productos.filter((p) => !p.descripcion).length;
+  console.log(`Indexados: ${correctos}/${productos.length}; sin descripción: ${sinDescripcion}. ${soloTexto ? 'Solo texto; no se recalcularon vectores.' : 'Vectores recalculados para los indexados con descripción.'}`);
+  if (correctos !== productos.length) process.exitCode = 1;
 }
 
 main()

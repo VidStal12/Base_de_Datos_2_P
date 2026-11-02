@@ -7,6 +7,8 @@
 
 ---
 
+> **Actualización (2026-11-02).** El catálogo ahora separa `nombre` y `descripcion`. La entrada del vector es la descripción más la taxonomía; el nombre se usa para mostrar y quitar títulos duplicados. Las mediciones de este ADR corresponden al catálogo anterior (títulos en `descripcion`), no son una evaluación del nuevo. Ver los pasos de migración en el [README](../README.md).
+
 ## 1. Contexto
 
 El PRD pide generar embeddings de las descripciones y responder consultas de similitud, y el catedrático planteó la duda de fondo: *¿extensión de la base relacional o un componente vectorial dedicado?* (audio del 2026-10-21, [PLAN §1](PLAN-ENTREGA-FINAL.md)); de lo semántico dijo que «pueden utilizar Elastic».

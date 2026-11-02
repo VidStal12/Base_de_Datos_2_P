@@ -218,10 +218,10 @@ function DiagramaReventa({ h }) {
       <AristaSvg x1={270} y1={42} x2={465} y2={118} etiqueta="es el artículo" discontinua />
       <AristaSvg x1={270} y1={192} x2={465} y2={118} etiqueta="es el artículo" discontinua />
       <NodoSvg x={75} y={118} w={130} h={42} titulo={h.vendedor.nombre} subtitulo={`vendedor #${h.vendedor.id}`} tono="usuario" />
-      <NodoSvg x={270} y={42} w={150} h={42} titulo={original.producto.descripcion} subtitulo="lo que compró" tono="dato" />
+      <NodoSvg x={270} y={42} w={150} h={42} titulo={original.producto.nombre} subtitulo="lo que compró" tono="dato" />
       <NodoSvg x={465} y={42} w={130} h={42} titulo={original.vendedor.nombre} subtitulo={`vendedor #${original.vendedor.id}`} tono="otro" />
-      <NodoSvg x={270} y={192} w={150} h={42} titulo={h.publicacion.descripcion} subtitulo="lo que hoy vende" tono="dato" />
-      <NodoSvg x={465} y={118} w={130} h={36} titulo="Mismo artículo" subtitulo="descripción canónica" tono="dato" />
+      <NodoSvg x={270} y={192} w={150} h={42} titulo={h.publicacion.nombre} subtitulo="lo que hoy vende" tono="dato" />
+      <NodoSvg x={465} y={118} w={130} h={36} titulo="Mismo artículo" subtitulo="nombre canónico" tono="dato" />
       {extra > 0 && (
         <text x={270} y={240} textAnchor="middle" className="fill-neutral-400 text-[10px]">
           +{extra} compra(s) equivalente(s) más, ver el detalle
@@ -306,7 +306,7 @@ const pluralUnidades = (n) => `${n} unidad${n === 1 ? '' : 'es'}`;
 function resumenReventa(h) {
   const original = h.originales[0];
   const otras = h.originales.length > 1 ? ` (+${h.originales.length - 1} compra${h.originales.length === 2 ? '' : 's'} equivalente${h.originales.length === 2 ? '' : 's'})` : '';
-  return `${h.vendedor.nombre} (#${h.vendedor.id}) le compró "${original.producto.descripcion}" a ${original.vendedor.nombre} (#${original.vendedor.id})${otras} y hoy vende "${h.publicacion.descripcion}"${h.publicacion.precio != null ? ` a ${formatoQ(h.publicacion.precio)}` : ''}.`;
+  return `${h.vendedor.nombre} (#${h.vendedor.id}) le compró "${original.producto.nombre}" a ${original.vendedor.nombre} (#${original.vendedor.id})${otras} y hoy vende "${h.publicacion.nombre}"${h.publicacion.precio != null ? ` a ${formatoQ(h.publicacion.precio)}` : ''}.`;
 }
 
 function resumenRafaga(r) {
@@ -403,9 +403,9 @@ function razonesReventa(h) {
   const razones = [
     ...h.originales.map(
       (o) =>
-        `Compró "${o.producto.descripcion}" (producto #${o.producto.id}) a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}): ${pluralUnidades(o.unidades)}${o.precioUnitario != null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}, ${o.pedidos.length === 1 ? 'pedido' : 'pedidos'} ${o.pedidos.map((x) => `#${x.compraId}`).join(', ')} (${formatoFechaHora(o.primera)}).`
+        `Compró "${o.producto.nombre}" (producto #${o.producto.id}) a ${o.vendedor.nombre} (cuenta #${o.vendedor.id}): ${pluralUnidades(o.unidades)}${o.precioUnitario != null ? ` a ${formatoQ(o.precioUnitario)} c/u` : ''}, ${o.pedidos.length === 1 ? 'pedido' : 'pedidos'} ${o.pedidos.map((x) => `#${x.compraId}`).join(', ')} (${formatoFechaHora(o.primera)}).`
     ),
-    `Hoy vende "${p.descripcion}" (producto #${p.id}, ${p.estado}${p.precio != null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFechaHora(p.creadaEn)}` : ''}).`,
+    `Hoy vende "${p.nombre}" (producto #${p.id}, ${p.estado}${p.precio != null ? `, ${formatoQ(p.precio)}` : ''}, ${p.cantidad} en stock${p.creadaEn ? `, publicado el ${formatoFechaHora(p.creadaEn)}` : ''}).`,
   ];
   if (h.variacionPrecio != null) {
     const porcentaje = Math.round(Math.abs(h.variacionPrecio) * 100);
@@ -438,7 +438,7 @@ function razonesRafaga(r) {
 
 function razonesGasto(g) {
   const razones = [
-    `Compra de ${formatoQ(g.total)} el ${formatoFechaHora(g.fecha)}: ${g.lineas.map((l) => l.descripcion).join(', ')}.`,
+    `Compra de ${formatoQ(g.total)} el ${formatoFechaHora(g.fecha)}: ${g.lineas.map((l) => l.nombre).join(', ')}.`,
     `Su compra promedio anterior era ${formatoQ(g.promedio)} y la más alta ${formatoQ(g.maximo)} (sobre ${pluralCompras(g.ordenesPrevias)}).`,
     g.vecesPromedio === null ? 'El monto es muy superior a su promedio previo.' : `El monto equivale a ${g.vecesPromedio.toFixed(1)} veces su promedio y supera su máximo histórico.`,
   ];
@@ -448,7 +448,7 @@ function razonesGasto(g) {
 
 function razonesCategoria(c) {
   const razones = [
-    `Primera compra de ${c.usuario.nombre} en la categoría "${c.categoria}": ${c.productos.map((p) => `${p.descripcion} (${p.subcategoria}, ${formatoQ(p.monto)})`).join(', ')}.`,
+    `Primera compra de ${c.usuario.nombre} en la categoría "${c.categoria}": ${c.productos.map((p) => `${p.nombre} (${p.subcategoria}, ${formatoQ(p.monto)})`).join(', ')}.`,
     `Hasta entonces tenía ${pluralCompras(c.ordenesPrevias)} a lo largo de ${c.diasHistorial} días, solo en: ${c.habituales.map((h) => `${h.categoria} (${h.porcentaje}%)`).join(', ')}.`,
   ];
   if (c.usuario.ficha?.cuentaReciente) razones.push(`La cuenta es reciente (creada ${diasATexto(c.usuario.ficha.diasDesdeCreacion)}).`);

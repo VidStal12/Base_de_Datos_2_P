@@ -1,3 +1,4 @@
+const { textosProducto } = require('../utils/textosProducto');
 const prisma = require('../config/prisma');
 const { conectar } = require('../config/mongo');
 const Producto = require('../models/mongo/Producto');
@@ -19,7 +20,7 @@ function formatear(doc) {
   const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
   return {
     id: doc.producto_id,
-    descripcion: doc.descripcion,
+    ...textosProducto(doc),
     estado: doc.estado,
     imagen_url: principal?.url || '',
     imagenes: doc.imagenes || [],
@@ -117,7 +118,8 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
   if (q) {
     // Texto literal, no una expresión regular: lo escribe una persona en un buscador público, y
     // un `(` suelto o un patrón pesado rompía la consulta (o la volvía lentísima) en vez de buscar.
-    filtro.descripcion = { $regex: escaparRegex(q), $options: 'i' };
+    const texto = { $regex: escaparRegex(q), $options: 'i' };
+    filtro.$or = [{ nombre: texto }, { descripcion: texto }];
   }
   const suspendidos = await suspension.vendedoresSuspendidos();
   if (vendedorId) {
@@ -156,13 +158,13 @@ async function obtener(id) {
   return formatear(doc);
 }
 
-function construirImagenes(imagen_url, descripcion) {
-  return imagen_url ? [{ url: imagen_url, alt: descripcion, orden: 1, principal: true }] : [];
+function construirImagenes(imagen_url, nombre) {
+  return imagen_url ? [{ url: imagen_url, alt: nombre, orden: 1, principal: true }] : [];
 }
 
 // Reenvío de mejor esfuerzo al grafo de fraude: la señal de reventa necesita
 // conocer cada producto PUBLICADO (no solo los comprados) y a qué artículo
-// pertenece según su descripción (ver fraudeSyncService.registrarProducto y
+// pertenece según su nombre (ver fraudeSyncService.registrarProducto y
 // PLAN-NEO4J-DETECCION-FRAUDE.md §19). Mismo criterio que el índice de búsqueda:
 // que falle no debe romper crear()/actualizar() — y, dentro de crear(), un error
 // que escapara acá dispararía la compensación que borra el producto —; se
@@ -171,6 +173,7 @@ async function reenviarAlGrafo(producto) {
   try {
     await fraudeSyncService.registrarProducto({
       productoId: producto.id,
+      productoNombre: producto.nombre,
       productoDescripcion: producto.descripcion,
       subcategoriaId: producto.subcategoria?.id,
       vendedorId: producto.vendedor_id,
@@ -179,6 +182,11 @@ async function reenviarAlGrafo(producto) {
   } catch (err) {
     console.error('No se pudo reenviar el producto a Neo4j:', err.message);
   }
+}
+
+function textoObligatorio(valor, mensaje) {
+  if (typeof valor !== 'string' || !valor.trim()) throw new Error(mensaje);
+  return valor.trim();
 }
 
 // vendedor: { id_usuario, rol } — sale del token, nunca del body (ver requireAuth).
@@ -190,8 +198,9 @@ async function reenviarAlGrafo(producto) {
 // ADR-002 §3.4. Si el paso de Mongo falla, se intenta deshacer la fila de
 // MySQL ya creada — no es una transacción distribuida real (eso es trabajo de
 // Entrega 3), es una compensación de mejor esfuerzo. Ver ADR-002 §5.
-async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId, precio, cantidad, atributos }) {
-  if (!descripcion) throw new Error('La descripción es obligatoria');
+async function crear(vendedor, { nombre, descripcion, imagen_url, estado, subcategoriaId, precio, cantidad, atributos }) {
+  nombre = textoObligatorio(nombre, 'El nombre es obligatorio');
+  descripcion = textoObligatorio(descripcion, 'La descripción es obligatoria');
   if (!subcategoriaId) throw new Error('subcategoriaId es obligatorio');
   if (typeof precio !== 'number' || precio <= 0) throw new Error('El precio debe ser un número positivo');
   if (!Number.isInteger(cantidad) || cantidad < 0) throw new Error('La cantidad debe ser un entero mayor o igual a 0');
@@ -211,6 +220,7 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
   try {
     const doc = await Producto.create({
       producto_id: productoRelacional.id,
+      nombre,
       descripcion,
       estado: estado || 'activo',
       subcategoria_id: subcategoria._id,
@@ -218,7 +228,7 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       vendedor_nombre: `${productoRelacional.vendedor.nombres} ${productoRelacional.vendedor.apellidos}`,
       inventario: { precio, cantidad },
       atributos: atributos || [],
-      imagenes: construirImagenes(imagen_url, descripcion),
+      imagenes: construirImagenes(imagen_url, nombre),
       version: 1,
     });
 
@@ -230,6 +240,7 @@ async function crear(vendedor, { descripcion, imagen_url, estado, subcategoriaId
       usuario_id: vendedor.id_usuario,
       campos_modificados: [],
       snapshot: {
+        nombre: doc.nombre,
         descripcion: doc.descripcion,
         estado: doc.estado,
         atributos: doc.atributos,
@@ -330,14 +341,14 @@ function vendedoresOcultos() {
 // Si ninguno de los dos responde, se informa la caída del catálogo (el checkout se niega:
 // sin saber si está publicado no se vende). Un producto que el índice no conoce NO aparece
 // en el resultado, así que se trata como no disponible.
-// Devuelve Map(productoId → { estado, vendedor_id, descripcion, imagen_url }).
+// Devuelve Map(productoId → { estado, vendedor_id, nombre, descripcion, imagen_url }).
 async function estadoPublicacion(productoIds) {
   try {
     await conectar();
-    const docs = await Producto.find({ producto_id: { $in: productoIds } }).select('producto_id estado vendedor_id descripcion imagenes').lean();
+    const docs = await Producto.find({ producto_id: { $in: productoIds } }).select('producto_id estado vendedor_id nombre descripcion imagenes').lean();
     return new Map(docs.map((doc) => {
       const principal = doc.imagenes?.find((img) => img.principal) || doc.imagenes?.[0];
-      return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, descripcion: doc.descripcion, imagen_url: principal?.url || '' }];
+      return [doc.producto_id, { estado: doc.estado, vendedor_id: doc.vendedor_id, ...textosProducto(doc), imagen_url: principal?.url || '' }];
     }));
   } catch (err) {
     if (componenteCaido(err) !== 'mongo') throw err;
@@ -359,10 +370,12 @@ async function estadoPublicacion(productoIds) {
 // generara un evento acá, "historial de cambios" dejaría de ser un registro
 // de catálogo y pasaría a ser un libro de ventas. Todo opcional, se actualiza
 // solo lo que venga en el body.
-async function actualizar(vendedor, productoId, { descripcion, imagen_url, estado, precio, cantidad, atributos }) {
+async function actualizar(vendedor, productoId, { nombre, descripcion, imagen_url, estado, precio, cantidad, atributos }) {
   await verificarPermiso(vendedor, productoId);
   await conectar();
 
+  if (nombre !== undefined) nombre = textoObligatorio(nombre, 'El nombre no puede estar vacío');
+  if (descripcion !== undefined) descripcion = textoObligatorio(descripcion, 'La descripción no puede estar vacía');
   const camposModificados = [];
   let inventarioActual = null;
 
@@ -381,18 +394,25 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
     inventarioActual = await prisma.inventario.update({ where: { id_producto: productoId }, data: datosInventario });
   }
 
-  const cambiaDescriptivo = descripcion !== undefined || imagen_url !== undefined || estado !== undefined || atributos !== undefined;
+  const cambiaDescriptivo = nombre !== undefined || descripcion !== undefined || imagen_url !== undefined || estado !== undefined || atributos !== undefined;
   if (cambiaDescriptivo || camposModificados.length > 0) {
     const doc = await Producto.findOne({ producto_id: productoId });
     if (!doc) throw new Error('Producto no encontrado en el catálogo documental');
 
-    if (descripcion !== undefined) {
-      if (!descripcion) throw new Error('La descripción no puede estar vacía');
+    if (doc.nombre == null) Object.assign(doc, textosProducto(doc));
+    if (nombre !== undefined && nombre !== doc.nombre) {
+      for (const imagen of doc.imagenes || []) {
+        if (imagen.alt === doc.nombre) imagen.alt = nombre;
+      }
+      doc.nombre = nombre;
+      camposModificados.push('nombre');
+    }
+    if (descripcion !== undefined && descripcion !== doc.descripcion) {
       doc.descripcion = descripcion;
       camposModificados.push('descripcion');
     }
     if (imagen_url !== undefined) {
-      doc.imagenes = construirImagenes(imagen_url, doc.descripcion);
+      doc.imagenes = construirImagenes(imagen_url, doc.nombre);
       camposModificados.push('imagenes');
     }
     if (estado !== undefined) {
@@ -440,6 +460,7 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
       usuario_id: vendedor.id_usuario,
       campos_modificados: camposModificados,
       snapshot: {
+        nombre: doc.nombre,
         descripcion: doc.descripcion,
         estado: doc.estado,
         atributos: doc.atributos,
@@ -464,11 +485,12 @@ async function actualizar(vendedor, productoId, { descripcion, imagen_url, estad
 async function historialEnFecha(productoId, fecha) {
   const evento = await ProductoEvento.findOne({ producto_id: productoId, fecha: { $lte: fecha } }).sort({ fecha: -1 });
   if (!evento) throw new Error('El producto no existía en esa fecha');
-  return evento.snapshot;
+  return { ...evento.snapshot, ...textosProducto(evento.snapshot) };
 }
 
 async function historialCompleto(productoId) {
-  return ProductoEvento.find({ producto_id: productoId }).sort({ fecha: -1 }).lean();
+  const eventos = await ProductoEvento.find({ producto_id: productoId }).sort({ fecha: -1 }).lean();
+  return eventos.map((ev) => ({ ...ev, snapshot: { ...ev.snapshot, ...textosProducto(ev.snapshot) } }));
 }
 
 // Consulta de agregación (requerimiento técnico de Entrega 1, ver PRD §5 y

@@ -26,7 +26,7 @@ async function invalidarCache(usuarioId) {
 }
 
 function leerLineas(crudo) {
-  if (crudo._formato !== '3') return null;
+  if (crudo._formato !== '4') return null;
   const lineas = [];
   try {
     for (const [campo, valor] of Object.entries(crudo)) {
@@ -77,7 +77,8 @@ async function cargarActual(usuarioId) {
     return {
       producto: {
         id: fila.id_producto,
-        descripcion: doc?.descripcion || (completo ? 'Producto no disponible' : `Producto #${fila.id_producto}`),
+        descripcion: doc?.descripcion ?? '',
+        nombre: doc?.nombre || (completo ? 'Producto no disponible' : `Producto #${fila.id_producto}`),
         imagen_url: doc?.imagen_url || '',
         estado: doc?.estado || 'inactivo',
         precio: inv ? Number(inv.precio) : null,

@@ -93,13 +93,12 @@ function incrustar(textos) {
   return turno;
 }
 
-// Qué se incrusta de un producto: su título, la subcategoría y la categoría. El título solo es demasiado corto
-// (mediana de 21 caracteres) y deja a muchos sin vecinos que se le parezcan; con la categoría la precisión@5 pasó de
-// 64,0 % a 90,2 % — ojo: esa cifra mide aciertos de subcategoría, que este texto ya contiene (IA/ADR-006, «fuga de etiqueta»).
+// La descripción aporta el significado; la taxonomía da contexto, incluso con nombres comerciales arbitrarios.
 function textoDeProducto(producto) {
-  return [producto.descripcion, producto.subcategoria?.subcategoria, producto.subcategoria?.categoria]
+  if (!producto.descripcion?.trim()) return '';
+  return [producto.descripcion.trim(), producto.subcategoria?.subcategoria, producto.subcategoria?.categoria]
     .filter(Boolean)
-    .map((parte) => `${parte}.`)
+    .map((parte) => /[.!?]$/.test(parte) ? parte : `${parte}.`)
     .join(' ');
 }
 

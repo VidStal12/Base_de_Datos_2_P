@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { textosParaGrafo } = require('../src/utils/textosProducto');
 const mongoose = require('mongoose');
 const prisma = require('../src/config/prisma');
 const neo4j = require('../src/config/neo4j');
@@ -58,7 +59,7 @@ async function elegirProducto({ categoria, precioMin = 0, precioMax = 1e12, unid
     .lean();
   for (const c of candidatos) {
     const inventario = await prisma.inventario.findUnique({ where: { id_producto: c.producto_id } });
-    if (inventario && inventario.cantidad >= unidades) return { id: c.producto_id, descripcion: c.descripcion, precio: Number(inventario.precio) };
+    if (inventario && inventario.cantidad >= unidades) return { id: c.producto_id, nombre: c.nombre, descripcion: c.descripcion, precio: Number(inventario.precio) };
   }
   throw new Error(`No hay un producto de "${categoria}" entre Q${precioMin} y Q${precioMax} con ${unidades}+ unidades de stock real.`);
 }
@@ -73,7 +74,7 @@ async function reenviarAlGrafo(compraId) {
   const usuario = await prisma.usuarios.findUnique({ where: { id_usuario: compra.id_usuario }, include: { rol: true } });
   for (const detalle of compra.compra_detalles) {
     const producto = await Producto.findOne({ producto_id: detalle.id_producto })
-      .select('descripcion subcategoria_id vendedor_id vendedor_nombre')
+      .select('nombre descripcion subcategoria_id vendedor_id vendedor_nombre')
       .lean();
     await fraudeSyncService.registrarCompra({
       detalleId: detalle.id,
@@ -84,7 +85,7 @@ async function reenviarAlGrafo(compraId) {
       vendedorId: producto.vendedor_id,
       vendedorNombre: producto.vendedor_nombre,
       productoId: detalle.id_producto,
-      productoDescripcion: producto.descripcion,
+      ...textosParaGrafo(producto),
       subcategoriaId: producto.subcategoria_id,
       fecha: compra.fecha,
       monto: detalle.precio_final,
@@ -435,10 +436,10 @@ async function main() {
 
   // (3) La publicación equivalente, DESPUÉS de comprar: por el alta real de
   // producto (nace pausada, así no aparece en la tienda hasta que se activa).
-  let relojPropio = await Producto.findOne({ descripcion: TITULO_RELOJ, vendedor_id: revendedor.usuario.id_usuario }).lean();
+  let relojPropio = await Producto.findOne({ nombre: TITULO_RELOJ, vendedor_id: revendedor.usuario.id_usuario }).lean();
   if (!relojPropio) {
     const creado = await productoService.crear(comoVendedor(revendedor), {
-      descripcion: TITULO_RELOJ, subcategoriaId: cocina._id, precio: 110, cantidad: 2, estado: 'inactivo', atributos: ATRIBUTOS_RELOJ,
+      nombre: TITULO_RELOJ, descripcion: 'Reloj usado en la prueba de reventa.', subcategoriaId: cocina._id, precio: 110, cantidad: 2, estado: 'inactivo', atributos: ATRIBUTOS_RELOJ,
     });
     relojPropio = { producto_id: creado.id, estado: 'inactivo' };
     sembroReventa = true;
@@ -461,10 +462,10 @@ async function main() {
 
   // (4) El competidor: ya vendía su lámpara (atributos distintos) y después compra
   // la del mayorista, que se llama igual. La publicación nace ANTES de la compra.
-  let lamparaPropia = await Producto.findOne({ descripcion: TITULO_LAMPARA, vendedor_id: competidor.usuario.id_usuario }).lean();
+  let lamparaPropia = await Producto.findOne({ nombre: TITULO_LAMPARA, vendedor_id: competidor.usuario.id_usuario }).lean();
   if (!lamparaPropia) {
     const creada = await productoService.crear(comoVendedor(competidor), {
-      descripcion: TITULO_LAMPARA, subcategoriaId: cocina._id, precio: 75, cantidad: 2, estado: 'inactivo', atributos: [{ nombre: 'Material', valor: 'Cerámica' }],
+      nombre: TITULO_LAMPARA, descripcion: 'Lámpara de cerámica para mesa.', subcategoriaId: cocina._id, precio: 75, cantidad: 2, estado: 'inactivo', atributos: [{ nombre: 'Material', valor: 'Cerámica' }],
     });
     lamparaPropia = { producto_id: creada.id };
     sembroReventa = true;
@@ -605,12 +606,13 @@ async function main() {
   );
   afirmar(!sigueTrasPausar, 'una publicación pausada no está "vendiéndose hoy": el hallazgo debe desaparecer');
 
-  // Una descripción editada se vuelve a enlazar al artículo que le toca: con otro
+  // Un nombre editado se vuelve a enlazar al artículo que le toca: con otro
   // título deja de coincidir (y el enlace viejo se borra), y al volver, reaparece.
   const reenviarTitulo = (titulo) =>
     fraudeSyncService.registrarProducto({
       productoId: relojPropio.producto_id,
-      productoDescripcion: titulo,
+      productoNombre: titulo,
+      productoDescripcion: relojPropio.descripcion,
       subcategoriaId: cocina._id,
       vendedorId: id(revendedor),
       vendedorNombre: `${revendedor.usuario.nombres} ${revendedor.usuario.apellidos}`,
@@ -629,7 +631,7 @@ async function main() {
     'al restaurar la descripción el hallazgo debe reaparecer'
   );
   console.log(
-    `G OK: ${reventa.vendedor.nombre} compró "${reventa.originales[0].producto.descripcion}" a ${reventa.originales[0].vendedor.nombre} y hoy lo vende (alta: publicó después + mismos atributos, +${Math.round(reventa.variacionPrecio * 100)}%, compromiso asentado); ` +
+    `G OK: ${reventa.vendedor.nombre} compró "${reventa.originales[0].producto.nombre}" a ${reventa.originales[0].vendedor.nombre} y hoy lo vende (alta: publicó después + mismos atributos, +${Math.round(reventa.variacionPrecio * 100)}%, compromiso asentado); ` +
       `${competencia.vendedor.nombre} → posible (sin corroboración); pausar la publicación o cambiar el título hace desaparecer el hallazgo.`
   );
 

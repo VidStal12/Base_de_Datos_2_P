@@ -54,13 +54,14 @@ async function prepararCuenta(correo, nombres, token, opciones) {
 // criterio que verificarRecomendaciones.js con su producto competidor) y
 // INACTIVO: no aparece en la tienda ni en el buscador, pero checkout() solo
 // valida el inventario real, así que se puede comprar.
-async function asegurarProducto(vendedor, descripcion, precio, { subcategoria = 'Camisetas', atributos = [], cantidad = 20 } = {}) {
+async function asegurarProducto(vendedor, nombre, precio, { subcategoria = 'Camisetas', atributos = [], cantidad = 20 } = {}) {
   await conectarMongo();
-  // Descripción Y vendedor: la señal de reventa necesita DOS productos con la
-  // misma descripción de vendedores distintos (el original y la reventa), así que
-  // la descripción sola ya no identifica un producto de prueba.
-  const existente = await Producto.findOne({ descripcion, vendedor_id: vendedor.id_usuario }).lean();
-  if (existente) return { id: existente.producto_id, descripcion, precio };
+  // Nombre Y vendedor: la señal de reventa necesita DOS productos con la
+  // mismo nombre de vendedores distintos (el original y la reventa), así que
+  // el nombre solo ya no identifica un producto de prueba.
+  const existente = await Producto.findOne({ nombre, vendedor_id: vendedor.id_usuario }).lean();
+  if (existente) return { id: existente.producto_id, nombre, descripcion: existente.descripcion, precio };
+  const descripcion = `Artículo de prueba de ${subcategoria}.`;
 
   const sub = await Subcategoria.findOne({ subcategoria });
   afirmar(sub, `no existe la subcategoría "${subcategoria}" en el catálogo`);
@@ -69,6 +70,7 @@ async function asegurarProducto(vendedor, descripcion, precio, { subcategoria = 
   });
   const doc = await Producto.create({
     producto_id: relacional.id,
+    nombre,
     descripcion,
     estado: 'inactivo',
     subcategoria_id: sub._id,
@@ -86,9 +88,9 @@ async function asegurarProducto(vendedor, descripcion, precio, { subcategoria = 
     fecha: doc.actualizado_en,
     usuario_id: vendedor.id_usuario,
     campos_modificados: [],
-    snapshot: { descripcion, estado: 'inactivo', atributos, imagenes: [], inventario: { precio, cantidad } },
+    snapshot: { nombre, descripcion, estado: 'inactivo', atributos, imagenes: [], inventario: { precio, cantidad } },
   });
-  return { id: relacional.id, descripcion, precio };
+  return { id: relacional.id, nombre, descripcion, precio };
 }
 
 // checkout() rechaza productos que no estén "activos" (409 "productos no

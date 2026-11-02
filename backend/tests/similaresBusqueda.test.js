@@ -33,20 +33,20 @@ function servicio({ origen, vecinos = [], suspendidos = [] }) {
 const hit = (id, descripcion, vendedor_id, score) => ({
   _id: String(id),
   _score: score,
-  _source: { descripcion, vendedor_id, vendedor_nombre: `Vendedor ${vendedor_id}`, estado: 'activo', precio: 10, cantidad: 3, categoria: 'Ropa', subcategoria: 'Camisetas', atributos: [] },
+  _source: { nombre: `Polo ${id}`, descripcion, vendedor_id, vendedor_nombre: `Vendedor ${vendedor_id}`, estado: 'activo', precio: 10, cantidad: 3, categoria: 'Ropa', subcategoria: 'Camisetas', atributos: [] },
 });
 
 test('lee el vector del producto por id, pidiendo solo lo que necesita (y nunca la respuesta completa)', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   await s.similares(7);
   const [tipo, pedido] = s.peticiones[0];
   assert.equal(tipo, 'get');
   assert.equal(pedido.id, '7');
-  assert.deepEqual(pedido._source_includes, ['embedding', 'descripcion', 'vendedor_id']);
+  assert.deepEqual(pedido._source_includes, ['embedding', 'nombre', 'descripcion', 'vendedor_id']);
 });
 
 test('busca los vecinos con kNN sobre `embedding`, con el vector del propio producto y el coseno mínimo del diseño', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   await s.similares(7);
   const [tipo, pedido] = s.peticiones[1];
   assert.equal(tipo, 'search');
@@ -61,35 +61,35 @@ test('busca los vecinos con kNN sobre `embedding`, con el vector del propio prod
 });
 
 test('la visibilidad va DENTRO de la búsqueda de vecinos: solo activos, sin el propio producto ni los vendedores suspendidos', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 }, suspendidos: [8, 9] });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 }, suspendidos: [8, 9] });
   await s.similares(7);
   const { filter } = s.peticiones[1][1].knn;
-  assert.deepEqual(filter.bool.filter, [{ term: { estado: 'activo' } }]);
+  assert.deepEqual(filter.bool.filter, [{ term: { estado: 'activo' } }, { exists: { field: 'nombre' } }]);
   assert.deepEqual(filter.bool.must_not, [{ term: { producto_id: 7 } }, { terms: { vendedor_id: [8, 9] } }]);
 });
 
 test('con sesión de vendedor se excluyen también sus propios productos (nadie compra lo que él mismo vende)', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   await s.similares(7, { vendedorPropioId: 5 });
   assert.deepEqual(s.peticiones[1][1].knn.filter.bool.must_not, [{ term: { producto_id: 7 } }, { term: { vendedor_id: 5 } }]);
-  const sinSesion = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const sinSesion = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   await sinSesion.similares(7);
   assert.deepEqual(sinSesion.peticiones[1][1].knn.filter.bool.must_not, [{ term: { producto_id: 7 } }]);
 });
 
 test('ninguna consulta de vecinos trae el vector de vuelta', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   await s.similares(7);
   assert.deepEqual(s.peticiones[1][1]._source, { excludes: ['embedding'] });
 });
 
 test('devuelve los vecinos tal cual los dio el motor (del más parecido al menos), con la forma de un producto', async () => {
   const s = servicio({
-    origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 2 },
+    origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 },
     vecinos: [hit(3, 'Camiseta de algodón', 5, 0.97), hit(4, 'Camiseta roja', 2, 0.95)],
   });
   const r = plano(await s.similares(7));
-  assert.deepEqual(r.origen, { id: 7, descripcion: 'Camiseta polo' });
+  assert.deepEqual(r.origen, { id: 7, nombre: 'Polo', descripcion: 'Camiseta polo' });
   assert.equal(r.sinVector, false);
   assert.deepEqual(r.candidatos.map((p) => p.id), [3, 4]);
   assert.deepEqual(r.candidatos[0].inventario, { precio: 10, cantidad: 3 });
@@ -98,7 +98,7 @@ test('devuelve los vecinos tal cual los dio el motor (del más parecido al menos
 });
 
 test('un producto sin vector (se indexó sin el modelo) no consulta vecinos: avisa `sinVector` para que otra capa decida', async () => {
-  const s = servicio({ origen: { descripcion: 'Camiseta polo', vendedor_id: 2 } });
+  const s = servicio({ origen: { nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2 } });
   const r = plano(await s.similares(7));
   assert.equal(r.sinVector, true);
   assert.deepEqual(r.candidatos, []);
@@ -112,7 +112,7 @@ test('un producto que el índice no conoce es un 404, no una caída', async () =
 });
 
 test('el producto de un vendedor suspendido «no existe» para el público, igual que su detalle: 404 y sin buscar vecinos', async () => {
-  const s = servicio({ origen: { embedding: VECTOR, descripcion: 'Camiseta polo', vendedor_id: 8 }, suspendidos: [8] });
+  const s = servicio({ origen: { embedding: VECTOR, nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 8 }, suspendidos: [8] });
   await assert.rejects(s.similares(7), (err) => err.status === 404);
   assert.deepEqual(s.peticiones.map(([tipo]) => tipo), ['get']);
 });
@@ -135,7 +135,7 @@ test('la búsqueda del catálogo excluye el vector de `_source` (con y sin facet
 });
 
 test('el detalle servido desde el índice (Mongo apagado) no trae el vector', async () => {
-  const s = servicio({ origen: { descripcion: 'Camiseta polo', vendedor_id: 2, precio: 10, cantidad: 3, estado: 'activo' } });
+  const s = servicio({ origen: { nombre: 'Polo', descripcion: 'Camiseta polo', vendedor_id: 2, precio: 10, cantidad: 3, estado: 'activo' } });
   await s.obtenerDelIndice(7);
   assert.deepEqual(s.peticiones[0][1]._source_excludes, ['embedding']);
 });

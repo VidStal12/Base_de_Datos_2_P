@@ -32,7 +32,7 @@ function escenario({ propios = [], suspendidos = [] } = {}) {
       async deleteMany({ where }) { if (where.id_producto) filas.delete(where.id_producto); else filas.clear(); },
     },
   };
-  const productos = new Map([1, 2].map((id) => [id, { producto_id: id, vendedor_id: id + 10, descripcion: `Producto ${id}`, estado: 'activo', imagenes: [{ principal: true, url: `imagen-${id}` }] }]));
+  const productos = new Map([1, 2].map((id) => [id, { producto_id: id, vendedor_id: id + 10, nombre: `Producto ${id}`, estado: 'activo', imagenes: [{ principal: true, url: `imagen-${id}` }] }]));
   let consultasMongo = 0;
   const modelo = {
     find: ({ producto_id }) => ({ select: () => ({ lean: async () => { consultasMongo += 1; return producto_id.$in.map((id) => productos.get(id)).filter(Boolean); } }) }),
@@ -89,18 +89,18 @@ test('carrito caliente lee solo Redis; checkout actualiza datos por lote sin com
   await e.servicio.agregar(7, 2, 1);
   e.inv.precio = 12.5;
   e.inv.cantidad = 1;
-  e.productos.get(1).descripcion = 'Descripción vigente';
+  e.productos.get(1).nombre = 'Descripción vigente';
   const antes = e.consultas();
   const mongoAntes = e.consultasMongo();
   const carrito = await e.servicio.obtener(7);
   assert.equal(e.consultas() - antes, 0);
   assert.equal(e.consultasMongo(), mongoAntes);
   assert.equal(carrito.total, 30);
-  assert.equal(carrito.items[0].producto.descripcion, 'Producto 1');
+  assert.equal(carrito.items[0].producto.nombre, 'Producto 1');
   assert.equal(e.filas.get(1), 2, 'mirar el carrito no elimina unidades persistidas');
   const revisado = await e.servicio.revisar(7);
   assert.equal(revisado.total, 37.5);
-  assert.equal(revisado.items[0].producto.descripcion, 'Descripción vigente');
+  assert.equal(revisado.items[0].producto.nombre, 'Descripción vigente');
   assert.equal(revisado.items[0].disponible, false);
   assert.equal(e.consultas() - antes, 1);
   assert.equal(e.consultasMongo() - mongoAntes, 1);
@@ -192,13 +192,13 @@ test('cada carrito conserva su propia información hasta su revisión', async ()
   const e = escenario();
   await e.servicio.agregar(7, 1, 2);
   e.redis.hashes.set('carrito:8', { ...e.redis.hashes.get('carrito:7') });
-  e.productos.get(1).descripcion = 'Producto editado';
+  e.productos.get(1).nombre = 'Producto editado';
   e.inv.precio = 12;
   await e.servicio.revisar(7);
   const antes = e.consultas();
   const [a, b] = await Promise.all([e.servicio.obtener(7), e.servicio.obtener(8)]);
-  assert.equal(a.items[0].producto.descripcion, 'Producto editado');
-  assert.equal(b.items[0].producto.descripcion, 'Producto 1');
+  assert.equal(a.items[0].producto.nombre, 'Producto editado');
+  assert.equal(b.items[0].producto.nombre, 'Producto 1');
   assert.equal(a.total, 24);
   assert.equal(b.total, 20);
   assert.equal(e.consultas(), antes);
@@ -222,7 +222,7 @@ test('con el catálogo apagado el carrito se muestra con lo que MySQL sabe, sin 
   const buscar = e.modelo.find;
   e.modelo.find = () => { throw new ServicioNoDisponible('mongo'); }; // ni Mongo ni su copia en el índice responden
   const c = await e.servicio.obtener(7);
-  assert.equal(c.items[0].producto.descripcion, 'Producto #1', 'sin nombre: se identifica por su número');
+  assert.equal(c.items[0].producto.nombre, 'Producto #1', 'sin nombre: se identifica por su número');
   assert.equal(c.items[0].producto.precio, 10, 'el precio sale de MySQL');
   assert.equal(c.items[0].cantidad, 2);
   assert.equal(c.items[0].disponible, false, 'no se puede confirmar lo que no se sabe si está publicado');
@@ -230,7 +230,7 @@ test('con el catálogo apagado el carrito se muestra con lo que MySQL sabe, sin 
   assert.equal(e.redis.hashes.get('carrito:7'), undefined, 'la versión degradada no queda en la caché: al volver el catálogo se ve completa');
   e.modelo.find = buscar;
   const vuelta = await e.servicio.obtener(7);
-  assert.equal(vuelta.items[0].producto.descripcion, 'Producto 1');
+  assert.equal(vuelta.items[0].producto.nombre, 'Producto 1');
   assert.equal(vuelta.items[0].disponible, true);
   assert.ok(e.redis.hashes.get('carrito:7'), 'recuperado el catálogo, sí se guarda');
 });

@@ -17,14 +17,14 @@ export function ProductCard({ producto }) {
       <Link to={`/productos/${producto.id}`} className="block aspect-square overflow-hidden bg-neutral-100">
         <img
           src={producto.imagen_url || 'https://placehold.co/400x400?text=TiendaYa'}
-          alt={producto.descripcion}
+          alt={producto.nombre}
           loading="lazy"
           className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
         />
       </Link>
       <div className="flex flex-1 flex-col gap-2 p-4">
         <Link to={`/productos/${producto.id}`} className="line-clamp-2 text-sm font-medium text-neutral-800 hover:text-brand-700">
-          {producto.descripcion}
+          {producto.nombre}
         </Link>
 
         <div className="mt-auto flex items-center justify-between">

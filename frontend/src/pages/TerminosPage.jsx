@@ -121,7 +121,7 @@ const SECCIONES = [
           </li>
           <li>
             <strong>Cómo lo revisamos:</strong> comparamos lo que compraste con lo que tenés publicado y activo en TiendaYa. Si hay un artículo equivalente, el caso
-            pasa a revisión de una persona del equipo. La coincidencia se basa en la descripción del producto, así que un parecido no prueba nada por sí solo: cada
+            pasa a revisión de una persona del equipo. La coincidencia se basa en el nombre del producto, así que un parecido no prueba nada por sí solo: cada
             caso se revisa antes de cualquier medida. Lo que pase fuera de TiendaYa no lo podemos ver.
           </li>
           <li>

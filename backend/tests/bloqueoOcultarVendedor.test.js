@@ -32,6 +32,7 @@ const FILAS_MYSQL = CATALOGO.map(({ producto_id, vendedor_id }) => ({ id: produc
 // de pasar en silencio.
 function coincideMongo(doc, filtro) {
   return Object.entries(filtro).every(([campo, condicion]) => {
+    if (campo === '$or') return condicion.some((opcion) => coincideMongo(doc, opcion));
     const valor = doc[campo];
     if (condicion !== null && typeof condicion === 'object') {
       if ('$nin' in condicion) return !condicion.$nin.includes(valor);
@@ -252,8 +253,8 @@ function recomendacionesConCache(suspendidos) {
   redis.valores.set('recomendaciones:7', JSON.stringify({
     tendencia: { subcategoriaId: 's1', atributosPreferidos: [], vendedorPreferidoId: 11 },
     productos: [
-      { id: 1, vendedor_id: 11, precio_normal: 50, precio_recomendado: 42.5 },
-      { id: 3, vendedor_id: 12, precio_normal: 90, precio_recomendado: 76.5 },
+      { id: 1, nombre: 'Camiseta azul', vendedor_id: 11, precio_normal: 50, precio_recomendado: 42.5 },
+      { id: 3, nombre: 'Pantalón', vendedor_id: 12, precio_normal: 90, precio_recomendado: 76.5 },
     ],
   }));
   const servicio = cargar('../src/services/tendenciaService.js', {

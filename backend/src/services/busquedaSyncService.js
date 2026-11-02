@@ -15,6 +15,7 @@ const { incrustar, textoDeProducto } = require('./embeddingService');
 function aDocumento(producto, embedding) {
   return {
     producto_id: producto.id,
+    nombre: producto.nombre,
     descripcion: producto.descripcion,
     vendedor_id: producto.vendedor_id,
     vendedor_nombre: producto.vendedor_nombre,
@@ -28,11 +29,11 @@ function aDocumento(producto, embedding) {
     cantidad: producto.inventario?.cantidad ?? 0,
     estado: producto.estado,
     total_vendido: producto.total_vendido ?? 0,
-    // input: la descripción tal cual — es lo que el usuario reconoce y lo
+    // input: el nombre tal cual — es lo que el usuario reconoce y lo
     // que termina en la caja de búsqueda al elegir una sugerencia (ver
     // busquedaService.sugerir()). contexts.estado: para que sugerir() pueda
     // excluir inactivos en la propia consulta (ver config/elasticsearch.js).
-    sugerencia: { input: [producto.descripcion], contexts: { estado: [producto.estado] } },
+    sugerencia: { input: [producto.nombre], contexts: { estado: [producto.estado] } },
     ...(embedding && { embedding }),
   };
 }
@@ -47,11 +48,9 @@ function aDocumento(producto, embedding) {
 // Neo4j (MERGE por contenido). Que esto falle no debe romper crear()/
 // actualizar(); recuperable con scripts/backfillBusqueda.js.
 //
-// El vector se recalcula del texto del producto en CADA alta o edición. Si el modelo
-// no está (o no arranca), el producto se indexa igual pero con un `update` parcial:
-// cambia todos los campos MENOS el vector, que se conserva (quedará con el texto
-// anterior hasta el próximo backfill). Con un `index` completo se perdería.
-// Devuelve true si el documento quedó indexado CON el vector recién calculado (lo que cuenta el backfill).
+// Un producto sin descripción queda sin vector y usa el respaldo por subcategoría.
+// Si falta el modelo, el índice léxico sigue disponible; se conserva el vector
+// anterior únicamente si el texto que lo produjo sigue vigente.
 let sinModeloAvisado = false;
 
 async function vectorDe(producto) {
@@ -63,20 +62,32 @@ async function vectorDe(producto) {
     // Una línea por caída del modelo, no una por cada producto que se edite mientras dure.
     if (!sinModeloAvisado) {
       sinModeloAvisado = true;
-      console.error(`No se pudo calcular el vector del producto #${producto.id}; se indexa sin tocar el que ya tenía:`, err.message);
+      console.error(`No se pudo calcular el vector del producto #${producto.id}; se actualiza el índice de texto:`, err.message);
     }
     return undefined;
   }
 }
 
-async function indexarProducto(producto) {
-  const embedding = await vectorDe(producto);
+// Al reindexar sin modelo, conservar un vector solo si se calculó con el mismo
+// texto. Un vector antiguo basado en el título daría recomendaciones incorrectas.
+const ACTUALIZAR_TEXTO = `
+  if (!ctx._source.containsKey('nombre') || ctx._source.descripcion != params.doc.descripcion ||
+      ctx._source.categoria != params.doc.categoria || ctx._source.subcategoria != params.doc.subcategoria) {
+    ctx._source.remove('embedding');
+  }
+  ctx._source.putAll(params.doc);
+`;
+
+async function indexarProducto(producto, { soloTexto = false } = {}) {
+  const necesitaVector = Boolean(producto.descripcion?.trim());
+  const embedding = necesitaVector && !soloTexto ? await vectorDe(producto) : undefined;
+  const document = aDocumento(producto, embedding);
   const id = String(producto.id);
   try {
-    await conCircuito((cliente) => (embedding
-      ? cliente.index({ index: indice(), id, document: aDocumento(producto, embedding) })
-      : cliente.update({ index: indice(), id, doc: aDocumento(producto), doc_as_upsert: true, retry_on_conflict: 3 })));
-    return Boolean(embedding);
+    await conCircuito((cliente) => (embedding || !necesitaVector
+      ? cliente.index({ index: indice(), id, document })
+      : cliente.update({ index: indice(), id, script: { source: ACTUALIZAR_TEXTO, params: { doc: document } }, upsert: document, retry_on_conflict: 3 })));
+    return Boolean(embedding) || soloTexto || !necesitaVector;
   } catch (err) {
     // Con Elasticsearch apagado esto falla al instante (cortacircuitos) y el producto queda
     // sin reindexar: la ventana de consistencia eventual que se acepta, cerrada con
