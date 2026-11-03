@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { productosApi, categoriasApi } from '../../api/productos';
 import { ofertasApi } from '../../api/ofertas';
@@ -60,7 +60,12 @@ export function SellerProductFormPage() {
   const { token } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const volverA = location.pathname.startsWith('/admin') ? '/admin' : '/vendedor';
+  const esAdmin = location.pathname.startsWith('/admin');
+  const inicio = esAdmin ? '/admin' : '/vendedor';
+  // La lista de «Mis productos» manda su dirección con la búsqueda y la página que tenía (location.state.volverA): al guardar
+  // o al pulsar «Volver» se regresa a ella tal cual. Solo se acepta una dirección de esa misma sección.
+  const pedida = location.state?.volverA;
+  const volverA = typeof pedida === 'string' && (pedida === inicio || pedida.startsWith(`${inicio}?`)) ? pedida : inicio;
 
   const [categorias, setCategorias] = useState([]);
   const [categoriaId, setCategoriaId] = useState('');
@@ -266,6 +271,9 @@ export function SellerProductFormPage() {
 
   return (
     <div className="mx-auto max-w-xl">
+      <Link to={volverA} className="mb-3 inline-block text-sm font-medium text-brand-700 hover:underline">
+        ← Volver a {esAdmin ? 'el panel' : 'mis productos'}
+      </Link>
       <h1 className="mb-6 text-xl font-bold text-neutral-900">{modoEdicion ? 'Editar producto' : 'Nuevo producto'}</h1>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
