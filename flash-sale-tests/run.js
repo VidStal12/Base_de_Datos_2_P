@@ -435,7 +435,7 @@ async function main() {
       );
     }
 
-    redis = conectarRedis();
+    redis = conectarRedis('admin');
     const revision = initialOffer.producto?.oferta_flash?.revision;
     const redisKey = `oferta:${scenario.productId}:stock${revision ? `:${revision}` : ''}`;
     const initialRedisMissing = await redis.get(redisKey) === null;
