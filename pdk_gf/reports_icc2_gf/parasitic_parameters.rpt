@@ -1,0 +1,12 @@
+
+ mapping = /home/jrueda/riscv-single-cycle/pdk_gf/extraido/pdk-150MCU-V1.0_0.0_PlaceRoute_ICC2/PlaceRoute/ICC2/TLUPlus/1p5m_1tm_9k_sp_sm_OPTB/mdb2itf.map 
+
+
+Corner: default
+ early_spec = gf_typ
+ gf_typ = /home/jrueda/riscv-single-cycle/out_icc2_gf/gf150mcu_1p5m_1tm_9k_sp_sm_OPTB_typ.TLUplus 
+ late_spec = gf_typ
+ gf_typ = /home/jrueda/riscv-single-cycle/out_icc2_gf/gf150mcu_1p5m_1tm_9k_sp_sm_OPTB_typ.TLUplus 
+
+library = lib_riscv_icc2_gf 
+0

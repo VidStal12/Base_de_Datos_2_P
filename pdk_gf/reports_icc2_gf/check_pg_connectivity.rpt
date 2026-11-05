@@ -1,0 +1,38 @@
+Checking secondary net through power switch is enabled. 
+Secondary net will be checked together from primary net. They will be treated as the same net
+Primary Net : VCCK    Secondary Net:
+Primary Net : GNDK    Secondary Net:
+Loading cell instances...
+Number of Standard Cells: 8406
+Number of Macro Cells: 0
+Number of IO Pad Cells: 0
+Number of Blocks: 0
+Loading P/G wires and vias...
+Number of VCCK Wires: 123
+Number of VCCK Vias: 5206
+Number of VCCK Terminals: 0
+**************Verify net VCCK connectivity*****************
+  Number of floating wires: 0
+  Number of floating vias: 0
+  Number of floating std cells: 8406
+  Number of floating hard macros: 0
+  Number of floating I/O pads: 0
+  Number of floating terminals: 0
+  Number of floating hierarchical blocks: 0
+************************************************************
+Loading cell instances...
+Loading P/G wires and vias...
+Number of GNDK Wires: 121
+Number of GNDK Vias: 4914
+Number of GNDK Terminals: 0
+**************Verify net GNDK connectivity*****************
+  Number of floating wires: 0
+  Number of floating vias: 0
+  Number of floating std cells: 8406
+  Number of floating hard macros: 0
+  Number of floating I/O pads: 0
+  Number of floating terminals: 0
+  Number of floating hierarchical blocks: 0
+************************************************************
+Overall runtime: 1 seconds.
+0

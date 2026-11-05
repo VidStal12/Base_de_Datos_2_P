@@ -1,0 +1,3 @@
+Error: ambiguous command 'report_clock_tree' matched 2 commands:
+      	(report_clock_tree_options, report_clock_tree_reference_subset) (CMD-006)
+1
