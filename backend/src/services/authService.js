@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 const { esCorreoValido, validarPassword } = require('../utils/validation');
 const { exigirCuentaActiva } = require('./suspensionService');
+const dispositivos = require('./dispositivoService');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -10,7 +11,10 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // cualquiera podría autoregistrarse como "administrador". El auto-registro
 // siempre asigna "comprador"; otros roles se asignan por otra vía (fuera de
 // alcance de la Fase Inicial).
-async function registrar({ nombres, apellidos, correo, contrasena, fecha_nacimiento }) {
+//
+// `dispositivo` (lo que devuelve dispositivoService.desdeCabeceras, o nada): desde dónde se registra la cuenta.
+// Queda anotado como su primer dispositivo (antifraude por dispositivo, PLAN-NEO4J §22).
+async function registrar({ nombres, apellidos, correo, contrasena, fecha_nacimiento }, { dispositivo } = {}) {
   if (!nombres || !apellidos) {
     throw new Error('Nombres y apellidos son obligatorios');
   }
@@ -49,6 +53,13 @@ async function registrar({ nombres, apellidos, correo, contrasena, fecha_nacimie
     throw err;
   }
 
+  await dispositivos.registrarInicioSeguro({
+    usuarioId: usuario.id_usuario,
+    usuarioNombre: `${nombres} ${apellidos}`,
+    usuarioRol: 'comprador',
+    dispositivo,
+  });
+
   const { contrasena: _omit, ...usuarioSinPassword } = usuario;
   return usuarioSinPassword;
 }
@@ -69,12 +80,23 @@ async function obtenerPerfil(id_usuario) {
   return usuario;
 }
 
-async function login({ correo, contrasena }) {
+async function login({ correo, contrasena }, { dispositivo } = {}) {
   const usuario = await prisma.usuarios.findUnique({ where: { correo }, include: { rol: true } });
   if (!usuario) throw new Error('Credenciales inválidas');
 
   const valido = await bcrypt.compare(contrasena, usuario.contrasena);
   if (!valido) throw new Error('Credenciales inválidas');
+
+  // Con la contraseña ya comprobada, esta cuenta entró desde este dispositivo (antifraude, PLAN-NEO4J §22).
+  // Se anota ANTES de la suspensión a propósito: una cuenta suspendida que intenta entrar desde un dispositivo
+  // nuevo es justo la pista que sirve para vincularla con otras. Quien no sabe la contraseña no llega acá, así
+  // que nadie puede ensuciar el historial de una cuenta ajena. Una falla se registra y no impide entrar.
+  await dispositivos.registrarInicioSeguro({
+    usuarioId: usuario.id_usuario,
+    usuarioNombre: `${usuario.nombres} ${usuario.apellidos}`,
+    usuarioRol: usuario.rol.tipo_rol,
+    dispositivo,
+  });
 
   // Una cuenta suspendida (ver suspensionService.js) no recibe token nuevo. Se
   // revisa DESPUÉS de la contraseña: quien no la sabe no se entera de que la

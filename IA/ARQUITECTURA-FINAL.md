@@ -31,14 +31,14 @@ Colores: **verde** = verdad de un dato · **gris con borde discontinuo** = copia
   "contenedores": ["mysql", "mongo", "redis", "cassandra", "neo4j", "elasticsearch"],
   "configuracion": ["cassandra", "elasticsearch", "embeddingsModelo", "mongo", "mongoCuentas", "neo4j", "politicaRutas", "prisma", "redis", "redisCuentas"],
   "clientes": ["prisma", "mongo", "redis", "cassandra", "neo4j", "elasticsearch"],
-  "modelosPrisma": ["rol_usuario", "usuarios", "direcciones", "metodo_pago", "producto", "inventario", "carrito", "compra", "pago", "compra_detalle", "venta_outbox", "checkout_intento", "checkout_sesion", "bloqueo_cuenta", "acl_regla"],
+  "modelosPrisma": ["rol_usuario", "usuarios", "direcciones", "metodo_pago", "producto", "inventario", "carrito", "compra", "pago", "compra_detalle", "venta_outbox", "checkout_intento", "checkout_sesion", "bloqueo_cuenta", "acl_regla", "dispositivo_usuario"],
   "modelosMongoose": ["AuditoriaAcceso", "Categoria", "Producto", "ProductoEvento", "Resena", "Subcategoria"],
   "familiasRedis": ["actividad:*", "bloqueo:*", "carrito:*", "checkout:reserva:*", "limite:pedidos:*", "oferta-recomendada:*", "oferta:*", "recomendaciones:*", "restriccion:*", "reauth:intentos:*"],
   "tablasCassandra": ["ventas_por_dia", "ventas_por_producto_mes"],
-  "etiquetasNeo4j": ["Articulo", "Correo", "Nombre", "Producto", "Usuario"],
+  "etiquetasNeo4j": ["Articulo", "Correo", "Dispositivo", "Perfil", "Producto", "Usuario"],
   "indiceElasticsearch": "tiendaya_productos",
   "procesosDeFondo": {
-    "arrancanEnServer": ["checkoutIntentoService", "bloqueoService", "ventasSyncService"],
+    "arrancanEnServer": ["checkoutIntentoService", "bloqueoService", "ventasSyncService", "popularidadService"],
     "alEncolar": ["reconciliacionMongoService"]
   },
   "routers": 14,
@@ -48,14 +48,14 @@ Colores: **verde** = verdad de un dato · **gris con borde discontinuo** = copia
 
 | Almacén | Rol | Verdad de | Copia de | Se repara con |
 |---|---|---|---|---|
-| **MySQL 8.4** | Verdad transaccional | cuentas, roles, direcciones, métodos de pago, `producto` (ancla) e `inventario` (precio y stock autoritativos), carrito durable, pedidos (`compra`, `pago`, `compra_detalle`), intentos de checkout, `venta_outbox`, `bloqueo_cuenta`, `acl_regla` | — | — |
-| **MongoDB 7** (replica set de un nodo) | Verdad del catálogo descriptivo y de dos registros *append-only* | `Producto` (descripción, estado, atributos, imágenes), `Categoria`, `Subcategoria`, `Resena`, `ProductoEvento` (historial), `AuditoriaAcceso` | `inventario.precio`, `inventario.cantidad` y `total_vendido` de cada `Producto` (de MySQL) y su `resenas_resumen` (de la colección `Resena`) | cola de reconciliación (15 s), `POST /api/admin/recalcular-inventario` y `-ventas` |
+| **MySQL 8.4** | Verdad transaccional | cuentas, roles, direcciones, métodos de pago, `producto` (ancla) e `inventario` (precio y stock autoritativos), carrito durable, pedidos (`compra`, `pago`, `compra_detalle`), intentos de checkout, `venta_outbox`, `bloqueo_cuenta`, `acl_regla`, `dispositivo_usuario` (desde qué dispositivo entró cada cuenta, solo hashes) | — | — |
+| **MongoDB 7** (replica set de un nodo) | Verdad del catálogo descriptivo y de dos registros *append-only* | `Producto` (descripción, estado, atributos, imágenes), `Categoria`, `Subcategoria`, `Resena`, `ProductoEvento` (historial), `AuditoriaAcceso` | `inventario.precio`, `inventario.cantidad` y `total_vendido` de cada `Producto` (de MySQL), su `resenas_resumen` (de la colección `Resena`) y sus `clics` (cada visita a la ficha, sumada cada 60 s: no tiene otra fuente) | cola de reconciliación (15 s), `POST /api/admin/recalcular-inventario` y `-ventas` |
 | **Redis 7** (sin volumen: se vacía al recrear el contenedor) | Caché y controles volátiles | el **cupo** de una oferta flash (la admisión) | carrito (`carrito:*`, 450 s), recomendaciones, actividad, suspensiones y límites (`bloqueo:*`, `restriccion:*`, `limite:pedidos:*`, `reauth:intentos:*`) | se reconstruyen: el carrito desde MySQL, las suspensiones desde `bloqueo_cuenta` |
 | **Cassandra 5** | Copia derivada analítica | — | `ventas_por_dia`, `ventas_por_producto_mes` (de `venta_outbox`) | el outbox (B); `npm run ventas:sincronizar` / `ventas:historico` |
-| **Neo4j 5** | Copia derivada para detectar fraude | — | grafo de 5 etiquetas (de compras, reseñas y productos) | `npm run fraude:backfill` |
-| **Elasticsearch 8.15** | Copia derivada de búsqueda **y** de vectores | — | índice `tiendaya_productos` (de Mongo) con el campo `embedding` | `npm run busqueda:backfill` (recalcula cada vector) |
+| **Neo4j 5** | Copia derivada para detectar fraude | — | grafo de 6 etiquetas (de compras, reseñas, productos y de los dispositivos de `dispositivo_usuario`) | `npm run fraude:backfill` |
+| **Elasticsearch 8.15** | Copia derivada de búsqueda **y** de vectores | — | índice `tiendaya_productos` (de Mongo) con el campo `embedding`, y con `total_vendido`, `clics` y `publicado_en` para ordenar por popularidad y novedad | `npm run busqueda:backfill` (recalcula cada vector; con `--solo-texto` no) |
 
-Procesos de fondo del backend (los tres primeros arrancan en `server.js` y ninguno en `app.js`; el de Mongo se enciende solo cuando `encolar()` recibe un producto): `ventasSyncService` cada 30 s (`VENTAS_SYNC_ENABLED`, lote de 50), `bloqueoService` cada 60 s (`FRAUDE_BLOQUEO_ENABLED`; primer barrido a los 3 s), `checkoutIntentoService` cada 30 s (cierra los intentos de checkout que llevan más de 15 min sin confirmarse y devuelve las reservas de ofertas flash) y `reconciliacionMongoService` cada 15 s mientras haya pendientes (arranca solo cuando se encola algo; la lista vive en memoria, hasta 5 000 productos).
+Procesos de fondo del backend (los cuatro primeros arrancan en `server.js` y ninguno en `app.js`; el de Mongo se enciende solo cuando `encolar()` recibe un producto): `ventasSyncService` cada 30 s (`VENTAS_SYNC_ENABLED`, lote de 50), `bloqueoService` cada 60 s (`FRAUDE_BLOQUEO_ENABLED`; primer barrido a los 3 s), `checkoutIntentoService` cada 30 s (cierra los intentos de checkout que llevan más de 15 min sin confirmarse y devuelve las reservas de ofertas flash), `popularidadService` cada 60 s (`POPULARIDAD_ENABLED`: suma en Mongo los clics en la ficha de cada producto y copia al índice de búsqueda los clics y las ventas, que ordenan los resultados; el buffer vive en memoria y perder el último minuto solo cuesta ese minuto de clics) y `reconciliacionMongoService` cada 15 s mientras haya pendientes (arranca solo cuando se encola algo; la lista vive en memoria, hasta 5 000 productos).
 
 ## 2. V1 — Contenedores y quién es la verdad
 
@@ -71,15 +71,15 @@ flowchart TB
 
   subgraph BE["Backend"]
     API["API REST · Express 5 en Node 24, puerto 3000<br/>14 routers · 64 rutas en la lista blanca<br/>requireAuth → requireRole → política"]
-    SRV["Servicios de negocio y procesos de fondo<br/>catálogo · carrito · ofertas · checkout · fraude · búsqueda · permisos<br/>ventas 30 s · fraude 60 s · intentos 30 s · Mongo 15 s"]
+    SRV["Servicios de negocio y procesos de fondo<br/>catálogo · carrito · ofertas · checkout · fraude · búsqueda · permisos<br/>ventas 30 s · fraude 60 s · intentos 30 s · popularidad 60 s · Mongo 15 s"]
     EMB["Modelo de embeddings (ONNX)<br/>multilingual-e5-small<br/>carpeta backend/modelos"]
   end
 
-  MY[("MySQL 8.4 · VERDAD<br/>usuarios · roles · direcciones · pagos<br/>producto + inventario · carrito<br/>compra · pago · detalle · venta_outbox<br/>checkout_intento · checkout_sesion<br/>bloqueo_cuenta · acl_regla")]
-  MG[("MongoDB 7 rs0 · VERDAD del catálogo<br/>productos · categorias · subcategorias · resenas<br/>producto_eventos (solo alta) · auditoria_acceso (solo alta)<br/>copia: precio · stock · total_vendido")]
+  MY[("MySQL 8.4 · VERDAD<br/>usuarios · roles · direcciones · pagos<br/>producto + inventario · carrito<br/>compra · pago · detalle · venta_outbox<br/>checkout_intento · checkout_sesion<br/>bloqueo_cuenta · acl_regla<br/>dispositivo_usuario")]
+  MG[("MongoDB 7 rs0 · VERDAD del catálogo<br/>productos · categorias · subcategorias · resenas<br/>producto_eventos (solo alta) · auditoria_acceso (solo alta)<br/>copia: precio · stock · total_vendido · clics")]
   RE[("Redis 7 · volátil<br/>carrito · oferta flash · bloqueo · restriccion<br/>limite · reauth · recomendaciones · actividad<br/>cupo de la oferta = verdad")]
   CA[("Cassandra 5 · copia<br/>ventas_por_dia<br/>ventas_por_producto_mes")]
-  NE[("Neo4j 5 · copia<br/>Usuario · Producto · Nombre<br/>Correo · Articulo")]
+  NE[("Neo4j 5 · copia<br/>Usuario · Producto · Articulo<br/>Correo · Dispositivo · Perfil")]
   ES[("Elasticsearch 8.15 · copia<br/>tiendaya_productos<br/>texto + embedding")]
 
   NAV -->|"HTTP/JSON + JWT"| API
@@ -124,6 +124,7 @@ flowchart LR
   PERM["Permisos<br/>matriz · roles · cuentas"]
   WK["Worker de ventas<br/>30 s"]
   BAR["Barrido de fraude<br/>60 s"]
+  POP["Volcado de popularidad<br/>60 s"]
 
   MY[("MySQL")]
   MG[("MongoDB")]
@@ -132,7 +133,8 @@ flowchart LR
   NE[("Neo4j")]
   ES[("Elasticsearch")]
 
-  CUENTA ==>|"A · usuarios, direcciones, pagos"| MY
+  CUENTA ==>|"A · usuarios, direcciones, pagos,<br/>dispositivos"| MY
+  CUENTA -.->|"C · registrarDispositivo"| NE
   PROD ==>|"A · producto + inventario"| MY
   PROD -->|"S · documento + evento v1<br/>(si falla, se borra MySQL,<br/>el documento de Mongo no: hallazgo 5)"| MG
   PROD -.->|"C · indexarProducto + vector"| ES
@@ -155,6 +157,7 @@ flowchart LR
   BAR -->|"T · bloqueo:{id} con TTL"| RE
   PERM ==>|"A · acl_regla, rol de la cuenta"| MY
   PERM -.->|"C · auditoria_acceso (solo alta)"| MG
+  POP -.->|"C · $inc clics (Mongo) y copia<br/>de clics y ventas al índice"| ES
 
   class MY,MG verdad
   class RE volatil
@@ -353,6 +356,8 @@ Las lecturas con respaldo se explican en la sección 4, y en su tabla las demás
 | 20 | Cada petición → Redis | ¿cuenta suspendida? | `requireAuth` | O | — | `middleware/auth.js`, `suspensionService.js` |
 | 21 | Cada ruta por roles → MySQL | rol de hoy y reglas, copia de ≤ 5 s | `requireRole` | — | si MySQL cae: la última copia o el código | `politicaAccesoService.js` |
 | 22 | Pedido → Redis | tope por hora y límites suaves | `middleware/controlPedidos.js` | O | — | `limitePedidosService.js`, `restriccionService.js` |
+| 23 | Inicio de sesión y registro → MySQL y Neo4j | fila `dispositivo_usuario` (solo hashes) y `registrarDispositivo` (nodos `Dispositivo` y `Perfil`); el reenvío al grafo no se espera | `POST /api/auth/login` y `POST /api/auth/registro` | A / C | `npm run fraude:backfill` (reconstruye el grafo desde `dispositivo_usuario`) | `services/dispositivoService.js`, `authService.js`, `fraudeSyncService.js` |
+| 24 | Clics y ventas → Mongo y Elasticsearch | buffer en memoria; cada 60 s `$inc` de `clics` y una petición `_bulk` con los valores vigentes (`clics`, `total_vendido`) | `GET /api/productos/:id` (un clic por visitante cada 30 min) y cada checkout (marca el producto) | C | `npm run busqueda:backfill` | `services/popularidadService.js`, `rankingBusqueda.js`, `checkoutService.js` |
 
 ## 8. Lista de chequeo «completo y correcto»
 

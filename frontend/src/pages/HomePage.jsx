@@ -41,8 +41,11 @@ function SugeridosSinResultados({ sugeridos, origen, termino }) {
 }
 
 const ORDENES = [
-  { valor: '', texto: 'Relevancia' },
+  // Sin orden elegido, el servidor mezcla la relevancia del texto con lo que el producto vende, lo que se
+  // abre y lo nuevo que es (backend/src/services/rankingBusqueda.js).
+  { valor: '', texto: 'Relevancia y popularidad' },
   { valor: 'masVendidos', texto: 'Más vendidos' },
+  { valor: 'masRecientes', texto: 'Más recientes' },
   { valor: 'precioAsc', texto: 'Precio: de menor a mayor' },
   { valor: 'precioDesc', texto: 'Precio: de mayor a menor' },
 ];

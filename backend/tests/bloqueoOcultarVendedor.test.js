@@ -202,20 +202,22 @@ test('buscar excluye a los vendedores suspendidos en la MISMA consulta que arma 
   const e = escenario();
   const { servicio, pedidos } = buscadorConElastic(e.suspension);
 
+  // Sin orden pedido, la consulta va envuelta en el puntaje de popularidad (rankingBusqueda.js).
+  const consulta = (pedido) => pedido.query.function_score.query;
   await servicio.buscar({ q: 'camiseta' });
-  assert.equal(pedidos[0].query.bool.must_not, undefined, 'sin suspendidos no se agrega ninguna exclusión');
+  assert.equal(consulta(pedidos[0]).bool.must_not, undefined, 'sin suspendidos no se agrega ninguna exclusión');
 
   await e.suspension.bloquear(11, DIA);
   await e.suspension.bloquear(13, DIA);
   await servicio.buscar({ q: 'camiseta' });
-  assert.deepEqual(plano(pedidos[1].query.bool.must_not), [{ terms: { vendedor_id: [11, 13] } }]);
+  assert.deepEqual(plano(consulta(pedidos[1]).bool.must_not), [{ terms: { vendedor_id: [11, 13] } }]);
   assert.ok(pedidos[1].aggs, 'las agregaciones (facetas, conteos) van en esa misma consulta: no pueden contar productos ocultos');
   assert.equal(pedidos.length, 2, 'una sola petición a Elasticsearch por búsqueda');
 
   await e.suspension.levantar(11);
   await e.suspension.levantar(13);
   await servicio.buscar({ q: 'camiseta' });
-  assert.equal(pedidos[2].query.bool.must_not, undefined, 'liberados: la búsqueda vuelve a verlos');
+  assert.equal(consulta(pedidos[2]).bool.must_not, undefined, 'liberados: la búsqueda vuelve a verlos');
 });
 
 test('sugerir pide más opciones si hay suspendidos, descarta las de ese vendedor y devuelve a lo sumo 8', async () => {

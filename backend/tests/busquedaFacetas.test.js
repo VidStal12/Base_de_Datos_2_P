@@ -61,10 +61,11 @@ test('sin filtros es un match_all sobre productos activos, sin post_filter y con
   const e = motor();
   await e.buscar({});
   const [p] = e.peticiones;
-  assert.deepEqual(p.query.bool.must, [{ match_all: {} }]);
-  assert.deepEqual(p.query.bool.filter, [{ term: { estado: 'activo' } }]);
+  const consulta = p.query.function_score.query; // sin orden pedido la consulta va dentro del puntaje (rankingBusqueda.js)
+  assert.deepEqual(consulta.bool.must, [{ match_all: {} }]);
+  assert.deepEqual(consulta.bool.filter, [{ term: { estado: 'activo' } }]);
   assert.equal(p.post_filter, undefined);
-  assert.deepEqual(p.sort, [{ producto_id: 'asc' }]);
+  assert.deepEqual(p.sort, [{ _score: 'desc' }, { producto_id: 'asc' }], 'sin texto la relevancia es igual para todos: manda el puntaje de popularidad y novedad');
   assert.equal(p.size, 60);
   assert.equal(p.from, 0);
   assert.equal(p.track_total_hits, true, 'el total de la paginación es exacto, no "10000+"');
@@ -74,8 +75,9 @@ test('categoría, precio y atributos van en post_filter y NO en query; estado y 
   const e = motor({ suspendidos: [11, 13] });
   await e.buscar({ q: 'camiseta', subcategoriaId: CAMISETAS, precioMin: '50', precioMax: '100', atributos: '{"Talla":["M","L"]}' });
   const [p] = e.peticiones;
-  assert.deepEqual(p.query.bool.filter, [{ term: { estado: 'activo' } }], 'ninguna faceta en query: recortaría las agregaciones');
-  assert.deepEqual(p.query.bool.must_not, [{ terms: { vendedor_id: [11, 13] } }], 'los suspendidos en query: alcanzan al total, al árbol y a cada faceta');
+  const consulta = p.query.function_score.query;
+  assert.deepEqual(consulta.bool.filter, [{ term: { estado: 'activo' } }], 'ninguna faceta en query: recortaría las agregaciones');
+  assert.deepEqual(consulta.bool.must_not, [{ terms: { vendedor_id: [11, 13] } }], 'los suspendidos en query: alcanzan al total, al árbol y a cada faceta');
   assert.deepEqual(p.post_filter.bool.filter, [{ term: { subcategoria_id: CAMISETAS } }, { range: { precio: { gte: 50, lte: 100 } } }, nested('Talla', ['M', 'L'])]);
   assert.equal(JSON.stringify(p.post_filter).includes('vendedor_id'), false, 'la exclusión de suspendidos jamás va en post_filter');
   assert.deepEqual(p.sort, [{ _score: 'desc' }, { producto_id: 'asc' }], 'con texto se ordena por relevancia');
@@ -119,18 +121,21 @@ test('sin facetas (catálogo servido desde el índice) los filtros van directo a
   const [p] = e.peticiones;
   assert.equal(p.aggs, undefined);
   assert.equal(p.post_filter, undefined);
-  assert.deepEqual(p.query.bool.filter, [{ term: { estado: 'activo' } }, { term: { vendedor_id: 7 } }, { term: { subcategoria_id: CAMISETAS } }, nested('Talla', ['M'])]);
+  assert.deepEqual(p.query.function_score.query.bool.filter, [{ term: { estado: 'activo' } }, { term: { vendedor_id: 7 } }, { term: { subcategoria_id: CAMISETAS } }, nested('Talla', ['M'])]);
 });
 
 test('orden y paginación: todos los órdenes desempatan por producto_id y la página se traduce a from/size', async () => {
   const e = motor();
-  for (const ordenarPor of ['masVendidos', 'precioAsc', 'precioDesc']) await e.buscar({ ordenarPor, pagina: 3, tamano: 20 });
+  for (const ordenarPor of ['masVendidos', 'masRecientes', 'precioAsc', 'precioDesc']) await e.buscar({ ordenarPor, pagina: 3, tamano: 20 });
+  const fecha = { publicado_en: { order: 'desc', missing: '_last' } };
   assert.deepEqual(e.peticiones.map((p) => p.sort), [
-    [{ total_vendido: 'desc' }, { producto_id: 'asc' }],
+    [{ total_vendido: 'desc' }, fecha, { clics: 'desc' }, { producto_id: 'asc' }],
+    [fecha, { total_vendido: 'desc' }, { clics: 'desc' }, { producto_id: 'asc' }],
     [{ precio: 'asc' }, { producto_id: 'asc' }],
     [{ precio: 'desc' }, { producto_id: 'asc' }],
   ]);
   assert.ok(e.peticiones.every((p) => p.from === 40 && p.size === 20));
+  assert.ok(e.peticiones.every((p) => p.query.function_score === undefined), 'un orden pedido por nombre es estricto: no se le mezcla el puntaje');
 });
 
 // ── Cómo se lee la respuesta del motor ──────────────────────────────────────
@@ -286,8 +291,9 @@ test('los parámetros internos (incluirInactivos, vendedorId, conFacetas) no se 
   // Lo que llegaría en GET /api/busqueda?incluirInactivos=1&vendedorId=11&conFacetas=false&tamano=500
   await e.buscar({ incluirInactivos: '1', vendedorId: '11', conFacetas: 'false', tamano: '500' });
   const [p] = e.peticiones;
-  assert.deepEqual(p.query.bool.filter, [{ term: { estado: 'activo' } }], 'siguen sin verse los inactivos');
-  assert.deepEqual(p.query.bool.must_not, [{ terms: { vendedor_id: [11] } }], 'ni los de un vendedor suspendido');
+  const consulta = p.query.function_score.query;
+  assert.deepEqual(consulta.bool.filter, [{ term: { estado: 'activo' } }], 'siguen sin verse los inactivos');
+  assert.deepEqual(consulta.bool.must_not, [{ terms: { vendedor_id: [11] } }], 'ni los de un vendedor suspendido');
   assert.ok(p.aggs, 'las facetas se piden igual');
   assert.equal(p.size, 100, 'y el tamaño tiene su tope');
 });
@@ -296,8 +302,9 @@ test('el catálogo servido desde el índice sí puede pedir inactivos, un vended
   const e = motor({ suspendidos: [11] });
   await e.listarDesdeIndice({ mostrarInactivos: true, vendedorId: 7 });
   const [p] = e.peticiones;
-  assert.deepEqual(p.query.bool.filter, [{ term: { vendedor_id: 7 } }], 'sin filtro de estado');
-  assert.equal(p.query.bool.must_not, undefined, 'quien ve los inactivos ve también los de vendedores suspendidos (como en Mongo)');
+  const consulta = p.query.function_score.query;
+  assert.deepEqual(consulta.bool.filter, [{ term: { vendedor_id: 7 } }], 'sin filtro de estado');
+  assert.equal(consulta.bool.must_not, undefined, 'quien ve los inactivos ve también los de vendedores suspendidos (como en Mongo)');
   assert.equal(p.size, 500);
   assert.equal(p.aggs, undefined);
 });

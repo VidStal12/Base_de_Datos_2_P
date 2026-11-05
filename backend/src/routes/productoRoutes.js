@@ -2,6 +2,7 @@ const express = require('express');
 const { requireAuth, requireRole, optionalAuth } = require('../middleware/auth');
 const productoService = require('../services/productoService');
 const catalogoLectura = require('../services/catalogoLecturaService');
+const popularidad = require('../services/popularidadService');
 const resenaService = require('../services/resenaService');
 const { responderError } = require('../utils/http');
 
@@ -40,6 +41,10 @@ router.get('/estadisticas/ediciones', requireAuth, requireRole('administrador'),
 // sesión y el producto sí le quedó visible Y está activo, se registra como su actividad
 // reciente (catalogoLecturaService.js) para poder sugerírselo si después busca algo sin
 // sentido; uno pausado (inactivo) se abre por su URL pero no queda como «lo último que viste».
+// Con sesión o sin ella, abrir la ficha de un producto activo es además un CLIC para el ranking de la
+// búsqueda (popularidadService.js): una vez por visitante cada 30 min, sin contar al dueño ni a un
+// administrador. Cuenta aquí, en el servidor, y no con una llamada aparte del navegador: así no hay un
+// endpoint más que alguien pueda llamar en bucle sin haber abierto nada.
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const producto = await catalogoLectura.obtener(Number(req.params.id));
@@ -47,7 +52,16 @@ router.get('/:id', optionalAuth, async (req, res) => {
     if (oculto && req.usuario?.rol !== 'administrador') {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
-    if (!oculto && producto.estado === 'activo') catalogoLectura.registrarVistaProducto(req.usuario?.id_usuario, producto.id);
+    if (!oculto && producto.estado === 'activo') {
+      catalogoLectura.registrarVistaProducto(req.usuario?.id_usuario, producto.id);
+      popularidad.registrarClic({
+        productoId: producto.id,
+        vendedorId: producto.vendedor_id,
+        usuario: req.usuario,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+    }
     res.json(oculto ? { ...producto, vendedor_suspendido: true } : producto);
   } catch (err) {
     responderError(res, err, 404);

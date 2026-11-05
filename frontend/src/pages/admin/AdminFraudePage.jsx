@@ -109,15 +109,18 @@ function DiagramaResenas({ r }) {
   );
 }
 
-// Relaciones REALES: (u)-[:SE_LLAMA]->(:Nombre)<-[:SE_LLAMA]-(otra) y
+// Relaciones REALES: (u)-[:USO_DISPOSITIVO]->(:Dispositivo)<-[:USO_DISPOSITIVO]-(otra) y
 // (u)-[:USA_CORREO]->(:Correo)<-[:USA_CORREO]-(otra). Cada vínculo del grupo es
-// un nodo COMPARTIDO — el nombre normalizado o el buzón normalizado — al que
-// convergen las cuentas que lo comparten; un grupo puede tener varios (una
-// pareja con el mismo nombre Y el mismo buzón, o una cadena donde A y B se
-// llaman igual y B y C comparten buzón). Las cuentas se reparten en una elipse y
+// un nodo COMPARTIDO — el dispositivo (el identificador del navegador) o el buzón
+// normalizado — al que convergen las cuentas que lo comparten; un grupo puede
+// tener varios (una pareja con el mismo dispositivo Y el mismo buzón, dos
+// dispositivos en común, o una cadena donde A y B comparten dispositivo y B y C
+// comparten buzón). El nombre ya no vincula cuentas (§22): dos personas pueden
+// llamarse igual. Las cuentas se reparten en una elipse y
 // los nodos compartidos van apilados en el centro; con 2-8 cuentas y 1-3
-// vínculos por grupo el reparto se mantiene legible. El hash del buzón nunca
-// llega al navegador: el nodo solo dice "mismo buzón".
+// vínculos por grupo el reparto se mantiene legible. El hash del buzón y el del
+// dispositivo nunca llegan al navegador: el nodo del buzón solo dice "mismo
+// buzón" y el del dispositivo, su etiqueta y una referencia de 8 caracteres.
 function DiagramaPersona({ a }) {
   const n = a.miembros.length;
   const cx = 270;
@@ -134,13 +137,13 @@ function DiagramaPersona({ a }) {
     ...v,
     x: cx,
     y: cy + (i - (a.vinculos.length - 1) / 2) * 46,
-    titulo: v.tipo === 'nombre' ? v.nombre : 'Mismo buzón',
-    subtitulo: v.tipo === 'nombre' ? 'mismo nombre' : 'correo normalizado',
-    etiqueta: v.tipo === 'nombre' ? 'se llama' : 'usa el buzón',
+    titulo: v.tipo === 'dispositivo' ? v.etiqueta ?? 'Mismo dispositivo' : 'Mismo buzón',
+    subtitulo: v.tipo === 'dispositivo' ? `dispositivo ${v.referencia}` : 'correo normalizado',
+    etiqueta: v.tipo === 'dispositivo' ? 'entró desde' : 'usa el buzón',
   }));
 
   return (
-    <svg viewBox="0 0 540 260" className="mt-2 w-full max-w-xl" role="img" aria-label="Diagrama de cuentas que comparten nombre o buzón de correo">
+    <svg viewBox="0 0 540 260" className="mt-2 w-full max-w-xl" role="img" aria-label="Diagrama de cuentas que comparten dispositivo o buzón de correo">
       {hubs.flatMap((h, i) =>
         h.ids.map((id) => {
           const m = posiciones.get(id);
@@ -158,9 +161,10 @@ function DiagramaPersona({ a }) {
 }
 
 // Relación REAL: (comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor). Si son
-// dos cuentas distintas, las une un nodo compartido — el mismo nombre, el mismo
-// buzón, o los dos — (las dos SE_LLAMA igual / USA_CORREO el mismo); si es la
-// misma cuenta, el mismo nodo compra y vende el mismo producto.
+// dos cuentas distintas, las une un nodo compartido — el mismo dispositivo, un
+// equipo parecido (mismo Perfil con otro identificador), el mismo buzón, o dos de
+// ellos — (las dos USO_DISPOSITIVO el mismo / TIENE_PERFIL el mismo / USA_CORREO el
+// mismo); si es la misma cuenta, el mismo nodo compra y vende el mismo producto.
 function DiagramaAutocompra({ f }) {
   const productos = f.productos.length > 1 ? `${f.productos[0]} (+${f.productos.length - 1})` : f.productos[0];
 
@@ -176,7 +180,11 @@ function DiagramaAutocompra({ f }) {
   }
 
   const hubs = [];
-  if (f.mismoNombre) hubs.push({ titulo: 'Mismo nombre', subtitulo: 'nombre normalizado', etiqueta: 'se llama' });
+  if (f.mismoDispositivo) {
+    hubs.push({ titulo: 'Mismo dispositivo', subtitulo: f.dispositivosCompartidos > 1 ? `${f.dispositivosCompartidos} dispositivos` : 'identificador del navegador', etiqueta: 'entró desde' });
+  }
+  // Excluyente con el dispositivo compartido: es el equipo parecido de OTRO identificador.
+  if (f.mismoPerfil) hubs.push({ titulo: 'Equipo parecido', subtitulo: 'mismo perfil de dispositivo', etiqueta: 'entró desde un equipo' });
   if (f.mismoBuzon) hubs.push({ titulo: 'Mismo buzón', subtitulo: 'correo normalizado', etiqueta: 'usa el buzón' });
   const xHubs = hubs.length === 2 ? [175, 365] : [270];
 
@@ -263,6 +271,7 @@ const ETIQUETAS_SENAL = {
   categoriaInusual: 'categoría inusual',
   rafagaGasto: 'ráfaga de gasto',
   fechaNacimiento: 'misma fecha de nacimiento',
+  variosDispositivos: 'más de un dispositivo en común',
   reventa: 'reventa de lo comprado',
   publicadaDespuesDeComprar: 'publicó después de comprar',
   mismosAtributos: 'mismos atributos',
@@ -280,20 +289,26 @@ function resumenResenas(r) {
 const tieneVinculo = (a, tipo) => a.vinculos.some((v) => v.tipo === tipo);
 
 function resumenPersona(a) {
-  const porNombre = tieneVinculo(a, 'nombre');
+  const porDispositivo = tieneVinculo(a, 'dispositivo');
   const porBuzon = tieneVinculo(a, 'correo');
-  const quienes = porNombre && porBuzon
-    ? `${a.miembros.length} cuentas relacionadas por nombre ("${a.nombre}") y por buzón de correo`
+  const quienes = porDispositivo && porBuzon
+    ? `${a.miembros.length} cuentas relacionadas por dispositivo y por buzón de correo`
     : porBuzon
       ? `${a.miembros.length} cuentas usan el mismo buzón de correo`
-      : `${a.miembros.length} cuentas se llaman "${a.nombre}"`;
+      : `${a.miembros.length} cuentas entraron desde el mismo dispositivo`;
   return `${quienes}: ${pluralCompras(a.totalOrdenes)} y ${formatoQ(a.totalGastado)} en total.`;
 }
 
 // Cómo se relacionan comprador y vendedor, para una frase: "con el mismo
-// nombre", "con el mismo buzón de correo" o las dos.
+// buzón de correo", "con el mismo dispositivo", "con un equipo parecido", o varias.
 const vinculoAutocompra = (f) =>
-  [f.mismoNombre && 'el mismo nombre', f.mismoBuzon && 'el mismo buzón de correo'].filter(Boolean).join(' y ');
+  [
+    f.mismoBuzon && 'el mismo buzón de correo',
+    f.mismoDispositivo && (f.dispositivosCompartidos > 1 ? `${f.dispositivosCompartidos} dispositivos en común` : 'el mismo dispositivo'),
+    f.mismoPerfil && 'un equipo parecido (mismo perfil de dispositivo)',
+  ]
+    .filter(Boolean)
+    .join(' y ');
 
 function resumenAutocompra(f) {
   return f.mismaCuenta
@@ -357,8 +372,8 @@ function razonesVinculos(a) {
   const correoDe = new Map(a.miembros.map((m) => [m.id, m.ficha?.correo]));
   return a.vinculos.map((v) => {
     const cuentas = v.ids.map((id) => `#${id}`).join(', ');
-    if (v.tipo === 'nombre') {
-      return `Las cuentas ${cuentas} se llaman exactamente igual: "${v.nombre}" (mayúsculas, tildes y espacios ya normalizados).`;
+    if (v.tipo === 'dispositivo') {
+      return `Las cuentas ${cuentas} entraron desde el mismo dispositivo (${v.etiqueta ?? 'navegador'}, referencia ${v.referencia}): el navegador le pone un identificador aleatorio a cada equipo y lo manda al iniciar sesión.`;
     }
     const correos = v.ids.map((id) => correoDe.get(id)).filter(Boolean);
     return `Las cuentas ${cuentas} usan el mismo buzón de correo${correos.length ? ` (${correos.join(', ')})` : ''}: el correo exacto no puede repetirse, así que compartir la bandeja (alias "+", puntos de Gmail) es deliberado.`;
@@ -376,8 +391,8 @@ function razonesPersona(a) {
       ),
       `Entre todas movieron ${formatoQ(a.totalGastado)} en ${pluralCompras(a.totalOrdenes)}.`,
       tieneVinculo(a, 'correo')
-        ? 'Compartir buzón es evidencia fuerte por sí sola: parte en confianza alta, y delata incluso a quien cambia el nombre en cada cuenta.'
-        : 'Dos personas distintas pueden llamarse igual: el nombre solo es una coincidencia a verificar, por eso parte en "posible" salvo que otra cosa lo corrobore.',
+        ? 'Compartir buzón es evidencia fuerte por sí sola: parte en confianza alta, y delata incluso a quien entra desde un dispositivo distinto en cada cuenta.'
+        : 'Compartir dispositivo no prueba que sean la misma persona (una familia, una oficina o un cibercafé comparten computador): es una coincidencia a verificar, por eso parte en "posible" salvo que otra cosa lo corrobore. El nombre ya no cuenta: dos personas distintas pueden llamarse igual.',
     ],
     a.corroboradores
   );
@@ -392,7 +407,9 @@ function razonesAutocompra(f) {
       `Total: ${formatoQ(f.total)} (de ${formatoFechaHora(f.primera)} a ${formatoFechaHora(f.ultima)})`,
       f.mismaCuenta
         ? 'Hoy el sistema ya no permite comprar los propios productos: este pedido es de antes de esa regla. Puede haber sido el vendedor probando su flujo de compra, por eso solo sube a confianza alta si otra señal lo corrobora.'
-        : 'Un comprador que le compra a un vendedor de su misma persona (mismo nombre o mismo buzón) no es una coincidencia habitual: parte en confianza alta.',
+        : f.mismoBuzon
+          ? 'Un comprador que le compra a un vendedor con su mismo buzón de correo no es una coincidencia habitual: parte en confianza alta.'
+          : 'Compartir dispositivo (o entrar desde un equipo parecido) no prueba por sí solo que sean la misma persona: parte en "posible" y sube con razones independientes — más de un dispositivo en común, la misma fecha de nacimiento, o que cualquiera de las dos cuentas aparezca en otra señal —. El nombre ya no cuenta: dos personas distintas pueden llamarse igual.',
     ],
     f.corroboradores
   );
@@ -533,10 +550,10 @@ function HallazgoResenas({ r }) {
 }
 
 // Qué vínculo(s) tiene CADA cuenta del grupo, como insignias de su ficha: en una
-// cadena, A solo comparte nombre, B nombre y buzón, C solo buzón.
+// cadena, A solo comparte dispositivo, B dispositivo y buzón, C solo buzón.
 function notasDeMiembro(a, id) {
   const notas = [];
-  if (a.vinculos.some((v) => v.tipo === 'nombre' && v.ids.includes(id))) notas.push('Mismo nombre');
+  if (a.vinculos.some((v) => v.tipo === 'dispositivo' && v.ids.includes(id))) notas.push('Mismo dispositivo');
   if (a.vinculos.some((v) => v.tipo === 'correo' && v.ids.includes(id))) notas.push('Mismo buzón');
   return notas;
 }
@@ -765,7 +782,7 @@ export function AdminFraudePage() {
 
           <Seccion
             titulo="Autocompra"
-            descripcion="Una cuenta que le compra a sí misma, o a otra cuenta de la misma persona (mismo nombre o mismo buzón de correo): la forma más directa de mover dinero por el comercio. Hoy el sistema ya impide comprar los propios productos; acá aparecen los pedidos de antes de esa regla y las compras entre cuentas distintas."
+            descripcion="Una cuenta que le compra a sí misma, o a otra cuenta de la misma persona (mismo buzón de correo, mismo dispositivo o un equipo parecido; el nombre ya no cuenta): la forma más directa de mover dinero por el comercio. Hoy el sistema ya impide comprar los propios productos; acá aparecen los pedidos de antes de esa regla y las compras entre cuentas distintas."
             hallazgos={datos.autocompra}
             renderizar={(f) => <HallazgoAutocompra key={`${f.comprador.id}-${f.vendedor.id}`} f={f} />}
           />
@@ -777,7 +794,7 @@ export function AdminFraudePage() {
           />
           <Seccion
             titulo="Cuentas de una misma persona"
-            descripcion="Varias cuentas que se llaman exactamente igual (ignorando mayúsculas y tildes) o que usan el mismo buzón de correo (ignorando alias «+» y puntos de Gmail), todas comprando por separado. Compartir buzón pesa más que compartir nombre."
+            descripcion="Varias cuentas que entraron desde el mismo dispositivo (el identificador que el navegador manda al iniciar sesión) o que usan el mismo buzón de correo (ignorando alias «+» y puntos de Gmail), todas comprando por separado. Compartir buzón pesa más que compartir dispositivo; llamarse igual ya no cuenta, porque dos personas distintas pueden hacerlo."
             hallazgos={datos.cuentasRelacionadas}
             renderizar={(a) => <HallazgoPersona key={a.clave} a={a} />}
           />

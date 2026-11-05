@@ -30,6 +30,7 @@ flowchart LR
         M_compra[compra / compra_detalle / pago]
         M_outbox[venta_outbox]
         M_carrito["carrito durable, único por usuario/producto"]
+        M_dispositivo["dispositivo_usuario (hashes: desde dónde entra cada cuenta)"]
     end
 
     subgraph Mongo["MongoDB (documental)"]
@@ -56,7 +57,8 @@ flowchart LR
     subgraph Neo4j["Neo4j (grafo)"]
         N_usuario[Usuario]
         N_producto[Producto]
-        N_nombre[Nombre]
+        N_dispositivo["Dispositivo (SHA-256 del identificador del navegador)"]
+        N_perfil["Perfil (SHA-256 de rasgos del equipo)"]
         N_correo["Correo (SHA-256 del buzón)"]
         N_articulo["Articulo (clave canónica de la descripción)"]
     end
@@ -100,7 +102,8 @@ flowchart LR
 
     M_compra -- "MERGE, mejor esfuerzo, tras checkout" --> N_usuario
     M_compra -- "MERGE COMPRÓ (detalle_id, compra_id, monto, categoría), mejor esfuerzo" --> N_producto
-    M_usuarios -- "SE_LLAMA: nombre completo normalizado" --> N_nombre
+    M_dispositivo -- "USO_DISPOSITIVO y TIENE_PERFIL: solo hashes; mejor esfuerzo, al iniciar sesión o registrarse" --> N_dispositivo
+    N_dispositivo -- "TIENE_PERFIL" --> N_perfil
     M_usuarios -- "USA_CORREO: solo el hash del buzón normalizado" --> N_correo
     MG_producto -- "VENDE: vendedor_id/vendedor_nombre del producto; mejor esfuerzo, al comprar/reseñar y al publicar o editar" --> N_producto
     MG_producto -- "ES_ARTICULO: misma clave canónica de descripción = mismo artículo" --> N_articulo
@@ -109,7 +112,8 @@ flowchart LR
     M_compra -. "constancia del compromiso de no reventa, en vivo" .-> API2
     MG_producto -. "reseñó, mejor esfuerzo, tras crear la reseña" .-> N_usuario
     N_usuario -- "reseñas coordinadas, gasto anómalo, categoría inusual, ráfaga de gasto" --> API2
-    N_nombre -- "cuentas de una misma persona (mismo nombre)" --> API2
+    N_dispositivo -- "cuentas de una misma persona (mismo dispositivo)" --> API2
+    N_perfil -- "autocompra entre equipos parecidos (pista débil)" --> API2
     N_correo -- "cuentas de una misma persona (mismo buzón)" --> API2
     N_producto -- "autocompra: comprador y vendedor, misma cuenta o misma persona" --> API2
     M_usuarios -. "ficha del administrador: correo legible, resuelto en vivo" .-> API2
@@ -410,24 +414,26 @@ La familia de grafos del PRD, incorporada además de Cassandra, no en su lugar �
 | `Usuario` | `id_usuario` | Un solo label, `rol` como propiedad — no `Comprador`/`Vendedor` separados. Un vendedor que nunca compró también existe (por `VENDE`), con `rol` sin setear |
 | `Producto` | `producto_id` | Incluye `subcategoria` y `categoria` (ids de Mongo, no los nombres). Desde §19 entra al grafo **al publicarse**, no solo al comprarse. Su estado, fecha de publicación y atributos NO se copian: se leen en vivo de Mongo |
 | `Articulo` | **`clave`** (clave canónica de la descripción) | Palabras significativas de la descripción, sin importar mayúsculas, tildes, puntuación, orden ni artículos/preposiciones; el modelo y las medidas sí cuentan. Coincidencia de título, no prueba de que sea la misma pieza |
-| `Nombre` | **`clave`** (nombre completo normalizado) | Ver por qué abajo |
+| `Dispositivo` | **`hash`** (SHA-256 del identificador aleatorio que genera el navegador) + `etiqueta` («Chrome · Windows») | §22: reemplaza al nombre como vínculo entre cuentas. Nunca el identificador en claro. Restricción de unicidad: dos inicios simultáneos no duplican el nodo |
+| `Perfil` | **`hash`** (SHA-256 de rasgos gruesos del equipo + familia del navegador) | §22: «equipo parecido» aunque el identificador haya cambiado; pista débil, solo cuenta en la autocompra |
 | `Correo` | **`hash`** (SHA-256 del buzón normalizado) | Nunca el correo en claro: seudonimización, no cifrado. Ver por qué abajo |
 | `COMPRÓ` | `detalle_id` (= `compra_detalle.id`) como parte de la clave del `MERGE` | Sin esto, compras repetidas del mismo producto colapsarían en una sola arista. Lleva `compra_id` (el gasto se mide por pedido), `monto`, `fecha` y la `categoria` de esa compra |
 | `RESEÑÓ` | Extremos del `MERGE` alcanzan | El índice único de `Resena.js` ya garantiza una sola reseña por (producto, usuario) |
-| `SE_LLAMA` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta lleva este nombre |
+| `USO_DISPOSITIVO` | Extremos del `MERGE` alcanzan | Esta cuenta entró desde este dispositivo; lleva `primera_vez`, `ultima_vez` e `inicios`. La fuente durable es la tabla MySQL `dispositivo_usuario` |
+| `TIENE_PERFIL` | Extremos del `MERGE` alcanzan | Este dispositivo se presentó con este perfil de equipo |
 | `USA_CORREO` | Extremos del `MERGE` alcanzan | Existencia simple: esta cuenta usa este buzón. Se registra para el comprador y para el vendedor del producto |
 | `VENDE` | Extremos del `MERGE` alcanzan | Quién vende el producto, tomado de `vendedor_id` en Mongo |
 | `ES_ARTICULO` | Extremos del `MERGE` alcanzan | Un producto pertenece a UN solo artículo: al editar su descripción se desenlaza del anterior (y el artículo que se queda sin productos se borra) |
 
-**Por qué la identidad entre cuentas son el nombre y el buzón normalizados:** una clave que por construcción nunca puede repetirse entre cuentas jamás encontraría nada — le pasó a `id_direccion` (cada fila pertenece a un solo usuario por FK) y le pasaría al texto exacto de `usuarios.correo` (único). Por eso se comparan dos cosas que sí pueden repetirse: el **nombre completo** (se normaliza solo el formato — mayúsculas, tildes de vocales, espacios; la "ñ" y los segundos nombres distinguen — y se compara exacto, nunca aproximado) y el **buzón** (se descartan el alias `+etiqueta` y, solo en Gmail, los puntos: `ana+2@x.com` y `ana@x.com` llegan a la misma bandeja). Como dos personas distintas pueden llamarse igual, el nombre solo es una coincidencia débil — sube a confianza alta con una corroboración (misma fecha de nacimiento, autocompra, etc.); compartir buzón, en cambio, es deliberado y ya es evidencia fuerte por sí solo.
+**(Desde §22, el vínculo por nombre se reemplazó por el dispositivo: dos personas pueden llamarse igual. Lo que sigue explica por qué una clave que nunca se repite no sirve, y vale igual para el buzón y el dispositivo.)** **Por qué la identidad entre cuentas son el nombre y el buzón normalizados:** una clave que por construcción nunca puede repetirse entre cuentas jamás encontraría nada — le pasó a `id_direccion` (cada fila pertenece a un solo usuario por FK) y le pasaría al texto exacto de `usuarios.correo` (único). Por eso se comparan dos cosas que sí pueden repetirse: el **nombre completo** (se normaliza solo el formato — mayúsculas, tildes de vocales, espacios; la "ñ" y los segundos nombres distinguen — y se compara exacto, nunca aproximado) y el **buzón** (se descartan el alias `+etiqueta` y, solo en Gmail, los puntos: `ana+2@x.com` y `ana@x.com` llegan a la misma bandeja). Como dos personas distintas pueden llamarse igual, el nombre solo es una coincidencia débil — sube a confianza alta con una corroboración (misma fecha de nacimiento, autocompra, etc.); compartir buzón, en cambio, es deliberado y ya es evidencia fuerte por sí solo.
 
 **Siete señales**, ninguna una acusación por sí sola:
 - **Reseñas coordinadas:** cuentas distintas, mismos productos (≥3 por defecto), calificación alta, ventana de tiempo corta (1h por defecto). Ya no busca "reseñó sin comprar" — imposible desde que `resenaService.crear()` exige una compra real (ver ESTADO-PROYECTO.md, corrección del 2026-09-08).
 - **Gasto anómalo:** un pedido ≥3× el promedio previo de esa misma cuenta y mayor que su máximo, con ≥5 pedidos previos y ≥Q500.
 - **Categoría inusual:** la primera compra de una cuenta en una categoría, tras ≥5 pedidos y ≥30 días de historial.
-- **Cuentas de una misma persona:** ≥2 cuentas que se llaman igual **o** usan el mismo buzón, comprando por separado; los vínculos se unen de forma transitiva (A y B se llaman igual, B y C comparten buzón → una persona con tres cuentas). Buzón compartido: confianza alta; solo el nombre: posible hasta que algo lo corrobore.
+- **Cuentas de una misma persona:** ≥2 cuentas que entraron desde el mismo **dispositivo** **o** usan el mismo buzón, comprando por separado; los vínculos se unen de forma transitiva (A y B comparten dispositivo, B y C comparten buzón → una persona con tres cuentas). Buzón compartido: confianza alta; solo el dispositivo: posible hasta que algo lo corrobore. **El nombre ya no vincula** (§22): dos personas pueden llamarse igual.
 - **Ráfaga de gasto:** ≥5 pedidos (y ≥2× su día más activo previo) o mucho más gasto que su día habitual (con ≥2 pedidos), en un solo día de Guatemala.
-- **Autocompra:** `(comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor)` donde comprador y vendedor son la misma cuenta o dos cuentas de una misma persona (mismo nombre o mismo buzón). Desde §18 el sistema **impide** la de la misma cuenta (`verificarNoEsPropio`, ver §5): la señal queda para lo anterior a la regla y para las cuentas distintas.
+- **Autocompra:** `(comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor)` donde comprador y vendedor son la misma cuenta o dos cuentas de una misma persona (mismo buzón, mismo dispositivo o un equipo parecido; el nombre ya no cuenta). Desde §18 el sistema **impide** la de la misma cuenta (`verificarNoEsPropio`, ver §5): la señal queda para lo anterior a la regla y para las cuentas distintas.
 - **Reventa de lo comprado:** `(vendedor)-[:COMPRÓ]->(original)<-[:VENDE]-(otro vendedor)` y `(original)-[:ES_ARTICULO]->(artículo)<-[:ES_ARTICULO]-(publicación)<-[:VENDE]-(vendedor)`: un vendedor que le compró un producto a otro y hoy tiene publicado y **activo** uno equivalente. Es lo que incumple el compromiso de no reventa que estas cuentas aceptan al comprar (la constancia viaja en el pedido, `compra.no_reventa_aceptada_en`, y el hallazgo la cita). Parte en posible; sube a alta si publicó después de comprar, si los atributos coinciden, si repite con otros productos o si la cuenta aparece en otra señal.
 
 **Sincronización:** mejor esfuerzo (no outbox durable como Cassandra) — enganchada en `checkout()`, `checkoutOferta()`, `resenaService.crear()` y, desde §19, en el alta y la edición de producto (`productoService`), con su propio `try/catch` independiente de los reenvíos a Mongo/Redis/outbox de ventas que ya corren en el mismo lugar. Una señal de fraude tarde de más no tiene el mismo costo que una venta perdida (ver [ENTREGA-3-CONSISTENCIA.md §3](ENTREGA-3-CONSISTENCIA.md)) — si el reenvío falla, el próximo `fraude:backfill` lo recupera, reutilizando las mismas funciones que el camino en vivo.

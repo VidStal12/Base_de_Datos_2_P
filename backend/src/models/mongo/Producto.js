@@ -71,6 +71,12 @@ const productoSchema = new Schema(
     // catálogo. Puede desactualizarse si ese paso falla; se recalcula desde
     // MySQL vía POST /api/admin/recalcular-ventas (ver catalogoSyncService.js).
     total_vendido: { type: Number, default: 0 },
+    // Veces que alguien abrió la ficha del producto (visitantes distintos, una vez por ventana; no
+    // cuenta al dueño ni a los administradores). Otra caché de lectura como total_vendido, pero sin
+    // fuente en MySQL: la suma popularidadService.js a ráfagas (cada 60 s) con $inc, y de ahí pasa al
+    // índice de búsqueda, donde pesa en el ranking (ver rankingBusqueda.js). No es una edición: no sube
+    // `version` ni escribe en el historial.
+    clics: { type: Number, default: 0 },
     version: { type: Number, default: 1 },
   },
   { timestamps: { createdAt: false, updatedAt: 'actualizado_en' } }

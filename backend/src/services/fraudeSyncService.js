@@ -17,21 +17,24 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 // resenaService.js) y para el backfill de datos históricos — una sola
 // implementación, no dos que se puedan desalinear.
 //
-// Modelo (ver PLAN §17-§19): el grafo guarda cuánto gasta una cuenta (monto + id
-// de la compra), en qué categoría compra, cómo se llama y qué buzón de correo
-// usa (para encontrar cuentas de una misma persona), quién vende cada producto
-// (para encontrar quien se compra a sí mismo) y qué productos son el MISMO
+// Modelo (ver PLAN §17-§19 y §22): el grafo guarda cuánto gasta una cuenta (monto + id
+// de la compra), en qué categoría compra, qué buzón de correo usa y desde qué
+// dispositivo entra (para encontrar cuentas de una misma persona), quién vende cada
+// producto (para encontrar quien se compra a sí mismo) y qué productos son el MISMO
 // artículo (para encontrar a un vendedor que revende lo que le compró a otro).
+//
+// El NOMBRE ya no es un vínculo entre cuentas (§22): dos personas distintas pueden
+// llamarse igual, y el nombre solo bastaba para marcar con confianza «alta» una compra
+// entre homónimos. Lo reemplaza el dispositivo (registrarDispositivo, más abajo). El
+// nombre sigue en el grafo únicamente como dato para mostrar (`Usuario.nombre`).
 
-// `usuarios.correo` es UNIQUE en MySQL y los nombres no: dos cuentas de una
-// misma persona suelen repetir "nombres + apellidos" tal cual. Se compara
-// EXACTO después de normalizar el formato — mayúsculas, tildes de las vocales,
-// puntuación y espacios repetidos — nunca de forma aproximada: una coincidencia
-// aproximada cambiaría falsos negativos de hoy por falsos positivos nuevos
-// (mismo criterio que tenía el normalizador de direcciones). La "ñ" se deja
-// intacta a propósito: "Peña" y "Pena" son apellidos distintos, no una variante
-// de escritura. El nombre ya vive en el grafo en claro (`Usuario.nombre`), así
-// que esta clave no agrega ningún dato personal nuevo.
+// Normaliza el FORMATO de un texto — mayúsculas, tildes de las vocales, puntuación y
+// espacios repetidos — para compararlo EXACTO, nunca de forma aproximada: una
+// coincidencia aproximada cambiaría falsos negativos de hoy por falsos positivos
+// nuevos. La "ñ" se deja intacta a propósito: "Peña" y "Pena" son palabras distintas,
+// no una variante de escritura. Hoy lo usan la clave canónica de un artículo
+// (claveArticulo, más abajo) y la comparación de atributos de la señal de reventa; ya
+// no compara nombres de personas.
 const MAPA_ACENTOS = { á: 'a', é: 'e', í: 'i', ó: 'o', ú: 'u', ü: 'u' };
 
 function normalizarNombre(nombreCompleto) {
@@ -131,8 +134,6 @@ async function resolverCategoriaId(subcategoriaId) {
 const MERGE_USUARIO = `
 MERGE (u:Usuario {id_usuario: $usuarioId})
   SET u.nombre = $usuarioNombre, u.rol = $usuarioRol
-MERGE (n:Nombre {clave: $nombreClave})
-MERGE (u)-[:SE_LLAMA]->(n)
 FOREACH (ignorar IN CASE WHEN $correoHash IS NULL THEN [] ELSE [1] END |
   MERGE (e:Correo {hash: $correoHash})
   MERGE (u)-[:USA_CORREO]->(e))
@@ -156,8 +157,6 @@ MERGE (p:Producto {producto_id: $productoId})
   SET p.nombre = $productoNombre, p.descripcion = $productoDescripcion, p.subcategoria = $subcategoriaId, p.categoria = $categoriaId
 MERGE (v:Usuario {id_usuario: $vendedorId})
   SET v.nombre = coalesce(v.nombre, $vendedorNombre)
-MERGE (nv:Nombre {clave: $vendedorNombreClave})
-MERGE (v)-[:SE_LLAMA]->(nv)
 FOREACH (ignorar IN CASE WHEN $vendedorCorreoHash IS NULL THEN [] ELSE [1] END |
   MERGE (ev:Correo {hash: $vendedorCorreoHash})
   MERGE (v)-[:USA_CORREO]->(ev))
@@ -218,11 +217,9 @@ async function registrarCompra({
     usuarioId,
     usuarioNombre,
     usuarioRol,
-    nombreClave: normalizarNombre(usuarioNombre),
     correoHash,
     vendedorId,
     vendedorNombre,
-    vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
     productoNombre,
@@ -268,11 +265,9 @@ async function registrarResena({
     usuarioId,
     usuarioNombre,
     usuarioRol,
-    nombreClave: normalizarNombre(usuarioNombre),
     correoHash,
     vendedorId,
     vendedorNombre,
-    vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
     productoNombre,
@@ -300,7 +295,6 @@ async function registrarProducto({ productoId, productoNombre, productoDescripci
   await neo4j.escribir(MERGE_PRODUCTO, {
     vendedorId,
     vendedorNombre,
-    vendedorNombreClave: normalizarNombre(vendedorNombre),
     vendedorCorreoHash,
     productoId,
     productoNombre,
@@ -311,4 +305,50 @@ async function registrarProducto({ productoId, productoNombre, productoDescripci
   });
 }
 
-module.exports = { registrarCompra, registrarResena, registrarProducto, normalizarNombre, normalizarCorreo, hashCorreo, claveArticulo };
+// Un dispositivo desde el que una cuenta entró (§22): reemplaza al nombre como vínculo entre cuentas. Los
+// nodos son COMPARTIDOS, igual que `Correo` lo era para el buzón: dos cuentas que entraron desde el mismo
+// dispositivo convergen en el mismo `Dispositivo`, y dos dispositivos con el mismo perfil de equipo en el mismo
+// `Perfil` —
+//   (:Usuario)-[:USO_DISPOSITIVO {primera_vez, ultima_vez, inicios}]->(:Dispositivo {hash, etiqueta})
+//   (:Dispositivo)-[:TIENE_PERFIL]->(:Perfil {hash})
+// Solo viajan hashes (ver dispositivoService.js): el identificador que genera el navegador no entra al grafo.
+// `Usuario` se crea aquí si todavía no existe (alguien que se registra y entra pero aún no compró ni vendió).
+// `coalesce`: si ya se conocía el nombre o el rol de la cuenta (lo escriben las compras), no se pisa con null.
+const MERGE_DISPOSITIVO = `
+MERGE (u:Usuario {id_usuario: $usuarioId})
+  SET u.nombre = coalesce($usuarioNombre, u.nombre), u.rol = coalesce($usuarioRol, u.rol)
+FOREACH (ignorar IN CASE WHEN $correoHash IS NULL THEN [] ELSE [1] END |
+  MERGE (e:Correo {hash: $correoHash})
+  MERGE (u)-[:USA_CORREO]->(e))
+MERGE (d:Dispositivo {hash: $dispositivoHash})
+  SET d.etiqueta = $etiqueta
+MERGE (u)-[r:USO_DISPOSITIVO]->(d)
+  ON CREATE SET r.primera_vez = datetime($primeraVez)
+  SET r.ultima_vez = datetime($ultimaVez), r.inicios = $inicios
+FOREACH (ignorar IN CASE WHEN $perfilHash IS NULL THEN [] ELSE [1] END |
+  MERGE (p:Perfil {hash: $perfilHash})
+  MERGE (d)-[:TIENE_PERFIL]->(p))
+`;
+
+// Dos inicios de sesión simultáneos desde el mismo dispositivo ejecutan este MERGE a la vez; sin una restricción
+// de unicidad, Neo4j puede crear DOS nodos Dispositivo con el mismo hash y partir en dos al grupo. La
+// restricción (idempotente: IF NOT EXISTS) lo impide y además crea el índice por el que se busca el hash.
+async function registrarDispositivo({ usuarioId, usuarioNombre = null, usuarioRol = null, dispositivoHash, perfilHash = null, etiqueta = null, primeraVez, ultimaVez, inicios }) {
+  await neo4j.asegurarEsquema();
+  // El buzón también, como en toda escritura que crea un Usuario: todo Usuario del grafo lo tiene.
+  const correoHash = await hashCorreoDe(usuarioId);
+  await neo4j.escribir(MERGE_DISPOSITIVO, {
+    usuarioId,
+    usuarioNombre,
+    usuarioRol,
+    correoHash,
+    dispositivoHash,
+    etiqueta,
+    perfilHash,
+    primeraVez: new Date(primeraVez).toISOString(),
+    ultimaVez: new Date(ultimaVez).toISOString(),
+    inicios: Number(inicios),
+  });
+}
+
+module.exports = { registrarCompra, registrarResena, registrarProducto, registrarDispositivo, normalizarNombre, normalizarCorreo, hashCorreo, claveArticulo };

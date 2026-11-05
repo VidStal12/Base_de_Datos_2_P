@@ -29,6 +29,10 @@ function aDocumento(producto, embedding) {
     cantidad: producto.inventario?.cantidad ?? 0,
     estado: producto.estado,
     total_vendido: producto.total_vendido ?? 0,
+    // Lo que pesa en el ranking además de las ventas (ver rankingBusqueda.js). Siempre presentes, aunque
+    // sea con 0/null, para que el conjunto de campos no dependa de los datos (prueba de alineación).
+    clics: producto.clics ?? 0,
+    publicado_en: producto.publicado_en ?? null,
     // input: el nombre tal cual — es lo que el usuario reconoce y lo
     // que termina en la caja de búsqueda al elegir una sugerencia (ver
     // busquedaService.sugerir()). contexts.estado: para que sugerir() pueda

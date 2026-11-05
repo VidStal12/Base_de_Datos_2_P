@@ -12,8 +12,8 @@ import { Link, useLocation } from 'react-router-dom';
 // parámetros de las señales de fraude: decirle a alguien cuánto puede gastar sin
 // que lo revisen sería enseñarle a esquivarlo; por eso tampoco se escriben acá las cifras
 // de los topes (monto, pedidos por hora), que además se ajustan sin tocar este texto.
-const VERSION = '1.2';
-const ACTUALIZADO = '4 de octubre de 2026';
+const VERSION = '1.3';
+const ACTUALIZADO = '5 de noviembre de 2026';
 
 // Enlace a otra sección de esta misma página. Es un <a> nativo a propósito: el
 // navegador vuelve a bajar a la sección en cada clic, también si ya estás ahí.
@@ -181,9 +181,18 @@ const SECCIONES = [
           vigilancia.
         </p>
         <p>
-          Esas herramientas trabajan con las relaciones entre cuentas y productos (quién compró, reseñó o vende qué), el nombre normalizado y una huella irreversible
-          del correo, no el correo en sí; no incluyen datos de pago ni direcciones. Al revisar un caso, un administrador puede ver los datos básicos de las cuentas
-          involucradas: nombre, correo, rol, antigüedad, compras y reseñas.
+          Esas herramientas trabajan con las relaciones entre cuentas y productos (quién compró, reseñó o vende qué), una huella irreversible del correo, no el
+          correo en sí, y los dispositivos desde los que se entra (ver más abajo); no incluyen datos de pago ni direcciones. Llamarte igual que otra persona no es
+          motivo de revisión: el nombre no se usa para relacionar cuentas. Al revisar un caso, un administrador puede ver los datos básicos de las cuentas
+          involucradas: nombre, correo, rol, antigüedad, compras, reseñas y los dispositivos desde los que entraron.
+        </p>
+        <p>
+          <strong>Dispositivos.</strong> Al registrarte o iniciar sesión, tu navegador manda un identificador aleatorio que él mismo generó y guardó (no es tu IP ni
+          un dato de tu equipo que te identifique fuera de TiendaYa) y unos rasgos generales de tu equipo: sistema, idioma, zona horaria y tamaño de pantalla. De eso
+          solo guardamos una <strong>huella irreversible</strong>, nunca el identificador ni los rasgos tal cual, más una etiqueta como «Chrome · Windows» para que
+          quien revisa un caso reconozca el dispositivo. Sirve para una sola cosa: ver si varias cuentas entran desde el mismo lugar. Compartir un computador —en una
+          familia, una oficina o un cibercafé— no es una infracción, y por sí solo no lleva a una suspensión: es un motivo para mirar el caso con más atención. Si borrás los
+          datos del sitio, tu navegador genera un identificador nuevo.
         </p>
       </>
     ),

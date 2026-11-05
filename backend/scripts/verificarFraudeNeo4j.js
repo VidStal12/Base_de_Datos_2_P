@@ -14,13 +14,15 @@ const resenaService = require('../src/services/resenaService');
 const productoService = require('../src/services/productoService');
 const fraudeService = require('../src/services/fraudeService');
 const fraudeSyncService = require('../src/services/fraudeSyncService');
+const dispositivoService = require('../src/services/dispositivoService');
+const crypto = require('node:crypto');
 const { afirmar, prepararCuenta, asegurarProducto, conProductoActivo } = require('./lib/datosPrueba');
 
 // Evidencia de funcionamiento de las siete señales de fraude (Entrega 2, ver
 // IA/PLAN-NEO4J-DETECCION-FRAUDE.md §17-§19): A reseñas coordinadas, B gasto
-// anómalo, C categoría inusual, D cuentas de una misma persona (mismo nombre o
-// mismo buzón de correo), E ráfaga de gasto, F autocompra, G reventa de lo
-// comprado. Con el catálogo y las cuentas de prueba reales casi ninguna consulta
+// anómalo, C categoría inusual, D cuentas de una misma persona (mismo dispositivo
+// o mismo buzón de correo; el nombre ya no vincula, §22), E ráfaga de gasto, F
+// autocompra, G reventa de lo comprado. Con el catálogo y las cuentas de prueba reales casi ninguna consulta
 // encuentra nada (ver plan §8): siembra los patrones, documentados como
 // sintéticos, corriendo checkout()/resenaService.crear()/productoService.crear()
 // REALES (no MERGE directo a Neo4j) para probar el camino en vivo de punta a
@@ -181,15 +183,37 @@ async function conEstado(productoId, estado, accion) {
   }
 }
 
+// ---------- Dispositivos simulados (§22) ----------
+
+// Un identificador de dispositivo ESTABLE por etiqueta (el navegador real genera un UUID aleatorio): el mismo valor en
+// cada corrida, así volver a ejecutar el script no crea dispositivos nuevos. 32 caracteres hexadecimales: lo que acepta
+// dispositivoService.ID_VALIDO.
+const idDeDispositivo = (etiqueta) => crypto.createHash('sha256').update(`prueba-fraude:${etiqueta}`).digest('hex').slice(0, 32);
+const AGENTE_DE_PRUEBA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
+// Simula que una cuenta entra desde un dispositivo: corre el MISMO `registrarInicio` que authService.login (fila en
+// MySQL + MERGE en Neo4j), con las mismas piezas que mandaría el navegador (identificador, rasgos y User-Agent). Aquí sí
+// se espera al grafo (esperarGrafo) porque enseguida se consulta; el inicio de sesión real no espera.
+async function entrarDesde(cuenta, etiqueta, { perfil = null } = {}) {
+  return dispositivoService.registrarInicio({
+    usuarioId: cuenta.usuario.id_usuario,
+    usuarioNombre: `${cuenta.usuario.nombres} ${cuenta.usuario.apellidos}`,
+    usuarioRol: 'comprador',
+    dispositivo: { dispositivoId: idDeDispositivo(etiqueta), perfil, userAgent: AGENTE_DE_PRUEBA },
+    esperarGrafo: true,
+  });
+}
+
 async function main() {
-  // --- Normalización del nombre (función pura, no depende de ninguna base) ---
+  // --- Normalización de texto (función pura, no depende de ninguna base). Desde §22 ya no compara nombres de
+  // personas (el nombre no vincula cuentas): la usan la clave canónica del artículo y los atributos de la reventa. ---
   const { normalizarNombre } = fraudeSyncService;
   afirmar(normalizarNombre('José  Pérez') === 'jose perez', 'tildes de vocales y espacios repetidos deben colapsar');
   afirmar(normalizarNombre('JOSE PEREZ') === normalizarNombre('José Pérez'), 'mayúsculas y tildes no deben distinguir un nombre');
   afirmar(normalizarNombre('Ana-María  Gómez, ') === 'ana maria gomez', 'guiones, comas y espacios sobrantes deben colapsar');
   afirmar(normalizarNombre('Peña') !== normalizarNombre('Pena'), 'la ñ NO se colapsa: "Peña" y "Pena" son apellidos distintos');
   afirmar(normalizarNombre('Ana Gomez') !== normalizarNombre('Ana María Gomez'), 'la comparación es exacta, no aproximada: un segundo nombre distingue');
-  console.log('OK: normalización de nombres (tildes, mayúsculas, espacios; la ñ y los segundos nombres distinguen).');
+  console.log('OK: normalización de texto (tildes, mayúsculas, espacios; la ñ y los segundos nombres distinguen).');
 
   // --- Normalización del buzón de correo (también pura) ---
   const { normalizarCorreo, hashCorreo } = fraudeSyncService;
@@ -271,19 +295,25 @@ async function main() {
     console.log(`Señal C: ${categoria.usuario.correo} ya estaba sembrada de una corrida anterior.`);
   }
 
-  // --- Señal D: cuentas de una misma persona, comprando por separado. Dos
-  // vínculos posibles — el mismo NOMBRE y el mismo BUZÓN de correo (el correo
-  // exacto es único, pero `ana+2@x.com` y `ana@x.com` llegan a la misma
-  // bandeja) — y sus combinaciones:
-  //   - gemelos: mismo nombre y misma fecha de nacimiento → "alta".
-  //   - homónimos: mismo nombre, fechas distintas → "posible" (pueden ser dos
-  //     personas que se llaman igual).
-  //   - anillo: nombres DISTINTOS, mismo buzón → "alta" por sí solo.
-  //   - dual: mismo nombre Y mismo buzón, nada más que lo respalde → "alta".
-  //   - cadena: A y B se llaman igual, B y C comparten buzón → una sola
-  //     persona con tres cuentas (unión transitiva). ---
+  // --- Señales D y F, por DISPOSITIVO (§22). El NOMBRE ya no vincula cuentas: dos personas pueden llamarse igual.
+  // Lo que une a las cuentas de una misma persona es el DISPOSITIVO (el identificador aleatorio que el navegador manda
+  // al entrar; acá se simula con `entrarDesde`, que corre el mismo `registrarInicio` que authService.login) y el BUZÓN
+  // de correo (el correo exacto es único, pero `ana+2@x.com` y `ana@x.com` llegan a la misma bandeja).
+  //
+  // Señal D (cuentas que compran por su lado):
+  //   - gemelos: el mismo dispositivo y la misma fecha de nacimiento → "alta".
+  //   - compartido: el mismo dispositivo, fechas distintas, nada más → "posible" (una familia, una oficina).
+  //   - dos dispositivos: dos cuentas con DOS dispositivos en común (el teléfono y el computador) → "alta": es un hábito.
+  //   - homónimos: el mismo NOMBRE, dispositivos y fechas distintos → NO forman grupo (el control del cambio).
+  //   - anillo: nombres y dispositivos distintos, mismo buzón → "alta" por sí solo.
+  //   - dual: mismo dispositivo Y mismo buzón, nada más que lo respalde → "alta".
+  //   - cadena: A y B comparten dispositivo, B y C comparten buzón → una sola persona con tres cuentas.
   const gemeloA = await prepararCuenta('fraude.gemelo.a@example.com', 'Fraude Gemelo', 'tok_fraude_gemelo_a', { nacimiento: '1992-03-03' });
   const gemeloB = await prepararCuenta('fraude.gemelo.b@example.com', 'Fraude Gemelo', 'tok_fraude_gemelo_b', { nacimiento: '1992-03-03' });
+  const compartidoA = await prepararCuenta('fraude.compartido.a@example.com', 'Fraude CompartidoA', 'tok_fraude_compartido_a', { nacimiento: '1990-05-05' });
+  const compartidoB = await prepararCuenta('fraude.compartido.b@example.com', 'Fraude CompartidoB', 'tok_fraude_compartido_b', { nacimiento: '1991-06-06' });
+  const dosA = await prepararCuenta('fraude.dosdisp.a@example.com', 'Fraude DosDispA', 'tok_fraude_dosdisp_a', { nacimiento: '1989-07-07' });
+  const dosB = await prepararCuenta('fraude.dosdisp.b@example.com', 'Fraude DosDispB', 'tok_fraude_dosdisp_b', { nacimiento: '1993-08-08' });
   const homonimoA = await prepararCuenta('fraude.homonimo.a@example.com', 'Fraude Homonimo', 'tok_fraude_homonimo_a', { nacimiento: '1990-01-01' });
   const homonimoB = await prepararCuenta('fraude.homonimo.b@example.com', 'Fraude Homonimo', 'tok_fraude_homonimo_b', { nacimiento: '1991-02-02' });
   const anilloA = await prepararCuenta('fraude.anillo@example.com', 'Fraude AnilloA', 'tok_fraude_anillo_a');
@@ -297,6 +327,10 @@ async function main() {
   for (const [cuenta, producto] of [
     [gemeloA, ropa],
     [gemeloB, hogar],
+    [compartidoA, ropa],
+    [compartidoB, hogar],
+    [dosA, ropa],
+    [dosB, hogar],
     [homonimoA, ropa],
     [homonimoB, hogar],
     [anilloA, ropa],
@@ -312,12 +346,43 @@ async function main() {
       sembroGrupos = true;
     }
   }
-  console.log(`Señal D: gemelos, homónimos, anillo por buzón, pareja nombre+buzón y cadena de tres cuentas, cada una comprando por separado (${sembroGrupos ? 'sembrada ahora' : 'ya sembrada'}).`);
+  // Los dispositivos. Cada uno es un identificador estable (idempotente): re-correr el script no duplica nada.
+  await entrarDesde(gemeloA, 'gemelos');
+  await entrarDesde(gemeloB, 'gemelos');
+  await entrarDesde(compartidoA, 'compartido');
+  await entrarDesde(compartidoB, 'compartido');
+  for (const etiqueta of ['dos-1', 'dos-2']) {
+    await entrarDesde(dosA, etiqueta);
+    await entrarDesde(dosB, etiqueta);
+  }
+  await entrarDesde(homonimoA, 'homonimo-a');
+  await entrarDesde(homonimoB, 'homonimo-b');
+  await entrarDesde(anilloA, 'anillo-a');
+  await entrarDesde(anilloB, 'anillo-b');
+  await entrarDesde(dualA, 'dual');
+  await entrarDesde(dualB, 'dual');
+  await entrarDesde(cadenaA, 'cadena-ab');
+  await entrarDesde(cadenaB, 'cadena-ab');
+  await entrarDesde(cadenaB, 'cadena-b');
+  await entrarDesde(cadenaC, 'cadena-c');
+  await entrarDesde(test1, 'senal-a-1');
+  await entrarDesde(test2, 'senal-a-2');
+  console.log(`Señal D: gemelos, dispositivo compartido, dos dispositivos, homónimos (control), anillo por buzón, pareja dispositivo+buzón y cadena de tres cuentas, cada una comprando por separado (${sembroGrupos ? 'sembrada ahora' : 'ya sembrada'}).`);
 
-  // --- Señal F: (1) un vendedor de prueba y un comprador que se llaman igual
-  // — el comprador le compra al vendedor; (2) lo mismo con nombres DISTINTOS
-  // pero el mismo buzón; (3) un vendedor que se compró a sí mismo ANTES de la
-  // regla de §18 (checkout() ya no lo permite). ---
+  // Una carrera: dos inicios de sesión simultáneos desde el MISMO dispositivo nuevo ejecutan el MERGE a la vez. Sin la
+  // restricción de unicidad Neo4j puede crear dos nodos Dispositivo y partir el grupo en dos; se comprueba más abajo.
+  const carreraA = await prepararCuenta('fraude.carrera.a@example.com', 'Fraude CarreraA', 'tok_fraude_carrera_a');
+  const carreraB = await prepararCuenta('fraude.carrera.b@example.com', 'Fraude CarreraB', 'tok_fraude_carrera_b');
+  await Promise.all([carreraA, carreraB, carreraA, carreraB].map((cuenta) => entrarDesde(cuenta, 'carrera', { forzar: true })));
+
+  // --- Señal F: autocompra. El comprador le compra a un vendedor de prueba; lo que cambia es CÓMO se relacionan:
+  //   (1) mismo dispositivo → "posible" (y D "alta" por la autocompra: las dos cuentas compran);
+  //   (2) mismo buzón, dispositivos distintos → "alta";
+  //   (3) un vendedor que se compró a sí mismo ANTES de la regla de §18 (checkout() ya no lo permite);
+  //   (4) HOMÓNIMOS que se compran (mismo nombre, dispositivos y fechas distintos) → NO es una señal (el control);
+  //   (5) equipo parecido (mismo perfil, otro identificador) → "posible", más débil que el dispositivo;
+  //   (6) un perfil compartido por más de 4 cuentas es una configuración corriente → se ignora;
+  //   (7) dos dispositivos en común → "alta". ---
   const vendedorA = await prepararCuenta('fraude.autocompra.vendedor@example.com', 'Fraude Autocompra', 'tok_fraude_autocompra_v', { rol: 'vendedor', nacimiento: '1988-05-05' });
   const compradorA = await prepararCuenta('fraude.autocompra.comprador@example.com', 'Fraude Autocompra', 'tok_fraude_autocompra_c', { nacimiento: '1993-07-07' });
   const productoA = await asegurarProducto(vendedorA.usuario, '[PRUEBA fraude] Producto del vendedor Fraude Autocompra', 150);
@@ -326,6 +391,22 @@ async function main() {
   const productoM = await asegurarProducto(vendedorM.usuario, '[PRUEBA fraude] Producto del vendedor Fraude AutoBuzon', 90);
   const vendedorB = await prepararCuenta('fraude.autoventa@example.com', 'Fraude Autoventa', 'tok_fraude_autoventa', { rol: 'vendedor' });
   const productoB = await asegurarProducto(vendedorB.usuario, '[PRUEBA fraude] Producto del vendedor Fraude Autoventa', 120);
+  const definirPar = (sufijo, nombre, titulo, precio, nacV, nacC) => ({ sufijo, nombre, titulo, precio, nacV, nacC });
+  const pares = {};
+  for (const p of [
+    definirPar('homcompra', 'Fraude HomCompra', '[PRUEBA fraude] Producto del vendedor Fraude HomCompra', 80, '1983-03-03', '1996-06-06'),
+    definirPar('perfil', 'Fraude Perfil', '[PRUEBA fraude] Producto del vendedor Fraude Perfil', 85, '1982-02-02', '1997-07-07'),
+    definirPar('comun', 'Fraude PerfilComun', '[PRUEBA fraude] Producto del vendedor Fraude PerfilComun', 70, '1981-01-01', '1998-08-08'),
+    definirPar('dosf', 'Fraude DosDispF', '[PRUEBA fraude] Producto del vendedor Fraude DosDispF', 95, '1979-09-09', '1999-09-09'),
+  ]) {
+    const vendedor = await prepararCuenta(`fraude.${p.sufijo}.vendedor@example.com`, `${p.nombre}`, `tok_fraude_${p.sufijo}_v`, { rol: 'vendedor', nacimiento: p.nacV });
+    const comprador = await prepararCuenta(`fraude.${p.sufijo}.comprador@example.com`, p.sufijo === 'homcompra' ? p.nombre : `${p.nombre}C`, `tok_fraude_${p.sufijo}_c`, { nacimiento: p.nacC });
+    pares[p.sufijo] = { vendedor, comprador, producto: await asegurarProducto(vendedor.usuario, p.titulo, p.precio) };
+  }
+  // Tres cuentas de relleno (sin compras) con el mismo perfil que el par «comun»: con ellas son 5 cuentas con ese perfil.
+  const rellenos = [];
+  for (const n of [1, 2, 3]) rellenos.push(await prepararCuenta(`fraude.relleno.${n}@example.com`, `Fraude Relleno${n}`, `tok_fraude_relleno_${n}`));
+
   let sembroAutocompra = false;
   if ((await ordenesDe(compradorA.usuario.id_usuario)) === 0) {
     await conProductoActivo(productoA, () => comprar(compradorA, productoA));
@@ -343,6 +424,13 @@ async function main() {
     await conProductoActivo(productoM, () => comprar(compradorM, productoM));
     sembroAutocompra = true;
   }
+  // Los pares nuevos: el comprador compra, el vendedor solo vende (así el grupo D no se dispara y F sí o no según el vínculo).
+  for (const { comprador, producto } of Object.values(pares)) {
+    if ((await ordenesDe(comprador.usuario.id_usuario)) === 0) {
+      await conProductoActivo(producto, () => comprar(comprador, producto));
+      sembroAutocompra = true;
+    }
+  }
   // checkout() ya rechaza que una cuenta compre su propio producto (§18): se
   // comprueba el rechazo, y para tener una autocompra "de antes de la regla"
   // se siembra un pedido histórico directo en MySQL.
@@ -357,7 +445,25 @@ async function main() {
     await sembrarCompraHistorica(vendedorB, productoB);
     sembroAutocompra = true;
   }
-  console.log(`Señal F: comprador a vendedor con el mismo nombre, con el mismo buzón, y vendedor que se compró a sí mismo antes de la regla (${sembroAutocompra ? 'sembrada ahora' : 'ya sembrada'}).`);
+  // Los dispositivos de la señal F.
+  await entrarDesde(vendedorA, 'autocompra');
+  await entrarDesde(compradorA, 'autocompra');
+  await entrarDesde(vendedorM, 'autobuzon-v');
+  await entrarDesde(compradorM, 'autobuzon-c');
+  await entrarDesde(pares.homcompra.vendedor, 'homcompra-v');
+  await entrarDesde(pares.homcompra.comprador, 'homcompra-c');
+  const perfilParecido = 'win32|es-gt|america/guatemala|1366x768x24@1|4|0';
+  await entrarDesde(pares.perfil.vendedor, 'perfil-v', { perfil: perfilParecido });
+  await entrarDesde(pares.perfil.comprador, 'perfil-c', { perfil: perfilParecido });
+  const perfilCorriente = 'win32|es-gt|america/guatemala|1920x1080x24@1|8|0';
+  await entrarDesde(pares.comun.vendedor, 'comun-v', { perfil: perfilCorriente });
+  await entrarDesde(pares.comun.comprador, 'comun-c', { perfil: perfilCorriente });
+  for (const [i, cuenta] of rellenos.entries()) await entrarDesde(cuenta, `relleno-${i + 1}`, { perfil: perfilCorriente });
+  for (const etiqueta of ['dosf-1', 'dosf-2']) {
+    await entrarDesde(pares.dosf.vendedor, etiqueta);
+    await entrarDesde(pares.dosf.comprador, etiqueta);
+  }
+  console.log(`Señal F: mismo dispositivo, mismo buzón, autoventa anterior a la regla, homónimos que se compran (control), equipo parecido, perfil corriente y dos dispositivos en común (${sembroAutocompra ? 'sembrada ahora' : 'ya sembrada'}).`);
 
   // --- Señal E: (1) una cuenta nueva con 6 pedidos baratos en un mismo día
   // (volumen); (2) una cuenta con 4 días de compras chicas que un día hace 3
@@ -500,57 +606,85 @@ async function main() {
 
   // --- D ---
   const gemelos = grupoCon(gemeloA, gemeloB);
-  afirmar(gemelos, 'no se encontró el grupo de cuentas con el mismo nombre (Fraude Gemelo)');
-  afirmar(vinculos(gemelos) === 'nombre', `los gemelos solo comparten nombre (sus buzones son distintos), no "${vinculos(gemelos)}"`);
+  afirmar(gemelos, 'no se encontró el grupo de cuentas que entraron desde el mismo dispositivo (gemelos)');
+  afirmar(vinculos(gemelos) === 'dispositivo', `los gemelos solo comparten dispositivo (sus buzones son distintos), no "${vinculos(gemelos)}"`);
   afirmar(gemelos.mismaFechaNacimiento && gemelos.corroboradores.some((c) => c.tipo === 'fechaNacimiento'), 'la misma fecha de nacimiento debe corroborar al grupo');
-  afirmar(gemelos.nivelConfianza === 'alta', 'mismo nombre + misma fecha de nacimiento debe marcarse con confianza alta');
-  const homonimos = grupoCon(homonimoA, homonimoB);
-  afirmar(homonimos, 'no se encontró el grupo de cuentas con el mismo nombre (Fraude Homonimo)');
-  afirmar(vinculos(homonimos) === 'nombre', 'los homónimos solo comparten nombre');
-  afirmar(homonimos.nivelConfianza === 'posible' && homonimos.corroboradores.length === 0 && !homonimos.mismaFechaNacimiento, 'el nombre solo, con fechas de nacimiento distintas, debe quedar en "posible" sin corroboradores');
-  const conVendedor = grupoCon(vendedorA, compradorA);
-  afirmar(conVendedor && conVendedor.corroboradores.some((c) => c.tipo === 'autocompra') && conVendedor.nivelConfianza === 'alta', 'un grupo con una autocompra entre sus miembros debe subir a confianza alta');
+  afirmar(gemelos.nivelConfianza === 'alta', 'mismo dispositivo + misma fecha de nacimiento debe marcarse con confianza alta');
+  afirmar(gemelos.vinculos[0].etiqueta === 'Chrome · Windows' && /^[0-9a-f]{8}$/.test(gemelos.vinculos[0].referencia), 'el vínculo debe traer la etiqueta legible del dispositivo y una referencia corta (8 caracteres)');
+  afirmar(
+    gemelos.miembros.every((m) => m.ficha?.dispositivos?.some((d) => d.referencia === gemelos.vinculos[0].referencia)),
+    'la ficha de cada cuenta debe listar el dispositivo compartido (misma referencia), resuelto desde MySQL'
+  );
 
-  // Por buzón: nombres distintos, así que lo único que las une es la bandeja.
+  const compartido = grupoCon(compartidoA, compartidoB);
+  afirmar(compartido, 'no se encontró el grupo con dispositivo compartido y fechas de nacimiento distintas');
+  afirmar(vinculos(compartido) === 'dispositivo', 'estas dos cuentas solo comparten dispositivo');
+  afirmar(compartido.nivelConfianza === 'posible' && compartido.corroboradores.length === 0 && !compartido.mismaFechaNacimiento, 'el dispositivo solo, con fechas distintas, debe quedar en "posible" sin corroboradores (una familia comparte computador)');
+
+  const dosDispositivos = grupoCon(dosA, dosB);
+  afirmar(dosDispositivos, 'no se encontró el grupo de dos cuentas con dos dispositivos en común');
+  afirmar(dosDispositivos.vinculos.filter((v) => v.tipo === 'dispositivo').length === 2, 'deben figurar los DOS dispositivos como vínculos');
+  afirmar(!dosDispositivos.mismaFechaNacimiento && dosDispositivos.corroboradores.some((c) => c.tipo === 'variosDispositivos'), 'compartir dos dispositivos debe corroborar (variosDispositivos), sin que haga falta otra señal');
+  afirmar(dosDispositivos.nivelConfianza === 'alta', 'dos dispositivos en común (un hábito, no un computador compartido de paso) debe marcarse con confianza alta');
+
+  // EL CONTROL DEL CAMBIO: el nombre ya no es un vínculo. Dos cuentas que se llaman EXACTAMENTE igual pero entran desde
+  // dispositivos distintos no forman grupo — antes quedaban en «posible» y, comprándose entre sí, en confianza «alta».
+  afirmar(
+    homonimoA.usuario.nombres === homonimoB.usuario.nombres && homonimoA.usuario.apellidos === homonimoB.usuario.apellidos,
+    'control: las dos cuentas homónimas deben llamarse exactamente igual'
+  );
+  afirmar(!grupoCon(homonimoA, homonimoB), 'control negativo (§22): dos cuentas que se llaman IGUAL pero entran desde dispositivos distintos NO deben formar un grupo');
+  const conVendedor = grupoCon(vendedorA, compradorA);
+  afirmar(conVendedor && vinculos(conVendedor) === 'dispositivo', 'el comprador y el vendedor de la autocompra comparten dispositivo');
+  afirmar(conVendedor.corroboradores.some((c) => c.tipo === 'autocompra') && conVendedor.nivelConfianza === 'alta', 'un grupo con una autocompra entre sus miembros debe subir a confianza alta');
+
+  // Por buzón: nombres y dispositivos distintos, así que lo único que las une es la bandeja.
   const anillo = grupoCon(anilloA, anilloB);
   afirmar(anillo, 'no se encontró el grupo por buzón compartido (fraude.anillo / fraude.anillo+segunda)');
-  afirmar(vinculos(anillo) === 'correo', `las cuentas del anillo tienen nombres distintos: el único vínculo debe ser el buzón, no "${vinculos(anillo)}"`);
+  afirmar(vinculos(anillo) === 'correo', `las cuentas del anillo tienen nombres y dispositivos distintos: el único vínculo debe ser el buzón, no "${vinculos(anillo)}"`);
   afirmar(anillo.nivelConfianza === 'alta', 'compartir buzón es evidencia fuerte por sí sola: debe marcarse con confianza alta');
   afirmar(anillo.miembros.some((m) => m.ficha?.correo === 'fraude.anillo+segunda@example.com'), 'la ficha del administrador debe mostrar el correo legible (resuelto desde MySQL)');
   afirmar(
     !JSON.stringify(resultado).includes(fraudeSyncService.hashCorreo('fraude.anillo@example.com')),
     'la respuesta nunca debe traer el hash del buzón: es un detalle interno del grafo'
   );
-  // Nombre Y buzón, sin fecha de nacimiento común ni otra señal: el buzón sostiene solo.
+  // Dispositivo Y buzón, sin fecha de nacimiento común ni otra señal: el buzón sostiene solo.
   const dual = grupoCon(dualA, dualB);
-  afirmar(dual, 'no se encontró la pareja con el mismo nombre y el mismo buzón (fraude.dual)');
-  afirmar(vinculos(dual) === 'correo+nombre', `la pareja comparte nombre Y buzón, y el grupo debe traer los dos vínculos, no "${vinculos(dual)}"`);
+  afirmar(dual, 'no se encontró la pareja con el mismo dispositivo y el mismo buzón (fraude.dual)');
+  afirmar(vinculos(dual) === 'correo+dispositivo', `la pareja comparte dispositivo Y buzón, y el grupo debe traer los dos vínculos, no "${vinculos(dual)}"`);
   afirmar(!dual.mismaFechaNacimiento && dual.corroboradores.length === 0, 'control: sin fecha de nacimiento común ni otra señal, el único respaldo de la pareja es el propio buzón');
-  afirmar(dual.nivelConfianza === 'alta', 'nombre + buzón compartido debe marcarse con confianza alta aunque nada más lo corrobore');
-  // A y B se llaman igual; B y C comparten buzón: UNA persona con tres cuentas.
+  afirmar(dual.nivelConfianza === 'alta', 'dispositivo + buzón compartido debe marcarse con confianza alta aunque nada más lo corrobore');
+  // A y B comparten dispositivo; B y C comparten buzón: UNA persona con tres cuentas.
   const cadena = grupoCon(cadenaA, cadenaB, cadenaC);
-  afirmar(cadena && cadena.miembros.length === 3, 'A y B comparten nombre, B y C comparten buzón: las tres cuentas deben quedar en UN solo grupo (unión transitiva)');
-  afirmar(vinculos(cadena) === 'correo+nombre' && cadena.vinculos.length === 2, 'la cadena debe conservar sus dos vínculos (uno por nombre, otro por buzón)');
+  afirmar(cadena && cadena.miembros.length === 3, 'A y B comparten dispositivo, B y C comparten buzón: las tres cuentas deben quedar en UN solo grupo (unión transitiva)');
+  afirmar(vinculos(cadena) === 'correo+dispositivo' && cadena.vinculos.length === 2, 'la cadena debe conservar sus dos vínculos (uno por dispositivo, otro por buzón)');
   afirmar(cadena.nivelConfianza === 'alta', 'un grupo con un vínculo por buzón debe marcarse con confianza alta');
-  afirmar(/mismo buzón de correo/.test(cadena.motivo) && /se llaman exactamente igual/.test(cadena.motivo), 'el motivo debe explicar los dos vínculos');
+  afirmar(/mismo buzón de correo/.test(cadena.motivo) && /mismo dispositivo/.test(cadena.motivo), 'el motivo debe explicar los dos vínculos');
 
-  afirmar(!grupoCon(test1, test2), 'control negativo: dos cuentas con nombres y buzones DISTINTOS no deben formar un grupo');
-  afirmar(!grupoCon(gemeloA, homonimoA), 'control negativo: "Fraude Gemelo" y "Fraude Homonimo" son nombres distintos y no deben mezclarse');
-  afirmar(!grupoCon(dualA, cadenaA) && !grupoCon(anilloA, dualA), 'control negativo: parejas distintas con buzones distintos no deben fundirse en un solo grupo');
+  afirmar(!grupoCon(test1, test2), 'control negativo: dos cuentas con dispositivos y buzones DISTINTOS no deben formar un grupo');
+  afirmar(!grupoCon(gemeloA, homonimoA), 'control negativo: dispositivos y buzones distintos no deben mezclarse');
+  afirmar(!grupoCon(dualA, cadenaA) && !grupoCon(anilloA, dualA), 'control negativo: parejas distintas con dispositivos y buzones distintos no deben fundirse en un solo grupo');
+  afirmar(!grupoCon(compartidoA, gemeloA), 'control negativo: dos dispositivos distintos no unen a sus cuentas');
+  // El hash completo del dispositivo no sale del servidor: solo la referencia de 8 caracteres.
+  afirmar(
+    !JSON.stringify(resultado).includes(dispositivoService.hashDispositivo(idDeDispositivo('gemelos'))),
+    'la respuesta nunca debe traer el hash completo del dispositivo: solo una referencia corta'
+  );
   console.log(
-    `D OK: "${gemelos.nombre}" → alta (misma fecha de nacimiento); "${homonimos.nombre}" → posible (sin corroboradores); ` +
-      `anillo por buzón → alta; nombre+buzón → alta sin corroboradores; cadena de ${cadena.miembros.length} cuentas unida.`
+    `D OK: dispositivo + misma fecha de nacimiento → alta; dispositivo solo → posible (sin corroboradores); dos dispositivos → alta; ` +
+      `HOMÓNIMOS (mismo nombre, otro dispositivo) → sin grupo; anillo por buzón → alta; dispositivo+buzón → alta sin corroboradores; cadena de ${cadena.miembros.length} cuentas unida.`
   );
 
   // --- F ---
   const autocompraEntre = resultado.autocompra.find((f) => f.comprador.id === id(compradorA) && f.vendedor.id === id(vendedorA));
-  afirmar(autocompraEntre && !autocompraEntre.mismaCuenta, 'no se encontró la autocompra entre el comprador y el vendedor que se llaman igual');
-  afirmar(autocompraEntre.mismoNombre && !autocompraEntre.mismoBuzon, 'esta pareja se llama igual pero NO comparte buzón');
-  afirmar(autocompraEntre.nivelConfianza === 'alta', 'autocompra entre cuentas con el mismo nombre debe marcarse con confianza alta');
+  afirmar(autocompraEntre && !autocompraEntre.mismaCuenta, 'no se encontró la autocompra entre el comprador y el vendedor que comparten dispositivo');
+  afirmar(autocompraEntre.mismoDispositivo && autocompraEntre.dispositivosCompartidos === 1 && !autocompraEntre.mismoBuzon && !autocompraEntre.mismoPerfil, 'esta pareja comparte UN dispositivo y NO comparte buzón');
+  afirmar(autocompraEntre.nivelConfianza === 'posible' && autocompraEntre.corroboradores.length === 0, 'autocompra por dispositivo compartido, sin otra razón independiente, debe quedar en "posible" (la señal D de las mismas cuentas no cuenta: sería la misma evidencia dos veces)');
   afirmar(autocompraEntre.pedidos === 1 && Math.abs(autocompraEntre.total - productoA.precio) < 0.01, 'la autocompra debe sumar el único pedido de Q150');
+  afirmar(/entró desde el mismo dispositivo/.test(autocompraEntre.motivo) && /una familia, una oficina o un cibercafé/.test(autocompraEntre.motivo), 'el motivo debe explicar por qué el dispositivo solo es evidencia moderada');
   const autocompraBuzon = resultado.autocompra.find((f) => f.comprador.id === id(compradorM) && f.vendedor.id === id(vendedorM));
   afirmar(autocompraBuzon && !autocompraBuzon.mismaCuenta, 'no se encontró la autocompra entre el comprador y el vendedor con el mismo buzón');
-  afirmar(autocompraBuzon.mismoBuzon && !autocompraBuzon.mismoNombre, 'esta pareja tiene nombres distintos: lo único en común es el buzón');
+  afirmar(autocompraBuzon.mismoBuzon && !autocompraBuzon.mismoDispositivo, 'esta pareja entra desde dispositivos distintos: lo único en común es el buzón');
   afirmar(autocompraBuzon.nivelConfianza === 'alta', 'autocompra entre cuentas con el mismo buzón debe marcarse con confianza alta');
   afirmar(/mismo buzón de correo/.test(autocompraBuzon.motivo), 'el motivo debe explicar que comparten buzón');
   afirmar(!grupoCon(compradorM, vendedorM), 'control: el vendedor nunca compró, así que no hay dos cuentas COMPRANDO — el grupo D no se dispara, la señal F sí');
@@ -561,7 +695,37 @@ async function main() {
     !resultado.autocompra.some((f) => f.comprador.id === id(test1) || f.comprador.id === id(gasto)),
     'control negativo: comprar a un vendedor ajeno no es autocompra'
   );
-  console.log(`F OK: ${autocompraEntre.comprador.nombre} → ${autocompraEntre.vendedor.nombre} (mismo nombre, alta); ${autocompraBuzon.comprador.nombre} → ${autocompraBuzon.vendedor.nombre} (mismo buzón, alta); autoventa histórica de ${autoventa.comprador.nombre} (posible).`);
+
+  // EL CONTROL DE F: homónimos que se compran. Mismo nombre exacto, dispositivos y fechas distintos: antes era una
+  // autocompra con confianza «alta» (una suspensión); ahora no es ninguna señal.
+  afirmar(
+    pares.homcompra.vendedor.usuario.nombres === pares.homcompra.comprador.usuario.nombres && pares.homcompra.vendedor.usuario.apellidos === pares.homcompra.comprador.usuario.apellidos,
+    'control: el comprador y el vendedor homónimos deben llamarse exactamente igual'
+  );
+  afirmar(
+    (await ordenesDe(id(pares.homcompra.comprador))) >= 1 && !resultado.autocompra.some((f) => f.comprador.id === id(pares.homcompra.comprador) && f.vendedor.id === id(pares.homcompra.vendedor)),
+    'control negativo (§22): un comprador que le compró a un vendedor que se llama IGUAL, desde otro dispositivo, NO es una autocompra'
+  );
+
+  // Equipo parecido: sin compartir dispositivo, mismo perfil. Más débil que el dispositivo, y siempre "posible".
+  const porPerfil = resultado.autocompra.find((f) => f.comprador.id === id(pares.perfil.comprador) && f.vendedor.id === id(pares.perfil.vendedor));
+  afirmar(porPerfil, 'no se encontró la autocompra entre cuentas con un equipo parecido (mismo perfil, otro identificador)');
+  afirmar(porPerfil.mismoPerfil && !porPerfil.mismoDispositivo && !porPerfil.mismoBuzon, 'esta pareja solo tiene el perfil parecido: otro identificador de dispositivo y otro buzón');
+  afirmar(porPerfil.nivelConfianza === 'posible' && porPerfil.corroboradores.length === 0, 'un equipo parecido, sin otra razón independiente, debe quedar en "posible"');
+  afirmar(/equipo parecido/.test(porPerfil.motivo) && /pista débil/.test(porPerfil.motivo), 'el motivo debe decir que es una pista débil');
+  // Un perfil que comparten más de 4 cuentas es una configuración corriente (miles de equipos iguales): se ignora.
+  afirmar(
+    !resultado.autocompra.some((f) => f.comprador.id === id(pares.comun.comprador) && f.vendedor.id === id(pares.comun.vendedor)),
+    'control negativo: un perfil compartido por 5 cuentas es una configuración corriente, no una pista'
+  );
+  // Dos dispositivos en común: una razón independiente → alta.
+  const dosEnF = resultado.autocompra.find((f) => f.comprador.id === id(pares.dosf.comprador) && f.vendedor.id === id(pares.dosf.vendedor));
+  afirmar(dosEnF && dosEnF.dispositivosCompartidos === 2, 'no se encontró la autocompra con dos dispositivos en común');
+  afirmar(dosEnF.corroboradores.some((c) => c.tipo === 'variosDispositivos') && dosEnF.nivelConfianza === 'alta', 'dos dispositivos en común deben subir la autocompra a confianza alta');
+  console.log(
+    `F OK: ${autocompraEntre.comprador.nombre} → ${autocompraEntre.vendedor.nombre} (mismo dispositivo → posible); ${autocompraBuzon.comprador.nombre} → ${autocompraBuzon.vendedor.nombre} (mismo buzón → alta); ` +
+      `equipo parecido → posible; dos dispositivos → alta; autoventa histórica de ${autoventa.comprador.nombre} (posible); HOMÓNIMOS que se compran → sin señal; perfil de 5 cuentas → ignorado.`
+  );
 
   // --- G ---
   const reventa = resultado.reventa.find((h) => h.vendedor.id === id(revendedor) && h.publicacion.id === relojPropio.producto_id);
@@ -680,7 +844,7 @@ async function main() {
 
   // --- Forma del grafo: nada de dirección ni método de pago; el buzón, solo como hash ---
   afirmar(resultado.desviacionPatron === undefined && resultado.anillosCorreo === undefined, 'la respuesta no debería traer las señales de dirección ni la vieja "anillo por correo"');
-  const contar = async (consulta) => (await neo4j.leer(consulta))[0].get('n').toNumber();
+  const contar = async (consulta, parametros = {}) => (await neo4j.leer(consulta, parametros))[0].get('n').toNumber();
   afirmar(
     (await contar('MATCH (n) WHERE n:Direccion OR n:MetodoPago RETURN count(n) AS n')) === 0 &&
       (await contar('MATCH ()-[r]->() WHERE type(r) IN ["ENVIÓ_A", "PAGÓ_CON"] RETURN count(r) AS n')) === 0,
@@ -704,6 +868,50 @@ async function main() {
     'ningún nodo del grafo debe guardar un correo en claro'
   );
   console.log('OK: el grafo no contiene direcciones ni métodos de pago, guarda quién vende cada producto y el buzón solo como hash (ningún correo en claro).');
+
+  // --- Dispositivos (§22): el nombre ya no vincula; el grafo guarda solo hashes de dispositivo y de perfil ---
+  afirmar(
+    (await contar('MATCH (n:Nombre) RETURN count(n) AS n')) === 0 && (await contar('MATCH ()-[r:SE_LLAMA]->() RETURN count(r) AS n')) === 0,
+    'el grafo todavía tiene nodos Nombre / aristas SE_LLAMA: el nombre ya no vincula cuentas (§22). Corré `npm run fraude:backfill` para purgarlos'
+  );
+  afirmar((await contar('MATCH ()-[r:USO_DISPOSITIVO]->(:Dispositivo) RETURN count(r) AS n')) > 0, 'el grafo debería tener relaciones USO_DISPOSITIVO (qué cuenta entró desde qué dispositivo)');
+  afirmar(
+    (await contar("MATCH (d:Dispositivo) WHERE NOT d.hash =~ '[0-9a-f]{64}' OR any(k IN keys(d) WHERE NOT k IN ['hash', 'etiqueta']) RETURN count(d) AS n")) === 0,
+    'un nodo Dispositivo debe tener únicamente el SHA-256 del identificador y su etiqueta legible'
+  );
+  afirmar(
+    (await contar("MATCH (p:Perfil) WHERE NOT p.hash =~ '[0-9a-f]{64}' OR size(keys(p)) <> 1 RETURN count(p) AS n")) === 0,
+    'un nodo Perfil debe tener únicamente el SHA-256 de los rasgos del equipo'
+  );
+  // El identificador que genera el navegador NUNCA se guarda: ni en el grafo ni en MySQL, solo su hash.
+  const crudos = ['gemelos', 'compartido', 'dual', 'carrera'].map(idDeDispositivo);
+  for (const crudo of crudos) {
+    afirmar(
+      (await contar("MATCH (n) WHERE any(k IN keys(n) WHERE toString(n[k]) CONTAINS $crudo) RETURN count(n) AS n", { crudo })) === 0,
+      'el identificador en claro del dispositivo no debe estar en ningún nodo del grafo'
+    );
+  }
+  const filasMysql = await prisma.dispositivo_usuario.findMany({ select: { dispositivo_hash: true, perfil_hash: true } });
+  afirmar(
+    filasMysql.length > 0 && filasMysql.every((f) => /^[0-9a-f]{64}$/.test(f.dispositivo_hash) && (f.perfil_hash === null || /^[0-9a-f]{64}$/.test(f.perfil_hash))) &&
+      !filasMysql.some((f) => crudos.includes(f.dispositivo_hash)),
+    'MySQL guarda el SHA-256 del dispositivo y del perfil, no el identificador en claro'
+  );
+  const hashCarrera = dispositivoService.hashDispositivo(idDeDispositivo('carrera'));
+  afirmar(
+    (await contar('MATCH (d:Dispositivo {hash: $hash}) RETURN count(d) AS n', { hash: hashCarrera })) === 1,
+    'cuatro inicios simultáneos desde el mismo dispositivo nuevo deben dejar UN solo nodo Dispositivo (la restricción de unicidad)'
+  );
+  afirmar(
+    (await contar('MATCH (:Usuario)-[r:USO_DISPOSITIVO]->(:Dispositivo {hash: $hash}) RETURN count(r) AS n', { hash: hashCarrera })) === 2,
+    'y exactamente dos aristas: una por cuenta (el MERGE de la relación tampoco duplica)'
+  );
+  const filasCarrera = await prisma.dispositivo_usuario.findMany({ where: { dispositivo_hash: hashCarrera } });
+  afirmar(filasCarrera.length === 2 && filasCarrera.every((f) => f.inicios >= 1), 'en MySQL, una fila por (cuenta, dispositivo) aunque los inicios fueran simultáneos (el choque con el índice único se resuelve sumando el inicio)');
+  const restricciones = (await neo4j.leer('SHOW CONSTRAINTS YIELD name RETURN collect(name) AS nombres'))[0].get('nombres');
+  afirmar(restricciones.includes('dispositivo_hash_unico') && restricciones.includes('perfil_hash_unico'), 'deben existir las restricciones de unicidad de Dispositivo y Perfil');
+  // Las cuentas sin dispositivo registrado (las reales, antes de este cambio) no rompen nada: la consulta siguió funcionando.
+  console.log('OK: el nombre no está en el grafo; Dispositivo y Perfil guardan solo hashes (ni el identificador en claro ni la IP); restricciones de unicidad y carrera de inicios simultáneos sin duplicados.');
 
   console.log('Todas las verificaciones de detección de fraude pasaron.');
 }

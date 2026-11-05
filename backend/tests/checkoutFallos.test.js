@@ -64,7 +64,7 @@ function escenario({ detenerEn, redisInicial = true } = {}) {
     },
     './compromisoService': { exigirCompromiso: async () => ({ aceptadoEn: null }) },
     './ventasOutboxService': { encolarCompra: async () => { estado.outbox++; } },
-    './fraudeSyncService': {}, './reconciliacionMongoService': {},
+    './fraudeSyncService': {}, './reconciliacionMongoService': {}, './popularidadService': { marcarVentas() {} },
     './checkoutIntentoService': intentos,
     './checkoutDemoService': { pausar: async (etapa) => {
       assert.equal(enTransaccion, false, 'la pausa nunca retiene una transacción abierta');

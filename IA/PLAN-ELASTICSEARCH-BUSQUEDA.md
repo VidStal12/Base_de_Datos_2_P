@@ -214,3 +214,62 @@ Se llena al indexar (`busquedaSyncService.aDocumento`, desde el `vendedor_id` qu
 - `tests/resilienciaCatalogo.test.js` estaba **en rojo** (19 de 57 pruebas de `test:resiliencia`): el servicio pasó a importar `tendenciaService` y `config/redis` y el cargador de pruebas no tenía dobles para ellos. Se agregaron esos dobles, se actualizaron las 3 pruebas que asumían la semántica anterior de «cero resultados» y se escribieron 13 nuevas (cadena de sugerencias, guardado de la actividad, `?q` repetido, producto pausado, Redis apagado): la suite queda en 70 de 70. Cada corrección se verificó deshaciéndola a propósito en una copia y viendo que alguna prueba se pone en rojo.
 
 **Límites y pendientes.** (1) También se ofrecen sugerencias cuando son los **filtros** (precio, categoría, atributos) los que dejan el texto en cero: puede mostrar justo lo que se acaba de filtrar. (2) No hay forma de **borrar el historial** ni se avisa en los Términos de Servicio de que se guardan, por cuenta y durante 30 días, las búsquedas y los productos vistos. (3) Para quien no tiene historial la última capa muestra «Los más vendidos», que incluye cualquier producto de prueba (`[PRUEBA …]`) que siga activo; el catedrático dijo, de quien no tenga historial, que mejor no mostrarle nada (confirmar). (4) Para el control de acceso por cuenta de servicio de Redis, las claves `actividad:*` pertenecen al módulo del catálogo/búsqueda.
+
+## 17. Ranking por popularidad y novedad (agregado después, 2026-11-05)
+
+**Qué había.** «Relevancia» era solo BM25 (`_score`, desempate por id), «Más vendidos» ordenaba únicamente por `total_vendido` (desempate por id) y sin texto la portada salía por `producto_id`. No había clics, ni fecha de publicación en el índice, y `total_vendido` **quedaba atrasado**: el checkout lo descontaba en Mongo y nunca reindexaba. Medido en el índice real, con «camiseta»: la más vendida (159 unidades) salía **sexta** (su título es más largo, así que su BM25 es menor); con «más vendidos» y un texto, todo lo que calzara —también por tolerancia ortográfica— se ordenaba solo por ventas, ignorando la relevancia.
+
+**Qué se pidió.** Con una palabra general («iPhone») los primeros resultados no deberían ser los de mejor BM25 sino los **más vendidos y más mirados**; entre dos parecidos, el **más reciente** (para no empujar un modelo viejo); y con un texto específico, lo que mejor lo describe.
+
+### La fórmula (`services/rankingBusqueda.js`, una sola vez para el motor y para el respaldo)
+
+```
+puntaje = relevancia del texto (BM25)  ×  ( 1 + 0,5·log10(1 + ventas) + 0,25·log10(1 + clics) + 0,5·novedad )
+```
+
+- Es un `function_score` con `score_mode: sum` (la suma de las piezas, con un `weight: 1` de base) y `boost_mode: multiply`: la popularidad **multiplica** la relevancia, no la reemplaza. Con una palabra general todos los productos que la contienen tienen una relevancia casi igual y el multiplicador los reordena; con un texto específico las relevancias están muy separadas (uno calza con tres palabras, los demás con una) y un multiplicador acotado no alcanza a darle la vuelta. Medido: «camiseta deportiva transpirable» → la coincidencia exacta 57,8 contra 23,9 del campeón de ventas.
+- **Ventas y clics con logaritmo** (`field_value_factor`, `log1p`): pasar de 0 a 10 unidades pesa mucho, de 150 a 160 casi nada; un campeón no tapa a los demás para siempre. Un clic pesa la mitad que una venta (es más barato de conseguir).
+- **Novedad**: una campana gaussiana (`gauss`) sobre `publicado_en` — vale 1 durante 14 días, baja a la mitad 150 días después y tiende a 0. **Sin fecha vale 0**, no 1 (una función de decaimiento sin valor devolvería 1 y premiaría a lo que no se sabe cuándo se publicó): por eso el filtro `exists`.
+- El multiplicador va de 1 (sin ventas, sin clics, viejo) a ~3,3 (160 ventas, 1.000 clics, publicado esta semana).
+
+### Los órdenes
+
+| Orden | Cómo |
+|---|---|
+| **Relevancia y popularidad** (sin `ordenarPor`, el defecto; con o sin texto) | el puntaje de arriba; sin texto la relevancia es igual para todos y queda «lo más popular y reciente primero» |
+| `masVendidos` | `total_vendido ↓`, **luego el más reciente (`publicado_en ↓`), luego el que tiene más clics**, luego `producto_id` |
+| `masRecientes` (nuevo) | `publicado_en ↓`, luego ventas, luego clics, luego `producto_id` |
+| `precioAsc` / `precioDesc` | sin cambios, estrictos |
+
+El respaldo con Mongo (Elasticsearch apagado, `facetasBusqueda.desdeLista`) usa los mismos comparadores en JavaScript y el mismo multiplicador, sin la relevancia de texto (solo existe en el motor). `productoService.listar` (`GET /api/productos`) ordena `masVendidos` por `total_vendido` y luego `_id` descendente (el más nuevo).
+
+### De dónde salen los números
+
+- **`publicado_en`**: la hora de alta del documento de Mongo, que el `_id` (ObjectId) ya lleva en sus primeros 4 bytes: **no hay que migrar ningún documento**. `productoService.formatear` la expone junto con `clics`; el catálogo sembrado en un solo lote comparte casi la misma fecha, así que ahí la novedad apenas desempata.
+- **`clics`** (`services/popularidadService.js`): `GET /api/productos/:id` de un producto **activo y visible** cuenta como un clic. Una vez por **visitante** (la cuenta; sin sesión, un hash de IP + navegador) cada **30 min** (recargar no suma); **no** cuentan el vendedor dueño ni un administrador. Se cuenta en el servidor, no con un endpoint aparte que se pueda llamar en bucle sin haber abierto nada. Los clics se juntan en memoria y **cada 60 s** se vuelcan: un `$inc` por producto en Mongo (la fuente: `Producto.clics`) y **una** petición `_bulk` al índice con los valores vigentes (absolutos, así repetirla es inofensiva). Una actualización parcial en Elasticsearch reescribe el documento entero —vector de 384 números incluido—: hacerla en cada visita sería regalar el costo de indexar a una lectura.
+- **`total_vendido`**: cada compra (`checkout` y `checkoutOferta`) **marca el producto** y el mismo volcado copia al índice el valor vigente de Mongo. Cierra el atraso que había (verificado: el producto 1 pasó de 159 a 160 en el índice).
+- Variables: `POPULARIDAD_ENABLED` (true), `POPULARIDAD_INTERVALO_MS` (60000), `POPULARIDAD_VENTANA_CLIC_MS` (1800000). Con Mongo apagado lo pendiente vuelve al buffer; con Elasticsearch apagado Mongo ya tiene los clics y los productos quedan anotados para igualar la copia en el próximo volcado.
+
+### Mapping y migración
+
+`clics` (`integer`) y `publicado_en` (`date`) se agregan a `MAPPING` (se aplican solos al conectar: `putMapping`) y a `aDocumento()` (la prueba de alineación obliga a que los dos coincidan). Los documentos ya indexados no los tienen hasta reindexar: **`npm run busqueda:backfill -- --solo-texto`** los llena en segundos y **sin recalcular los vectores** (sin esto, `clics` cuenta como 0 y `publicado_en` como «sin fecha», que no premia nada).
+
+### Medido en el índice real (137 productos) y en un caso aparte
+
+| Búsqueda | Antes | Ahora |
+|---|---|---|
+| `camiseta` (relevancia) | pima 25 → oversize 3 → deportiva 0 → estampada 0 → polo 13 → **premium (159) sexta** | **premium (160)** → pima (25) → polo (13) → oversize (4) → manga larga (11) → deportiva (0) |
+| `smartphone` | X100 (20 vendidas) primero; el resto por BM25/id | X100 primero; el resto por BM25 × novedad |
+| `camiseta deportiva transpirable` | coincidencia exacta primera | **sigue primera** (57,8 contra 23,9) |
+| portada sin texto | por `producto_id` | los más vendidos y recientes primero |
+
+El caso «iPhone» no existe en el catálogo sembrado, así que se armó un **índice aparte** (borrado al terminar) con el mapping estricto real y la consulta real de la aplicación: 5 iPhone de distinta antigüedad y una funda muy vendida. «Relevancia y popularidad» → **iPhone 15** (40 vendidos, publicado hace 20 días) **antes que el iPhone 12** (40 vendidos, 200 clics, hace 600 días); «más vendidos» con el empate 40/40 → gana el más reciente aunque tenga menos clics; «iphone 15 128gb» → el iPhone 15 con 20,5 contra 12,4 de la funda.
+
+### Límites honestos
+
+- **No distingue un teléfono de un accesorio.** Con una marca sola («iphone»), una funda muy vendida puede quedar por encima de un teléfono (en «más vendidos» siempre: ordena literalmente por ventas). La barra lateral lo resuelve (filtrar por subcategoría «Celulares» deja solo teléfonos); hacerlo solo exigiría un tipo de producto o una afinidad entre la consulta y la categoría.
+- **Un producto recién publicado sin ventas queda abajo** (el arranque en frío): la novedad pesa hasta 0,5, menos que unas pocas ventas.
+- **Los clics son una señal débil y manipulable**: la deduplicación es en memoria de un proceso (varias instancias cuentan por separado, un reinicio la borra) y resiste lo accidental, no a quien use muchos navegadores; por eso es el peso más bajo. Perder el buffer en una caída cuesta, como mucho, el último minuto.
+- **No es aprendizaje de clics por consulta** (qué resultado se eligió para qué texto): cuenta aperturas de la ficha, vengan de donde vengan.
+- Los clics son **acumulados**, no de una ventana reciente: un producto muy visto hace un año conserva ese logaritmo (la novedad lo compensa en parte).
+- `POST /api/admin/recalcular-ventas` reescribe `total_vendido` en Mongo y, como el resto de ese reparador, no toca el índice: hace falta `busqueda:backfill` o el próximo volcado del producto.

@@ -1,6 +1,7 @@
 // Facetas de la búsqueda: la parte que NO sabe de Elasticsearch ni de Mongo.
 //
-// Todo lo de este archivo son funciones puras (sin conexiones, sin Date, sin azar), así que se
+// Todo lo de este archivo son funciones puras (sin conexiones ni azar; la hora, cuando hace falta
+// para el orden por novedad, llega como argumento), así que se
 // prueban sin levantar nada y las usan los DOS caminos de GET /api/busqueda:
 //   - busquedaService.buscar()          → los números salen de las agregaciones del motor.
 //   - catalogoLecturaService (respaldo) → con Elasticsearch apagado los mismos números salen de
@@ -18,10 +19,13 @@
 //   - Los atributos solo se ofrecen cuando el contexto (texto + categoría) cae en UNA subcategoría:
 //     "Talla" de camisetas (S, M, L) y "Talla" de zapatos (38, 40) no se mezclan en una lista.
 
+const ranking = require('./rankingBusqueda');
+
 const TAMANO_DEFECTO = 60; // múltiplo de 2, 3, 4 y 5 columnas: la grilla de HomePage siempre cierra
 const TAMANO_MAXIMO = 100;
 const VENTANA_MAXIMA = 10000; // index.max_result_window de Elasticsearch: desde + tamaño no puede pasar de acá
-const ORDENES = ['masVendidos', 'precioAsc', 'precioDesc'];
+// Sin ordenarPor (la opción «Relevancia») se ordena por puntaje: relevancia × (ventas, clics, novedad).
+const ORDENES = ['masVendidos', 'masRecientes', 'precioAsc', 'precioDesc'];
 const MAX_ATRIBUTOS = 10; // nombres de atributo distintos que una petición puede filtrar a la vez
 const MAX_VALORES = 20; // valores elegidos por atributo
 
@@ -182,7 +186,7 @@ function armarRespuesta({ total, pagina, tamano, resultados, arbolCrudo, valores
 // necesita "todos los filtros menos el suyo" y Mongo solo sabe devolver el conjunto ya recortado.
 // Es el mismo cálculo que las agregaciones de busquedaService.buscar(); scripts/verificarBusqueda.js
 // lo comprueba contra el motor real caso por caso.
-function desdeLista(productos, filtros) {
+function desdeLista(productos, filtros, { ahoraMs = Date.now() } = {}) {
   const { categoriaId, subcategoriaId, precioMin, precioMax, ordenarPor, pagina, tamano } = filtros;
   const elegidos = filtros.atributos || {};
   const nombres = Object.keys(elegidos);
@@ -194,12 +198,16 @@ function desdeLista(productos, filtros) {
   const enAtributos = (p, salvo) => nombres.every((n) => n === salvo || cumple(p, n));
 
   const calzan = productos.filter((p) => enCategoria(p) && enPrecio(p) && enAtributos(p));
+  // Los mismos órdenes que arma busquedaService.construirPedido() para el motor (rankingBusqueda.js): sin
+  // Elasticsearch no hay relevancia de texto, así que «Relevancia» queda en el puntaje de popularidad y novedad.
+  const porRanking = ranking.comparadores(ahoraMs);
   const ordenes = {
-    masVendidos: (a, b) => (b.total_vendido ?? 0) - (a.total_vendido ?? 0) || a.id - b.id,
+    masVendidos: porRanking.masVendidos,
+    masRecientes: porRanking.masRecientes,
     precioAsc: (a, b) => precioDe(a) - precioDe(b) || a.id - b.id,
     precioDesc: (a, b) => precioDe(b) - precioDe(a) || a.id - b.id,
   };
-  const ordenados = [...calzan].sort(ordenes[ordenarPor] || ((a, b) => a.id - b.id));
+  const ordenados = [...calzan].sort(ordenes[ordenarPor] || porRanking.popularidad);
 
   // Árbol: texto + precio (cada nodo cuenta el precio por separado), sin categoría ni atributos.
   const categorias = new Map();

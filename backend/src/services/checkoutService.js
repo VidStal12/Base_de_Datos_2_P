@@ -10,6 +10,7 @@ const { encolarCompra } = require('./ventasOutboxService');
 const fraudeSyncService = require('./fraudeSyncService');
 const intentos = require('./checkoutIntentoService');
 const reconciliacionMongo = require('./reconciliacionMongoService');
+const popularidad = require('./popularidadService');
 const demo = require('./checkoutDemoService');
 
 // El tope por pedido de una cuenta con límites suaves: 403 con `codigo: LIMITE_MONTO`.
@@ -200,6 +201,9 @@ async function checkout({ usuarioId, direccionId, metodoPagoId, items, aceptaNoR
           Producto.updateOne({ producto_id: productoId }, { $inc: { total_vendido: cantidad, 'inventario.cantidad': -cantidad } })
         )
       );
+      // El índice de búsqueda ordena «más vendidos» con SU copia de total_vendido: se anota el producto
+      // para que popularidadService la iguale en el próximo volcado (solo anota ids en memoria; no espera).
+      popularidad.marcarVentas(items.map(({ productoId }) => productoId));
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo:', err.message);
       // Con Mongo apagado la copia queda atrás: se anota para recalcularla desde MySQL en
@@ -365,6 +369,7 @@ async function checkoutOferta({ usuarioId, productoId, cantidad, precioUnitario,
         { producto_id: productoId },
         { $inc: { total_vendido: cantidad, 'inventario.cantidad': -cantidad } }
       );
+      popularidad.marcarVentas([productoId]); // ver checkout(): el índice de búsqueda iguala total_vendido en el próximo volcado
     } catch (err) {
       console.error('No se pudo actualizar total_vendido/cantidad en Mongo (oferta flash):', err.message);
       reconciliacionMongo.encolar([productoId]);

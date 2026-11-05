@@ -32,6 +32,10 @@ async function limpiarModeloAnterior() {
   // de todos los que lo compartían) no sirve para nada: la señal de reventa
   // necesita DOS productos en el mismo artículo.
   await neo4j.escribir('MATCH (a:Articulo) WHERE NOT (a)<-[:ES_ARTICULO]-() DELETE a');
+  // §22 (PLAN-NEO4J-DETECCION-FRAUDE.md): el nombre dejó de ser un vínculo entre cuentas — dos personas pueden
+  // llamarse igual —, así que se borran los nodos `Nombre` (y sus aristas SE_LLAMA) que dejó el diseño anterior.
+  // El nombre sigue como dato para mostrar en `Usuario.nombre`.
+  await neo4j.escribir('MATCH (n:Nombre) DETACH DELETE n');
 }
 
 // Todos los productos publicados, no solo los comprados: la señal de reventa ve
@@ -167,6 +171,46 @@ async function backfillResenas() {
   return { procesados, omitidos };
 }
 
+// Los dispositivos desde los que entró cada cuenta (§22) salen de MySQL (`dispositivo_usuario`), el registro
+// durable: el grafo es solo una copia, así que esto lo reconstruye completo. Mismo `registrarDispositivo` que usa
+// el inicio de sesión en vivo — una sola implementación. Antes de este cambio no se guardaba nada: los
+// dispositivos existen solo desde que el frontend empezó a mandarlos.
+async function backfillDispositivos() {
+  let ultimoId = 0;
+  let procesados = 0;
+  let omitidos = 0;
+  while (true) {
+    const filas = await prisma.dispositivo_usuario.findMany({
+      where: { id: { gt: ultimoId } },
+      orderBy: { id: 'asc' },
+      take: LOTE,
+      include: { usuario: { include: { rol: true } } },
+    });
+    if (!filas.length) break;
+    for (const f of filas) {
+      try {
+        await fraudeSyncService.registrarDispositivo({
+          usuarioId: f.id_usuario,
+          usuarioNombre: `${f.usuario.nombres} ${f.usuario.apellidos}`,
+          usuarioRol: f.usuario.rol.tipo_rol,
+          dispositivoHash: f.dispositivo_hash,
+          perfilHash: f.perfil_hash,
+          etiqueta: f.etiqueta,
+          primeraVez: f.primera_vez,
+          ultimaVez: f.ultima_vez,
+          inicios: f.inicios,
+        });
+        procesados += 1;
+      } catch (err) {
+        omitidos += 1;
+        console.error(`Dispositivo de la cuenta #${f.id_usuario} omitido: ${err.message}`);
+      }
+    }
+    ultimoId = filas[filas.length - 1].id;
+  }
+  return { procesados, omitidos };
+}
+
 async function main() {
   await conectarMongo();
   const soloProductos = process.argv.includes('--solo-productos');
@@ -179,6 +223,9 @@ async function main() {
   console.log(`Compras: ${compras.procesados} reenviadas, ${compras.omitidos} omitidas (sin usuario/producto resoluble).`);
   const resenas = await backfillResenas();
   console.log(`Reseñas: ${resenas.procesados} reenviadas, ${resenas.omitidos} omitidas.`);
+  const dispositivos = await backfillDispositivos();
+  console.log(`Dispositivos: ${dispositivos.procesados} reenviados, ${dispositivos.omitidos} omitidos.`);
+  if (dispositivos.omitidos) process.exitCode = 1;
 }
 
 main()

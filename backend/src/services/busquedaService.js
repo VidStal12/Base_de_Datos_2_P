@@ -3,6 +3,7 @@ const { conCircuito, indice } = require('../config/elasticsearch');
 const { vendedoresSuspendidos } = require('./suspensionService');
 const facetas = require('./facetasBusqueda');
 const reglas = require('./reglasRelacionados');
+const ranking = require('./rankingBusqueda');
 
 // El documento indexado lleva el vector del producto (`embedding`, 384 números). Las consultas que no lo
 // necesitan lo dejan fuera de la respuesta: con él, la misma página de resultados pesa 13 veces más (medido).
@@ -45,6 +46,8 @@ function aProducto(hit) {
     oferta_flash: null,
     resenas_resumen: { promedio: 0, cantidad: 0 },
     total_vendido: s.total_vendido ?? 0,
+    clics: s.clics ?? 0,
+    publicado_en: s.publicado_en ?? null,
     _score: hit._score,
   };
 }
@@ -102,19 +105,26 @@ function construirPedido(filtros, { suspendidos = [], vendedorId, incluirInactiv
   const comoFiltro = (clausulas) => (clausulas.length > 0 ? { bool: { filter: clausulas } } : { match_all: {} });
   const todos = menos();
 
-  // Desempate fijo por producto_id: paginar no repite ni salta productos.
-  const sort = {
-    masVendidos: [{ total_vendido: 'desc' }, { producto_id: 'asc' }],
+  // Desempate fijo por producto_id: paginar no repite ni salta productos. Sin un orden pedido (la opción
+  // «Relevancia»), se ordena por puntaje: la relevancia del texto multiplicada por lo que el producto vende,
+  // lo que se abre y lo nuevo que es (rankingBusqueda.js) — con o sin texto: sin texto la relevancia es igual
+  // para todos y el orden es simplemente el más popular y reciente primero. «Más vendidos» y «más recientes»
+  // son órdenes estrictos (por ese campo, con desempates), y los de precio también: ahí no se mezcla nada.
+  const ordenes = {
+    ...ranking.ORDENES_MOTOR,
     precioAsc: [{ precio: 'asc' }, { producto_id: 'asc' }],
     precioDesc: [{ precio: 'desc' }, { producto_id: 'asc' }],
-  }[ordenarPor] ?? (q ? [{ _score: 'desc' }, { producto_id: 'asc' }] : [{ producto_id: 'asc' }]);
+  };
+  const porRanking = !ordenes[ordenarPor];
+  const sort = ordenes[ordenarPor] ?? [{ _score: 'desc' }, { producto_id: 'asc' }];
+  const conPuntaje = (consulta) => (porRanking ? ranking.conRanking(consulta) : consulta);
   const base = { index: indice(), _source: SIN_VECTOR, sort, from: (pagina - 1) * tamano, size: tamano, track_total_hits: true };
 
-  if (!conFacetas) return { ...base, query: { bool: { must, filter: [...filter, ...todos], must_not } } };
+  if (!conFacetas) return { ...base, query: conPuntaje({ bool: { must, filter: [...filter, ...todos], must_not } }) };
 
   return {
     ...base,
-    query: { bool: { must, filter, must_not } },
+    query: conPuntaje({ bool: { must, filter, must_not } }),
     post_filter: todos.length > 0 ? { bool: { filter: todos } } : undefined,
     aggs: {
       // Árbol categoría → subcategoría sobre los campos keyword que ya existen. Sin la categoría

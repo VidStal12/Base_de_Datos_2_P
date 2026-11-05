@@ -1,6 +1,11 @@
 import { CODIGO_CUENTA_SUSPENDIDA, EVENTO_CUENTA_SUSPENDIDA } from '../utils/suspension';
+import { cabecerasDeDispositivo } from '../utils/dispositivo';
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+
+// Solo al entrar o registrarse viaja el identificador del dispositivo (antifraude, utils/dispositivo.js). Son POST con
+// cuerpo, así que ya pagan su pre-vuelo: la cabecera propia no les cuesta nada, y las lecturas no la llevan.
+const RUTAS_CON_DISPOSITIVO = new Set(['/auth/login', '/auth/registro']);
 
 async function request(path, { method = 'GET', body, token } = {}) {
   // Una lectura (GET) no lleva cuerpo, así que no declara tipo de contenido: con ese encabezado el navegador pide permiso al
@@ -8,6 +13,7 @@ async function request(path, { method = 'GET', body, token } = {}) {
   // portada) pagaban el doble. Sin sesión, un GET es una petición «simple» y viaja directo.
   const headers = method === 'GET' ? {} : { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (RUTAS_CON_DISPOSITIVO.has(path)) Object.assign(headers, cabecerasDeDispositivo());
 
   let res;
   try {

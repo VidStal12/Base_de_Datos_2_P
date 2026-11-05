@@ -1,15 +1,19 @@
 const express = require('express');
 const { registrar, login, obtenerPerfil } = require('../services/authService');
 const politica = require('../services/politicaAccesoService');
+const { desdeCabeceras } = require('../services/dispositivoService');
 const { requireAuth } = require('../middleware/auth');
 const { responderError } = require('../utils/http');
 const { componenteCaido, esErrorDeAcceso } = require('../utils/resiliencia');
 
 const router = express.Router();
 
+// El dispositivo desde el que se registra o entra una cuenta lo manda el frontend en las cabeceras
+// X-Dispositivo y X-Dispositivo-Perfil (ver services/dispositivoService.js); sin ellas (un script, un cliente
+// viejo) simplemente no se anota nada.
 router.post('/registro', async (req, res) => {
   try {
-    const usuario = await registrar(req.body);
+    const usuario = await registrar(req.body, { dispositivo: desdeCabeceras((nombre) => req.get(nombre)) });
     res.status(201).json(usuario);
   } catch (err) {
     responderError(res, err, 400);
@@ -18,7 +22,7 @@ router.post('/registro', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
-    const resultado = await login(req.body);
+    const resultado = await login(req.body, { dispositivo: desdeCabeceras((nombre) => req.get(nombre)) });
     res.json(resultado);
   } catch (err) {
     // Una base apagada NO es «credenciales inválidas»: 503 con el aviso de qué falta

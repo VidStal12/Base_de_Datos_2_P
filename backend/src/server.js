@@ -9,6 +9,7 @@ const bloqueo = require('./services/bloqueoService');
 const limitePedidos = require('./services/limitePedidosService');
 const restriccion = require('./services/restriccionService');
 const checkoutIntentos = require('./services/checkoutIntentoService');
+const popularidad = require('./services/popularidadService');
 
 const PORT = process.env.PORT || 3000;
 
@@ -36,6 +37,13 @@ const servidor = app.listen(PORT, () => {
     bloqueo.iniciar();
   } catch (error) {
     console.error('No se pudo iniciar el bloqueo automático de cuentas:', error.message);
+  }
+  // El volcado de clics y ventas al índice de búsqueda (ranking por popularidad): igual, en el servidor y no
+  // en app.js, y una variable mal escrita no tumba nada.
+  try {
+    popularidad.iniciar();
+  } catch (error) {
+    console.error('No se pudo iniciar el volcado de popularidad al índice de búsqueda:', error.message);
   }
   // El tope de pedidos por hora y los límites suaves los lee cada petición
   // (middleware/controlPedidos.js) y FALLAN ABIERTOS: una variable mal escrita no tumba
@@ -67,6 +75,7 @@ async function apagar() {
       ventasSync.detener(),
       bloqueo.detener(),
       checkoutIntentos.detener(),
+      popularidad.detener(),
     ]);
     const resultados = await Promise.allSettled([
       cassandra.cerrar(), prisma.$disconnect(), mongoose.disconnect(), redis.cerrar(),

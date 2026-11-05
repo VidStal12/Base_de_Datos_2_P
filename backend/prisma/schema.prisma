@@ -59,6 +59,8 @@ model usuarios {
   bloqueos_revisados bloqueo_cuenta[] @relation("bloqueo_revisado_por")
   // Las reglas de permisos que esta cuenta (un administrador) cambió por última vez.
   reglas_acl_editadas acl_regla[] @relation("acl_regla_autor")
+  // Los navegadores/equipos desde los que esta cuenta inició sesión o se registró (ver dispositivo_usuario).
+  dispositivos dispositivo_usuario[]
 }
 
 model direcciones {
@@ -273,6 +275,35 @@ model bloqueo_cuenta {
 
   @@unique([id_usuario, huella, tipo])
   @@index([estado, expira_en])
+}
+
+// Desde qué dispositivo entró cada cuenta (IA/PLAN-NEO4J-DETECCION-FRAUDE.md §22) — el REGISTRO durable del que se
+// reconstruye el grafo de fraude (Neo4j es solo una copia, ver backfillNeo4j.js), y lo que el panel muestra de
+// cada cuenta. Reemplaza al nombre como vínculo entre cuentas: dos personas pueden llamarse igual (homónimos),
+// pero compartir el mismo navegador es otra cosa.
+//
+// El navegador genera un identificador aleatorio y lo guarda (localStorage); acá NUNCA se guarda ese valor, solo
+// su SHA-256 (`dispositivo_hash`): sirve para saber si dos cuentas entraron desde el mismo lugar y no para
+// reconocer a nadie fuera de este sistema. `perfil_hash` es el SHA-256 de rasgos gruesos del equipo (sistema,
+// idioma, zona horaria, tamaño de pantalla…): une equipos «parecidos» aunque el identificador haya cambiado
+// (modo incógnito, datos del sitio borrados) — una pista, no una identidad (ver dispositivoService.js).
+// `etiqueta` es solo para que una persona del equipo reconozca el dispositivo («Chrome · Windows»).
+// Una fila por (cuenta, dispositivo): `inicios` cuenta las veces que esa cuenta entró desde ahí.
+model dispositivo_usuario {
+  id               Int      @id @default(autoincrement())
+  id_usuario       Int
+  dispositivo_hash String   @db.Char(64)
+  perfil_hash      String?  @db.Char(64)
+  etiqueta         String?  @db.VarChar(60)
+  primera_vez      DateTime @default(now())
+  ultima_vez       DateTime @default(now())
+  inicios          Int      @default(1)
+
+  usuario usuarios @relation(fields: [id_usuario], references: [id_usuario], onDelete: Cascade)
+
+  @@unique([id_usuario, dispositivo_hash])
+  @@index([dispositivo_hash])
+  @@index([perfil_hash])
 }
 
 // Permisos de la API que un administrador cambió desde /admin/permisos (ver IA/ADR-007, §9). La política BASE

@@ -9,6 +9,9 @@ const Producto = require('../models/mongo/Producto');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { fechaGuatemala } = require('../utils/ventas');
 const { normalizarNombre } = require('./fraudeSyncService');
+const dispositivoService = require('./dispositivoService');
+
+const { referenciaDe } = dispositivoService;
 
 // Siete señales independientes (ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §3, §16,
 // §17, §18 y §19), cada una con su propia consulta Cypher:
@@ -17,14 +20,17 @@ const { normalizarNombre } = require('./fraudeSyncService');
 //      gastó en el pasado (la lógica con que un banco vigila a sus clientes).
 //   C. Categoría inusual — la primera compra en una categoría ajena a una
 //      cuenta con historial largo.
-//   D. Cuentas de una misma persona — varias cuentas que se llaman igual o usan
-//      el mismo buzón de correo, todas comprando (una persona con varias cuentas).
+//   D. Cuentas de una misma persona — varias cuentas que entraron desde el mismo
+//      dispositivo o usan el mismo buzón de correo, todas comprando (una persona con
+//      varias cuentas). El NOMBRE ya no vincula cuentas (§22): dos personas pueden
+//      llamarse igual.
 //   E. Ráfaga de gasto — mucho gasto o muchos pedidos en un solo día, aunque
 //      cada pedido por separado se vea normal.
 //   F. Autocompra — una cuenta que compra sus propios productos, o los de otra
-//      cuenta de la misma persona (mismo nombre o buzón): mover dinero por el
-//      comercio. (Desde §18 el sistema además IMPIDE esa compra; esta señal
-//      detecta lo que ya existía antes de la regla, o cuentas distintas.)
+//      cuenta de la misma persona (mismo buzón, mismo dispositivo o un equipo
+//      parecido): mover dinero por el comercio. (Desde §18 el sistema además IMPIDE
+//      esa compra; esta señal detecta lo que ya existía antes de la regla, o
+//      cuentas distintas.)
 //   G. Reventa — un vendedor que le compró un producto a OTRO vendedor y hoy
 //      tiene publicado y activo uno equivalente (§19). Las cuentas que pueden
 //      vender aceptan, al comprar, un compromiso de no reventa; esta señal ve
@@ -44,6 +50,10 @@ const PARAMETROS_POR_DEFECTO = {
   // "Muchas compras y tiempo": 5 compras repartidas en al menos 30 días.
   categoria: { minimoOrdenesPrevias: 5, minimoDiasHistorial: 30 },
   relacionadas: { minimoCuentas: 2, minimoCuentasConCompras: 2 },
+  // Un «equipo parecido» (mismo perfil de dispositivo con otro identificador, ver dispositivoService.js) es una
+  // pista débil: miles de teléfonos iguales comparten perfil. Un perfil compartido por más de
+  // `maximoCuentasPorPerfil` cuentas es una configuración corriente, no una pista: se ignora.
+  autocompra: { maximoCuentasPorPerfil: 4 },
   // El "día" es el día calendario de Guatemala (UTC-6), el mismo que usa el
   // panel de ventas. minimoPedidos no exige un baseline: una cuenta nueva con
   // 5 pedidos el primer día es justo el patrón de prueba de tarjetas.
@@ -211,30 +221,33 @@ async function buscarCategoriaInusual(parametros) {
   });
 }
 
-// ---------- Señal D: cuentas de una misma persona (mismo nombre o mismo buzón) ----------
+// ---------- Señal D: cuentas de una misma persona (mismo dispositivo o mismo buzón) ----------
 
 // Dos formas de que varias cuentas sean la misma persona, ambas un nodo
 // COMPARTIDO en el grafo:
-//   - el mismo NOMBRE completo normalizado (fraudeSyncService.normalizarNombre):
-//     lo más simple y frecuente — registrarse otra vez con el mismo nombre. Pero
-//     dos personas distintas pueden llamarse igual, así que solo es una
-//     coincidencia débil.
+//   - el mismo DISPOSITIVO (dispositivoService.js): el navegador le pone a cada
+//     equipo un identificador aleatorio y lo manda al iniciar sesión o registrarse;
+//     dos cuentas que entraron desde el mismo navegador convergen en el mismo nodo
+//     `Dispositivo`. Reemplaza al NOMBRE (§22): dos personas distintas pueden llamarse
+//     igual —homónimos—, pero no entran desde el mismo navegador por casualidad. Aun
+//     así es evidencia MODERADA: una familia, una oficina o un cibercafé comparten
+//     computador, y el identificador lo manda el cliente (se puede rotar).
 //   - el mismo BUZÓN de correo normalizado (normalizarCorreo): como
 //     `usuarios.correo` es único, dos cuentas nunca registran el correo exacto,
 //     así que compartir buzón (alias "+", puntos de Gmail) es una decisión
-//     deliberada — evidencia fuerte, y la única que atrapa a quien cambia el
-//     nombre pero reusa su bandeja.
+//     deliberada — evidencia fuerte, y la única que atrapa a quien cambia de
+//     dispositivo pero reusa su bandeja.
 // Se consultan por separado (la etiqueta y la relación no se pueden pasar como
 // parámetro de Cypher; son constantes internas, nunca texto de un usuario) y
-// después se UNEN los grupos que comparten alguna cuenta: "A y B se llaman igual,
-// B y C comparten buzón" es una sola persona con tres cuentas. El mínimo de
+// después se UNEN los grupos que comparten alguna cuenta: "A y B comparten
+// dispositivo, B y C comparten buzón" es una sola persona con tres cuentas. El mínimo de
 // cuentas que hayan comprado por su lado (`minimoCuentasConCompras`) se exige
 // sobre la persona ya unida, no sobre cada grupo suelto — así A (compró) y C
 // (compró) quedan juntas aunque B, el puente entre ambas, solo venda. Una cuenta
 // duplicada que nunca compró no es una señal; varias COMPRANDO sí. Los
 // vendedores que nunca compraron entran al grafo igual (por VENDE), así que
 // pueden figurar como miembros con 0 compras.
-function consultaGrupos(etiqueta, relacion, campoClave) {
+function consultaGrupos(etiqueta, relacion, campoClave, extra = '') {
   return `
 MATCH (g:${etiqueta})<-[:${relacion}]-(u:Usuario)
 WITH g, collect(u) AS cuentas
@@ -252,26 +265,28 @@ CALL {
 }
 WITH g, collect({id: u.id_usuario, nombre: u.nombre, rol: u.rol, ordenes: ordenes, gastado: gastado,
                  primeraCompra: primeraCompra, ultimaCompra: ultimaCompra, categorias: categorias, productos: productos}) AS miembros
-RETURN g.${campoClave} AS clave, miembros
+RETURN g.${campoClave} AS clave, ${extra}miembros
 `;
 }
 
-const CONSULTA_GRUPOS_NOMBRE = consultaGrupos('Nombre', 'SE_LLAMA', 'clave');
+const CONSULTA_GRUPOS_DISPOSITIVO = consultaGrupos('Dispositivo', 'USO_DISPOSITIVO', 'hash', 'g.etiqueta AS etiqueta, ');
 const CONSULTA_GRUPOS_CORREO = consultaGrupos('Correo', 'USA_CORREO', 'hash');
 
 async function buscarGrupos(consulta, tipo, parametros) {
   const registros = await neo4j.leer(consulta, parametros);
   return registros.map((r) => {
     const f = aPlano(r.toObject());
-    return { tipo, miembros: f.miembros };
+    return { tipo, clave: f.clave, etiqueta: f.etiqueta ?? null, miembros: f.miembros };
   });
 }
 
 // Une (union-find sobre el id de cuenta) los grupos que comparten alguna
 // cuenta. Cada resultado conserva TODOS los vínculos que lo forman — qué
-// cuentas comparten nombre y cuáles buzón — para poder explicarlos y dibujarlos.
-// De un vínculo por buzón NO se devuelve el hash: al panel le basta con saber
-// qué cuentas lo comparten (los correos legibles salen de la ficha, desde MySQL).
+// cuentas comparten dispositivo y cuáles buzón — para poder explicarlos y dibujarlos.
+// De un vínculo NO se devuelve el hash completo (ni del buzón ni del dispositivo): al
+// panel le basta con saber qué cuentas lo comparten (los correos legibles salen de la
+// ficha, desde MySQL); del dispositivo sale solo una referencia corta (los primeros 8
+// caracteres) y su etiqueta legible («Chrome · Windows»).
 function unirGrupos(grupos) {
   const padre = new Map();
   const raiz = (id) => {
@@ -294,18 +309,16 @@ function unirGrupos(grupos) {
     if (!componentes.has(r)) componentes.set(r, { vinculos: [], miembros: new Map() });
     const c = componentes.get(r);
     const vinculo = { tipo: g.tipo, ids: g.miembros.map((m) => m.id).sort((x, y) => x - y) };
-    if (g.tipo === 'nombre') vinculo.nombre = g.miembros[0].nombre;
+    if (g.tipo === 'dispositivo') Object.assign(vinculo, { referencia: referenciaDe(g.clave), etiqueta: g.etiqueta });
     c.vinculos.push(vinculo);
     for (const m of g.miembros) c.miembros.set(m.id, m);
   }
 
   return [...componentes.values()].map((c) => {
     const miembros = [...c.miembros.values()].sort((a, b) => b.gastado - a.gastado);
-    const porNombre = c.vinculos.find((v) => v.tipo === 'nombre');
     return {
       // Clave estable para la UI (un componente = un conjunto fijo de cuentas).
       clave: miembros.map((m) => m.id).sort((a, b) => a - b).join('-'),
-      nombre: porNombre ? porNombre.nombre : miembros[0].nombre,
       vinculos: c.vinculos,
       miembros,
       totalOrdenes: miembros.reduce((acc, m) => acc + m.ordenes, 0),
@@ -316,11 +329,11 @@ function unirGrupos(grupos) {
 
 async function buscarCuentasRelacionadas(parametros) {
   const p = conDefectos('relacionadas', parametros);
-  const [porNombre, porCorreo] = await Promise.all([
-    buscarGrupos(CONSULTA_GRUPOS_NOMBRE, 'nombre', p),
+  const [porDispositivo, porCorreo] = await Promise.all([
+    buscarGrupos(CONSULTA_GRUPOS_DISPOSITIVO, 'dispositivo', p),
     buscarGrupos(CONSULTA_GRUPOS_CORREO, 'correo', p),
   ]);
-  return unirGrupos([...porNombre, ...porCorreo])
+  return unirGrupos([...porDispositivo, ...porCorreo])
     .filter((a) => a.miembros.filter((m) => m.ordenes >= 1).length >= p.minimoCuentasConCompras)
     .sort((a, b) => b.totalGastado - a.totalGastado);
 }
@@ -390,41 +403,63 @@ async function buscarRafagaGasto(parametros) {
 // ---------- Señal F: autocompra ----------
 
 // (comprador)-[:COMPRÓ]->(producto)<-[:VENDE]-(vendedor) donde comprador y
-// vendedor son la MISMA cuenta, o dos cuentas de una misma persona (mismo
-// nombre completo o mismo buzón de correo) — el patrón de multi-salto más
-// directo de mover dinero por el comercio: el "comprador" paga, el "vendedor"
-// cobra (menos la comisión de la plataforma) y el dinero queda con apariencia de
-// venta legítima. Una fila por par. `mismoNombre`/`mismoBuzon` se calculan solo
-// para cuentas DISTINTAS: sobre la misma cuenta la comparación daría falso (un
-// patrón no reutiliza la misma relación dos veces) y de todos modos no aporta.
+// vendedor son la MISMA cuenta, o dos cuentas de una misma persona — el patrón de
+// multi-salto más directo de mover dinero por el comercio: el "comprador" paga, el
+// "vendedor" cobra (menos la comisión de la plataforma) y el dinero queda con
+// apariencia de venta legítima. Una fila por par. Cómo se reconoce a «la misma
+// persona» (§22), de más a menos fuerte:
+//   - mismoBuzon: el mismo buzón de correo normalizado (evidencia fuerte).
+//   - dispositivosCompartidos: cuántos dispositivos usaron AMBAS cuentas (el mismo
+//     identificador de navegador). Evidencia moderada.
+//   - perfilParecido: SIN compartir dispositivo, entraron desde equipos con el mismo
+//     perfil (mismo sistema, idioma, zona horaria, pantalla…: el que borra los datos
+//     del sitio o usa incógnito se presenta con un identificador nuevo, pero el
+//     equipo es el mismo). Una pista débil: solo cuenta porque estas dos cuentas
+//     además se compran entre sí, y se ignora un perfil que comparten más de
+//     `maximoCuentasPorPerfil` cuentas (una configuración corriente).
+// Todo se calcula solo para cuentas DISTINTAS: sobre la misma cuenta la comparación
+// daría falso (un patrón no reutiliza la misma relación dos veces) y de todos modos no
+// aporta. El nombre ya no vincula (dos personas pueden llamarse igual). En el perfil
+// parecido, la ruta Dispositivo→Perfil←Dispositivo no puede dar la vuelta por el mismo
+// dispositivo: no repite la relación TIENE_PERFIL, así que exige dos dispositivos distintos.
 const CONSULTA_AUTOCOMPRA = `
 MATCH (comprador:Usuario)-[c:COMPRÓ]->(p:Producto)<-[:VENDE]-(vendedor:Usuario)
 WITH comprador, vendedor, c, p,
      comprador.id_usuario = vendedor.id_usuario AS mismaCuenta,
+     CASE WHEN comprador.id_usuario <> vendedor.id_usuario
+          THEN size([(comprador)-[:USO_DISPOSITIVO]->(d:Dispositivo)<-[:USO_DISPOSITIVO]-(vendedor) | d])
+          ELSE 0 END AS dispositivosCompartidos,
      comprador.id_usuario <> vendedor.id_usuario
-       AND EXISTS { (comprador)-[:SE_LLAMA]->(:Nombre)<-[:SE_LLAMA]-(vendedor) } AS mismoNombre,
+       AND EXISTS { (comprador)-[:USA_CORREO]->(:Correo)<-[:USA_CORREO]-(vendedor) } AS mismoBuzon,
      comprador.id_usuario <> vendedor.id_usuario
-       AND EXISTS { (comprador)-[:USA_CORREO]->(:Correo)<-[:USA_CORREO]-(vendedor) } AS mismoBuzon
-WHERE mismaCuenta OR mismoNombre OR mismoBuzon
-WITH comprador, vendedor, mismaCuenta, mismoNombre, mismoBuzon,
+       AND EXISTS {
+         (comprador)-[:USO_DISPOSITIVO]->(:Dispositivo)-[:TIENE_PERFIL]->(pf:Perfil)<-[:TIENE_PERFIL]-(:Dispositivo)<-[:USO_DISPOSITIVO]-(vendedor)
+         WHERE COUNT { MATCH (otra:Usuario)-[:USO_DISPOSITIVO]->(:Dispositivo)-[:TIENE_PERFIL]->(pf) RETURN DISTINCT otra } <= $maximoCuentasPorPerfil
+       } AS perfilParecido
+WITH comprador, vendedor, c, p, mismaCuenta, dispositivosCompartidos, mismoBuzon,
+     perfilParecido AND dispositivosCompartidos = 0 AS mismoPerfil
+WHERE mismaCuenta OR dispositivosCompartidos > 0 OR mismoBuzon OR mismoPerfil
+WITH comprador, vendedor, mismaCuenta, dispositivosCompartidos, mismoBuzon, mismoPerfil,
      count(DISTINCT c.compra_id) AS pedidos, sum(c.monto) AS total,
      min(c.fecha) AS primera, max(c.fecha) AS ultima,
      collect(DISTINCT coalesce(p.nombre, p.descripcion))[0..5] AS productos
 RETURN comprador.id_usuario AS compradorId, comprador.nombre AS compradorNombre,
        vendedor.id_usuario AS vendedorId, vendedor.nombre AS vendedorNombre,
-       mismaCuenta, mismoNombre, mismoBuzon, pedidos, total, primera, ultima, productos
+       mismaCuenta, dispositivosCompartidos, mismoBuzon, mismoPerfil, pedidos, total, primera, ultima, productos
 ORDER BY total DESC
 `;
 
-async function buscarAutocompra() {
-  const registros = await neo4j.leer(CONSULTA_AUTOCOMPRA, {});
+async function buscarAutocompra(parametros) {
+  const registros = await neo4j.leer(CONSULTA_AUTOCOMPRA, conDefectos('autocompra', parametros));
   return registros.map((r) => {
     const f = aPlano(r.toObject());
     return {
       comprador: { id: f.compradorId, nombre: f.compradorNombre },
       vendedor: { id: f.vendedorId, nombre: f.vendedorNombre },
       mismaCuenta: f.mismaCuenta,
-      mismoNombre: f.mismoNombre,
+      mismoDispositivo: f.dispositivosCompartidos > 0,
+      dispositivosCompartidos: f.dispositivosCompartidos,
+      mismoPerfil: f.mismoPerfil,
       mismoBuzon: f.mismoBuzon,
       pedidos: f.pedidos,
       total: f.total,
@@ -603,13 +638,19 @@ const DIAS_CUENTA_RECIENTE = 30;
 async function enriquecerUsuarios(ids) {
   if (ids.length === 0) return { fichas: new Map(), nacimientos: new Map() };
 
-  const [usuarios, comprasPorUsuario] = await Promise.all([
+  const [usuarios, comprasPorUsuario, dispositivosPorUsuario] = await Promise.all([
     prisma.usuarios.findMany({ where: { id_usuario: { in: ids } }, include: { rol: true } }),
     prisma.compra.groupBy({
       by: ['id_usuario'],
       where: { id_usuario: { in: ids } },
       _count: { id: true },
       _sum: { total: true },
+    }),
+    // Los dispositivos de cada cuenta (MySQL: dispositivo_usuario). Una falla —p. ej. la migración todavía sin
+    // aplicar— deja las fichas sin esa línea, no sin panel: los hallazgos se muestran igual.
+    dispositivoService.dispositivosDe(ids).catch((err) => {
+      console.error('No se pudieron leer los dispositivos de las cuentas:', err.message);
+      return new Map();
     }),
   ]);
 
@@ -646,6 +687,10 @@ async function enriquecerUsuarios(ids) {
       totalGastado,
       promedioCompra: totalCompras > 0 ? totalGastado / totalCompras : 0,
       totalResenas: resenasMap.get(u.id_usuario) ?? 0,
+      // Hasta 5 dispositivos desde los que entró, el más reciente primero: { referencia, etiqueta, inicios,
+      // primeraVez, ultimaVez }. La referencia (8 caracteres del hash) permite ver a simple vista que dos
+      // cuentas comparten el MISMO dispositivo.
+      dispositivos: dispositivosPorUsuario.get(u.id_usuario) ?? [],
     });
   }
   return { fichas, nacimientos };
@@ -755,11 +800,12 @@ function construirMotivoRafaga(r, ficha, corroboradores, p) {
 }
 
 // Cómo se relacionan comprador y vendedor, en el mismo orden de fuerza que usa
-// el nivel de confianza: buzón (deliberado) > nombre (puede ser un homónimo).
+// el nivel de confianza: buzón (deliberado) > dispositivo compartido > equipo parecido.
 function textoVinculoAutocompra(f) {
   const partes = [];
   if (f.mismoBuzon) partes.push('usa el mismo buzón de correo');
-  if (f.mismoNombre) partes.push('se llama exactamente igual');
+  if (f.mismoDispositivo) partes.push(f.dispositivosCompartidos > 1 ? `entró desde ${f.dispositivosCompartidos} de los mismos dispositivos` : 'entró desde el mismo dispositivo');
+  if (f.mismoPerfil) partes.push('entró desde un equipo parecido (mismo perfil de dispositivo, con otro identificador)');
   return partes.join(' y ');
 }
 
@@ -768,22 +814,35 @@ function construirMotivoAutocompra(f, corroboradores) {
   const base = f.mismaCuenta
     ? `${f.comprador.nombre} (cuenta #${f.comprador.id}) compró ${pluralPedidos(f.pedidos)} por ${formatoQ(f.total)} de sus propios productos (${productos}).`
     : `${f.comprador.nombre} (cuenta #${f.comprador.id}) compró ${pluralPedidos(f.pedidos)} por ${formatoQ(f.total)} de productos que vende ${f.vendedor.nombre} (cuenta #${f.vendedor.id}), otra cuenta que ${textoVinculoAutocompra(f)} (${productos}).`;
-  const explicacion = f.mismaCuenta
-    ? 'Comprarse los propios productos infla las ventas y la apariencia de popularidad del vendedor sin que haya un cliente real, y puede mover dinero por el comercio. También puede ser algo inocente — probar el propio flujo de compra —, por eso solo sube a confianza alta si otra señal lo corrobora.'
-    : `Que una misma persona le compre a su otra cuenta es la forma más directa de mover dinero por el comercio: el "comprador" paga, el "vendedor" cobra (menos la comisión de la plataforma) y el dinero queda con apariencia de una venta legítima — lavado de dinero —, además de inflar las ventas y la reputación del vendedor. ${
-        f.mismoBuzon
-          ? 'Compartir buzón de correo no es algo que ocurra por casualidad: como el correo exacto no puede repetirse entre cuentas, es una decisión deliberada de quien maneja las dos.'
-          : 'Que un comprador le compre a un vendedor que se llama exactamente igual no es algo que ocurra por casualidad.'
-      } Por eso se marca con confianza alta.`;
-  return [base, explicacion, ...(corroboradores.length ? [cierreConfianza(corroboradores)] : [])].join(' ');
+  if (f.mismaCuenta) {
+    return [
+      base,
+      'Comprarse los propios productos infla las ventas y la apariencia de popularidad del vendedor sin que haya un cliente real, y puede mover dinero por el comercio. También puede ser algo inocente — probar el propio flujo de compra —, por eso solo sube a confianza alta si otra señal lo corrobora.',
+      ...(corroboradores.length ? [cierreConfianza(corroboradores)] : []),
+    ].join(' ');
+  }
+  const movimiento = 'Que una misma persona le compre a su otra cuenta es la forma más directa de mover dinero por el comercio: el "comprador" paga, el "vendedor" cobra (menos la comisión de la plataforma) y el dinero queda con apariencia de una venta legítima — lavado de dinero —, además de inflar las ventas y la reputación del vendedor.';
+  if (f.mismoBuzon) {
+    return [
+      base,
+      `${movimiento} Compartir buzón de correo no es algo que ocurra por casualidad: como el correo exacto no puede repetirse entre cuentas, es una decisión deliberada de quien maneja las dos. Por eso se marca con confianza alta.`,
+      ...(corroboradores.length ? [cierreConfianza(corroboradores)] : []),
+    ].join(' ');
+  }
+  // Solo dispositivo o equipo parecido: evidencia que necesita una segunda razón (el nombre ya no cuenta: dos
+  // personas distintas pueden llamarse igual, y por eso mismo una compra entre homónimos no es una señal).
+  const prudencia = f.mismoDispositivo
+    ? 'Compartir dispositivo no prueba por sí solo que sean la misma persona — una familia, una oficina o un cibercafé comparten computador —, por eso parte en "posible" y sube a confianza alta solo si otra señal independiente lo corrobora.'
+    : 'Entrar desde equipos parecidos es una pista débil — muchos equipos comparten sistema, idioma y pantalla —, pero aquí las dos cuentas además se compran entre sí; parte en "posible" y sube a confianza alta solo si otra señal independiente lo corrobora.';
+  return [base, `${movimiento} ${prudencia}`, cierreConfianza(corroboradores)].join(' ');
 }
 
-// Una frase por vínculo que forma el grupo — "las cuentas #3, #7 se llaman
-// exactamente igual", "las cuentas #7, #9 usan el mismo buzón de correo".
+// Una frase por vínculo que forma el grupo — "las cuentas #3, #7 entraron desde el
+// mismo dispositivo", "las cuentas #7, #9 usan el mismo buzón de correo".
 // Los correos legibles salen de la ficha (MySQL), no del grafo.
 function describirVinculo(v, miembrosPorId) {
   const cuentas = `las cuentas ${v.ids.map((id) => `#${id}`).join(', ')}`;
-  if (v.tipo === 'nombre') return `${cuentas} se llaman exactamente igual ("${v.nombre}", después de normalizar mayúsculas, tildes y espacios)`;
+  if (v.tipo === 'dispositivo') return `${cuentas} entraron desde el mismo dispositivo (${v.etiqueta ?? 'navegador'}, referencia ${v.referencia})`;
   const correos = v.ids.map((id) => miembrosPorId.get(id)?.ficha?.correo).filter(Boolean);
   return `${cuentas} usan el mismo buzón de correo${correos.length ? ` (${correos.join(', ')})` : ''}`;
 }
@@ -791,7 +850,7 @@ function describirVinculo(v, miembrosPorId) {
 function construirMotivoRelacionadas(a, corroboradores) {
   const miembrosPorId = new Map(a.miembros.map((m) => [m.id, m]));
   const porBuzon = a.vinculos.some((v) => v.tipo === 'correo');
-  const porNombre = a.vinculos.some((v) => v.tipo === 'nombre');
+  const porDispositivo = a.vinculos.some((v) => v.tipo === 'dispositivo');
   const resumenMiembros = a.miembros
     .filter((m) => m.ordenes > 0)
     .map((m) => `cuenta #${m.id} (${pluralCompras(m.ordenes)}, ${formatoQ(m.gastado)}${m.categorias.length ? `, en ${m.categorias.join(' y ')}` : ''})`)
@@ -803,11 +862,11 @@ function construirMotivoRelacionadas(a, corroboradores) {
   ];
   if (porBuzon) {
     frases.push(
-      `Compartir buzón de correo es evidencia fuerte por sí sola: como el correo exacto no puede repetirse entre cuentas, usar la misma bandeja (con un alias "+", o los puntos de Gmail) es una decisión deliberada, y es lo único que delata a quien cambia el nombre en cada cuenta${porNombre ? ' — acá, además, el nombre coincide' : ''}. Por eso se marca con confianza alta.`
+      `Compartir buzón de correo es evidencia fuerte por sí sola: como el correo exacto no puede repetirse entre cuentas, usar la misma bandeja (con un alias "+", o los puntos de Gmail) es una decisión deliberada, y es lo único que delata a quien entra desde un dispositivo distinto en cada cuenta${porDispositivo ? ' — acá, además, comparten dispositivo' : ''}. Por eso se marca con confianza alta.`
     );
     if (corroboradores.length > 0) frases.push(`${corroboradores.map((c) => `Además, ${c.detalle}.`).join(' ')}`);
   } else {
-    frases.push('Pero dos personas distintas también pueden llamarse igual, así que el nombre por sí solo es una coincidencia a verificar, no una prueba.', cierreConfianza(corroboradores));
+    frases.push('Pero compartir dispositivo no prueba por sí solo que sean la misma persona: una familia, una oficina o un cibercafé comparten computador, y el identificador del navegador puede borrarse o falsificarse. Es una coincidencia a verificar, no una prueba.', cierreConfianza(corroboradores));
   }
   return frases.join(' ');
 }
@@ -856,14 +915,21 @@ function construirMotivoReventa(h, corroboradores) {
 //   - D (cuentas de una misma persona): un vínculo por BUZÓN compartido ya es
 //     evidencia fuerte por sí solo — como `usuarios.correo` es único, usar la
 //     misma bandeja es una decisión deliberada — y parte en "alta". Un grupo que
-//     solo comparte NOMBRE parte en "posible" (dos personas distintas pueden
-//     llamarse igual) y sube con: misma fecha de nacimiento, una autocompra entre
+//     solo comparte DISPOSITIVO parte en "posible" (una familia, una oficina o un
+//     cibercafé comparten computador) y sube con: más de un dispositivo en común
+//     entre las mismas dos cuentas, misma fecha de nacimiento, una autocompra entre
 //     sus miembros, reseñas coordinadas entre ellos, o conducta anómala (B/C/E)
-//     en cualquiera de ellos. Compartir buzón además del nombre es lo que lo
-//     convierte en "alta": el correo corrobora al nombre.
-//   - F entre cuentas distintas de una misma persona (nombre o buzón) ya parte en
-//     "alta"; F de una cuenta consigo misma parte en "posible" (puede ser el
-//     vendedor probando su flujo).
+//     en cualquiera de ellos. Compartir buzón además del dispositivo es lo que lo
+//     convierte en "alta": el correo corrobora al dispositivo. El NOMBRE ya no
+//     entra (§22): dos personas pueden llamarse igual.
+//   - F entre cuentas distintas: el BUZÓN compartido ya parte en "alta". El
+//     dispositivo compartido, o un equipo parecido, parten en "posible" y suben con
+//     razones independientes de que sean la misma persona: más de un dispositivo en
+//     común, misma fecha de nacimiento, o que cualquiera de las dos cuentas aparezca
+//     en otra señal (reseñas coordinadas, reventa, conducta anómala). La señal D de
+//     las mismas cuentas NO cuenta como razón: sería la misma evidencia dos veces.
+//     F de una cuenta consigo misma parte en "posible" (puede ser el vendedor
+//     probando su flujo).
 //   - G (reventa) parte en "posible" — la coincidencia es de título, y un
 //     competidor legítimo puede vender algo parecido a lo que compró para
 //     compararlo — y sube con: haber publicado DESPUÉS de comprar (la secuencia de
@@ -887,7 +953,7 @@ async function consultarFraude(parametros = {}) {
     aislar('gasto anómalo', buscarGastoAnomalo(parametros.gasto)),
     aislar('categoría inusual', buscarCategoriaInusual(parametros.categoria)),
     aislar('ráfagas de gasto', buscarRafagaGasto(parametros.rafaga)),
-    aislar('autocompras', buscarAutocompra()),
+    aislar('autocompras', buscarAutocompra(parametros.autocompra)),
     aislar('reventa de lo comprado', buscarReventa()),
   ]);
   // Que UNA señal falle deja las otras seis (ver arriba). Que fallen LAS SIETE significa
@@ -978,27 +1044,30 @@ async function consultarFraude(parametros = {}) {
 
   // Señales de IDENTIDAD/coordinación de una cuenta (D, F, A) y de conducta
   // sostenida (G) — corroboran cualquier momento de la cuenta.
-  function corroboradoresDeIdentidad(usuarioId, { sinAutocompra = false, sinReventa = false } = {}) {
+  // `sinRelacionadas`: sin la señal D de la cuenta (la autocompra por dispositivo no puede apoyarse en el
+  // mismo dispositivo que la originó). `sujeto`: cómo se nombra a la cuenta en la frase, para cuando el
+  // motivo habla de dos cuentas a la vez.
+  function corroboradoresDeIdentidad(usuarioId, { sinAutocompra = false, sinReventa = false, sinRelacionadas = false, sujeto = 'esta cuenta' } = {}) {
     const lista = [];
-    // Una entrada por vínculo de ESTA cuenta (nombre y/o buzón): el que sea
+    // Una entrada por vínculo de ESTA cuenta (dispositivo y/o buzón): el que sea
     // por buzón pesa más, y el motivo lo dice.
-    const persona = relacionadaDe.get(usuarioId)?.[0];
+    const persona = sinRelacionadas ? undefined : relacionadaDe.get(usuarioId)?.[0];
     for (const v of persona?.vinculos.filter((x) => x.ids.includes(usuarioId)) ?? []) {
       const otras = v.ids.filter((id) => id !== usuarioId).map((id) => `#${id}`);
       const cuentas = `${otras.length === 1 ? 'la cuenta' : 'las cuentas'} ${otras.join(', ')}`;
       lista.push({
         tipo: 'cuentasRelacionadas',
-        detalle: `esta cuenta ${v.tipo === 'correo' ? 'usa el mismo buzón de correo que' : 'comparte nombre completo con'} ${cuentas} (ver "Cuentas de una misma persona")`,
+        detalle: `${sujeto} ${v.tipo === 'correo' ? 'usa el mismo buzón de correo que' : 'entró desde el mismo dispositivo que'} ${cuentas} (ver "Cuentas de una misma persona")`,
       });
     }
     if (!sinAutocompra && autocompraDe.has(usuarioId)) {
-      lista.push({ tipo: 'autocompra', detalle: 'esta cuenta aparece en una autocompra, comprando o vendiendo (ver "Autocompra")' });
+      lista.push({ tipo: 'autocompra', detalle: `${sujeto} aparece en una autocompra, comprando o vendiendo (ver "Autocompra")` });
     }
     if (resenasDe.has(usuarioId)) {
-      lista.push({ tipo: 'resenasCoordinadas', detalle: 'esta cuenta también aparece coordinando reseñas (ver "Reseñas coordinadas")' });
+      lista.push({ tipo: 'resenasCoordinadas', detalle: `${sujeto} también aparece coordinando reseñas (ver "Reseñas coordinadas")` });
     }
     if (!sinReventa && reventaDe.has(usuarioId)) {
-      lista.push({ tipo: 'reventa', detalle: 'esta cuenta aparece vendiendo un producto que le compró a otro vendedor (ver "Reventa de lo comprado")' });
+      lista.push({ tipo: 'reventa', detalle: `${sujeto} aparece vendiendo un producto que le compró a otro vendedor (ver "Reventa de lo comprado")` });
     }
     return lista;
   }
@@ -1045,6 +1114,19 @@ async function consultarFraude(parametros = {}) {
     }
     const mismaFechaNacimiento = [...porNacimiento.values()].some((cuentas) => cuentas.length >= 2);
     if (mismaFechaNacimiento) corroboradores.push({ tipo: 'fechaNacimiento', detalle: 'al menos dos de estas cuentas declararon la misma fecha de nacimiento' });
+    // Más de un dispositivo en común entre las MISMAS dos cuentas: ya no es el computador de la familia o del
+    // cibercafé usado de paso, es un hábito. Los ids de cada vínculo vienen ordenados, así que «x|y» es estable.
+    const dispositivosJuntas = new Map();
+    for (const v of a.vinculos.filter((x) => x.tipo === 'dispositivo')) {
+      v.ids.forEach((x, i) => v.ids.slice(i + 1).forEach((y) => dispositivosJuntas.set(`${x}|${y}`, (dispositivosJuntas.get(`${x}|${y}`) ?? 0) + 1)));
+    }
+    const variosDispositivos = [...dispositivosJuntas].filter(([, n]) => n >= 2);
+    if (variosDispositivos.length > 0) {
+      corroboradores.push({
+        tipo: 'variosDispositivos',
+        detalle: variosDispositivos.map(([par, n]) => `las cuentas #${par.split('|')[0]} y #${par.split('|')[1]} entraron desde ${n} dispositivos en común`).join('; '),
+      });
+    }
     for (const f of autocompras) {
       if (!f.mismaCuenta && idsMiembros.includes(f.comprador.id) && idsMiembros.includes(f.vendedor.id)) {
         corroboradores.push({ tipo: 'autocompra', detalle: `la cuenta #${f.comprador.id} le compró a la cuenta #${f.vendedor.id} (${formatoQ(f.total)} en ${pluralPedidos(f.pedidos)}), ver "Autocompra"` });
@@ -1062,7 +1144,7 @@ async function consultarFraude(parametros = {}) {
     const miembros = a.miembros.map((m) => ({ ...m, categorias: m.categorias.map(nombreCategoria), ficha: fichas.get(m.id) ?? null }));
     const hallazgo = { ...a, miembros, mismaFechaNacimiento };
     // El buzón compartido ya es evidencia por sí solo (parte en "alta"); el
-    // nombre solo, no.
+    // dispositivo solo, no.
     return { ...hallazgo, ...conNivel(corroboradores, porBuzon ? 'alta' : 'posible'), motivo: construirMotivoRelacionadas(hallazgo, corroboradores) };
   });
 
@@ -1076,12 +1158,27 @@ async function consultarFraude(parametros = {}) {
       if (nacComprador && nacComprador === nacimientos.get(f.vendedor.id)) {
         corroboradores.push({ tipo: 'fechaNacimiento', detalle: 'las dos cuentas declararon la misma fecha de nacimiento' });
       }
+      // Con el buzón compartido ya hay confianza alta. Con solo dispositivo o equipo parecido hacen falta razones
+      // INDEPENDIENTES de que sean la misma persona: más de un dispositivo en común, o que cualquiera de las dos
+      // cuentas aparezca en otra señal. Se excluye la señal D de estas cuentas: es el mismo dispositivo contado dos veces.
+      if (!f.mismoBuzon) {
+        if (f.dispositivosCompartidos >= 2) {
+          corroboradores.push({ tipo: 'variosDispositivos', detalle: `las dos cuentas entraron desde ${f.dispositivosCompartidos} dispositivos en común` });
+        }
+        for (const id of [f.comprador.id, f.vendedor.id]) {
+          corroboradores.push(
+            ...corroboradoresDeIdentidad(id, { sinAutocompra: true, sinRelacionadas: true, sujeto: `la cuenta #${id}` }),
+            ...corroboradoresDeConducta(id)
+          );
+        }
+      }
     }
     return {
       ...f,
       comprador: { ...f.comprador, ficha: fichas.get(f.comprador.id) ?? null },
       vendedor: { ...f.vendedor, ficha: fichas.get(f.vendedor.id) ?? null },
-      ...conNivel(corroboradores, f.mismaCuenta ? 'posible' : 'alta'),
+      // Buzón compartido: alta. Dispositivo compartido o equipo parecido, o una cuenta que se compra a sí misma: posible.
+      ...conNivel(corroboradores, !f.mismaCuenta && f.mismoBuzon ? 'alta' : 'posible'),
       motivo: construirMotivoAutocompra(f, corroboradores),
     };
   });

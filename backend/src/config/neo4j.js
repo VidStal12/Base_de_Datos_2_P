@@ -61,6 +61,26 @@ async function leer(consulta, parametros = {}) {
   });
 }
 
+// Restricciones de unicidad de los nodos compartidos que une el antifraude por dispositivo (ver
+// fraudeSyncService.registrarDispositivo): sin ellas, dos MERGE simultáneos del mismo hash pueden crear dos nodos.
+// `IF NOT EXISTS` las hace idempotentes; una restricción además crea el índice por la propiedad, así buscar un
+// dispositivo por su hash no recorre todos los nodos. Se aplican una vez por proceso, antes de la primera
+// escritura que las necesita (mismo criterio que config/cassandra.js y config/elasticsearch.js: el esquema se
+// aplica en el primer uso, no en un paso manual aparte que alguien se pueda olvidar de correr).
+let esquema;
+function asegurarEsquema() {
+  if (!esquema) {
+    esquema = (async () => {
+      await escribir('CREATE CONSTRAINT dispositivo_hash_unico IF NOT EXISTS FOR (n:Dispositivo) REQUIRE n.hash IS UNIQUE');
+      await escribir('CREATE CONSTRAINT perfil_hash_unico IF NOT EXISTS FOR (n:Perfil) REQUIRE n.hash IS UNIQUE');
+    })().catch((err) => {
+      esquema = undefined; // con Neo4j apagado se vuelve a intentar en la próxima escritura
+      throw err;
+    });
+  }
+  return esquema;
+}
+
 // Se usa al detener el backend o finalizar un script — mismo criterio que
 // redis.cerrar()/cassandra.cerrar().
 async function cerrar() {
@@ -68,6 +88,7 @@ async function cerrar() {
     await driver.close();
     driver = undefined;
   }
+  esquema = undefined;
 }
 
-module.exports = { conectar, escribir, leer, cerrar, circuito };
+module.exports = { conectar, escribir, leer, asegurarEsquema, cerrar, circuito };

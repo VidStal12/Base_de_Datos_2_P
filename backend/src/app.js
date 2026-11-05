@@ -27,8 +27,8 @@ app.get('/', (req, res) => {
     endpoints: [
       'GET /api/health',
       'GET /api/health/componentes (qué base de datos responde ahora: mysql, mongo, redis, elasticsearch, neo4j, cassandra; estado completo/degradado/critico. Público solo con ok por componente; con token de administrador, también milisegundos y el texto del error)',
-      'POST /api/auth/registro',
-      'POST /api/auth/login',
+      'POST /api/auth/registro (cabeceras opcionales X-Dispositivo y X-Dispositivo-Perfil: desde qué dispositivo se registra la cuenta, solo se guardan hashes; ver IA/PLAN-NEO4J-DETECCION-FRAUDE.md §22)',
+      'POST /api/auth/login (las mismas cabeceras opcionales; anota el dispositivo antes de comprobar la suspensión)',
       'GET /api/auth/me (requiere token)',
       'POST|GET /api/direcciones (requiere token)',
       'DELETE /api/direcciones/:id (requiere token; 409 si tiene pedidos asociados)',
@@ -38,7 +38,7 @@ app.get('/', (req, res) => {
       'POST /api/categorias (requiere token, rol vendedor/administrador)',
       'POST /api/categorias/:id/subcategorias (requiere token, rol vendedor/administrador)',
       'POST /api/categorias/subcategorias/:id/atributos (requiere token, rol vendedor/administrador)',
-      'GET /api/productos (filtros: ?categoriaId=, ?subcategoriaId=, ?q=, ?vendedorId=, ?atributos=<JSON {nombre:valor}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos)',
+      'GET /api/productos (filtros: ?categoriaId=, ?subcategoriaId=, ?q=, ?vendedorId=, ?atributos=<JSON {nombre:valor}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos|masRecientes)',
       'GET /api/productos/estadisticas/ediciones (requiere token de administrador — agregación: total de eventos por producto, ordenado por más editado; ?desde=AAAA-MM-DD opcional)',
       'GET /api/productos/:id',
       'GET /api/productos/:id/relacionados (productos parecidos por significado —vectores en Elasticsearch—; { modo: semantico | subcategoria | ninguno, subcategoria?, productos }; sesión opcional: con sesión no se ofrecen los productos del propio vendedor; ver IA/ADR-006)',
@@ -81,7 +81,7 @@ app.get('/', (req, res) => {
       'POST /api/ofertas/:productoId/comprar (requiere token — {intentoId, cantidad, direccionId, metodoPagoId, precioEsperado?, aceptaNoReventa?}, compra idempotente al precio de oferta; mismas reglas de producto propio y de compromiso de no reventa que el checkout)',
       'GET /api/recomendaciones (requiere token — analiza el historial de compras del usuario y encuentra productos similares de otros vendedores, ver IA/ENTREGA-2-PLAN.md §4.5)',
       'POST /api/recomendaciones/:productoId/comprar (requiere token — {cantidad, direccionId, metodoPagoId, aceptaNoReventa?}, compra al precio recomendado, cupo personal limitado; mismas reglas de producto propio y de compromiso de no reventa que el checkout)',
-      'GET /api/busqueda (Elasticsearch — búsqueda Y navegación por categorías en una sola consulta; ?q= (vacío = navegar), ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON {nombre: valor | [valores]}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos|precioAsc|precioDesc, ?pagina=, ?tamano= (hasta 100); responde resultados + árbol de categorías con conteos + facetas de atributos y de precio calculadas con agregaciones disyuntivas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §15; sesión OPCIONAL: con Authorization: Bearer y un texto sin resultados suma sugeridos + origenSugerencia, ver §16)',
+      'GET /api/busqueda (Elasticsearch — búsqueda Y navegación por categorías en una sola consulta; ?q= (vacío = navegar), ?categoriaId=, ?subcategoriaId=, ?atributos=<JSON {nombre: valor | [valores]}>, ?precioMin=, ?precioMax=, ?ordenarPor=masVendidos|masRecientes|precioAsc|precioDesc (sin ordenarPor: relevancia del texto × ventas, clics y novedad, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §17), ?pagina=, ?tamano= (hasta 100); responde resultados + árbol de categorías con conteos + facetas de atributos y de precio calculadas con agregaciones disyuntivas, ver IA/PLAN-ELASTICSEARCH-BUSQUEDA.md §15; sesión OPCIONAL: con Authorization: Bearer y un texto sin resultados suma sugeridos + origenSugerencia, ver §16)',
       'GET /api/busqueda/sugerencias?q= (autocompletado — completion suggester con tolerancia a errores, solo productos activos)',
     ],
   });

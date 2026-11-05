@@ -88,6 +88,26 @@ export function FichaUsuario({ id, nombre, ficha, notasExtra = [] }) {
           <dt className="text-neutral-400">Reseñas</dt>
           <dd>{ficha.totalResenas}</dd>
         </div>
+        {/* Desde qué dispositivos entró (antifraude por dispositivo, PLAN-NEO4J §22). La referencia son 8 caracteres del hash:
+            dos cuentas con la MISMA referencia entraron desde el mismo dispositivo. Una cuenta de antes de este cambio, o que
+            nunca entró desde un navegador con la versión nueva, no tiene ninguno. */}
+        <div className="col-span-2">
+          <dt className="text-neutral-400">Dispositivos desde los que entró</dt>
+          <dd>
+            {ficha.dispositivos?.length > 0 ? (
+              <ul className="space-y-0.5">
+                {ficha.dispositivos.map((d) => (
+                  <li key={d.referencia} className="truncate">
+                    {d.etiqueta ?? 'Navegador'} · <span className="font-mono">{d.referencia}</span> · {d.inicios} {d.inicios === 1 ? 'inicio' : 'inicios'}, último el{' '}
+                    {new Date(d.ultimaVez).toLocaleDateString('es-GT', { dateStyle: 'medium' })}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              '—'
+            )}
+          </dd>
+        </div>
       </dl>
     </div>
   );

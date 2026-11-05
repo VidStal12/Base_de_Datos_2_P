@@ -160,7 +160,7 @@ function candidatosDeHallazgos(datos) {
       involucradas: f.mismaCuenta
         ? [involucrada(f.comprador.id, f.comprador.nombre, f.comprador.ficha, 'compra y vende')]
         : [involucrada(f.comprador.id, f.comprador.nombre, f.comprador.ficha, 'comprador'), involucrada(f.vendedor.id, f.vendedor.nombre, f.vendedor.ficha, 'vendedor')],
-      datosClave: { mismaCuenta: f.mismaCuenta, mismoNombre: f.mismoNombre, mismoBuzon: f.mismoBuzon, pedidos: f.pedidos, total: f.total },
+      datosClave: { mismaCuenta: f.mismaCuenta, mismoDispositivo: f.mismoDispositivo, mismoPerfil: f.mismoPerfil, mismoBuzon: f.mismoBuzon, pedidos: f.pedidos, total: f.total },
     });
   }
 

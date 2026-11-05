@@ -62,6 +62,13 @@ const MAPPING = {
     cantidad: { type: 'integer' },
     estado: { type: 'keyword' },
     total_vendido: { type: 'integer' },
+    // Popularidad y novedad para ordenar (ver services/rankingBusqueda.js e IA/PLAN-ELASTICSEARCH-BUSQUEDA.md
+    // §17). `clics` es la suma de visitantes que abrieron la ficha (popularidadService); `publicado_en` es la
+    // hora de alta del producto en Mongo. Un producto indexado antes de este cambio no los tiene: cuenta como
+    // 0 clics y sin fecha (no se le premia la novedad) hasta que `npm run busqueda:backfill -- --solo-texto`
+    // los llene.
+    clics: { type: 'integer' },
+    publicado_en: { type: 'date' },
     // Solo para que los resultados de búsqueda sepan de quién es cada producto
     // (la tarjeta oculta "Agregar al carrito" en los propios, ver
     // productoService.verificarNoEsPropio) — nunca se busca ni se agrega por él.

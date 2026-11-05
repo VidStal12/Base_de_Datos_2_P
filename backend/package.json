@@ -18,6 +18,7 @@
     "test:redis": "node --test tests/carrito*.test.js tests/oferta*.test.js",
     "test:compromiso": "node --test tests/compromiso*.test.js",
     "test:bloqueo": "node --test tests/bloqueo*.test.js",
+    "test:dispositivos": "node --test tests/dispositivo*.test.js",
     "test:consistencia": "node --test tests/consistencia*.test.js",
     "test:checkout": "node --test tests/checkoutIntento.test.js tests/checkoutFrontend.test.js tests/checkoutHttp.test.js tests/checkoutFallos.test.js",
     "verificar:idempotencia": "node scripts/verificarIdempotenciaCheckout.js",

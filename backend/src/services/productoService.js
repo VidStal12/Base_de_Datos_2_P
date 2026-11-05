@@ -6,6 +6,7 @@ const Subcategoria = require('../models/mongo/Subcategoria');
 const ProductoEvento = require('../models/mongo/ProductoEvento');
 const { esEnteroPositivo, escaparRegex } = require('../utils/validation');
 const busquedaSyncService = require('./busquedaSyncService');
+const { diaDePublicacion } = require('./rankingBusqueda');
 const fraudeSyncService = require('./fraudeSyncService');
 const ofertaDatos = require('./ofertaDatosService');
 const suspension = require('./suspensionService');
@@ -44,6 +45,13 @@ function formatear(doc) {
     // nada lo leía todavía. busquedaSyncService.js sí lo necesita para poder
     // ordenar "más vendidos" en los resultados de búsqueda.
     total_vendido: doc.total_vendido ?? 0,
+    // Los otros dos números del ranking de la búsqueda (rankingBusqueda.js): los clics
+    // acumulados y cuándo se publicó. La fecha no se guarda aparte: el _id de Mongo ya lleva la
+    // hora de alta (ObjectId = 4 bytes de segundos desde 1970 + el resto), así que no hace falta
+    // migrar ningún documento para tenerla; se redondea al día (UTC), que es lo que significa para
+    // ordenar por novedad. Un documento que no trae _id (los de prueba) queda sin fecha.
+    clics: doc.clics ?? 0,
+    publicado_en: typeof doc._id?.getTimestamp === 'function' ? diaDePublicacion(doc._id.getTimestamp()) : null,
   };
 }
 
@@ -139,8 +147,12 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
   }
 
   let consulta = Producto.find(filtro).populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } });
+  // Mismo criterio que la búsqueda (rankingBusqueda.js): entre iguales gana el más reciente — el _id de Mongo
+  // lleva la hora de alta, así que ordenar por _id descendente es «el más nuevo primero».
   if (ordenarPor === 'masVendidos') {
-    consulta = consulta.sort({ total_vendido: -1 });
+    consulta = consulta.sort({ total_vendido: -1, _id: -1 });
+  } else if (ordenarPor === 'masRecientes') {
+    consulta = consulta.sort({ _id: -1 });
   }
   const documentos = await consulta.lean();
   return documentos.map((doc) => ({

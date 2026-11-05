@@ -263,6 +263,8 @@ Con los datos orgánicos actuales ninguna de B/C/D se dispara por sí sola — e
 
 ## 17. Identidad por nombre, ráfaga de gasto y autocompra (2026-10-04)
 
+> **Superado en parte por §22 (2026-11-05):** el **nombre dejó de vincular cuentas** (dos personas pueden llamarse igual) y lo reemplaza el dispositivo desde el que se entra. Lo que sigue en esta sección sobre `Nombre`/`SE_LLAMA`, el «nombre normalizado» como vínculo y los grupos «gemelos»/«homónimos» es historia; la ráfaga de gasto y la autocompra siguen vigentes, con el vínculo de §22.
+
 > **Modificado por §18 (mismo día):** el buzón de correo volvió al grafo (`Correo`/`USA_CORREO`) como segundo vínculo entre cuentas, así que "Eliminados respecto a §16: `Correo` y `USA_CORREO`" y la señal D "mismo nombre" de abajo describen el estado intermedio. Las señales E y F, el modelo de `VENDE` y la regla de que la confianza solo sube siguen vigentes.
 
 Tres cambios pedidos por el equipo sobre §16, el mismo día:
@@ -334,6 +336,8 @@ Con los datos orgánicos aparecen, además de lo sembrado: la autocompra de Luis
 - La ventana de E es el día calendario de Guatemala, no una ventana móvil de 24 h.
 
 ## 18. El buzón vuelve como segundo vínculo, y nadie compra lo que vende (2026-10-04)
+
+> **Actualizado por §22 (2026-11-05):** el «primer vínculo» de esta sección, el nombre, lo reemplaza el **dispositivo** (con el perfil de equipo como pista más débil en la autocompra). El buzón y la regla «nadie compra lo que vende» no cambian.
 
 Dos cambios pedidos por el equipo sobre §17, el mismo día:
 
@@ -694,3 +698,69 @@ La visibilidad se **deriva** del candado, no se guarda: `suspensionService.vende
 - **Apelación:** un formulario para la persona suspendida, cuyo texto aparezca en el caso.
 - **Bloqueo manual** desde una ficha del panel de fraude, para sospechas «posible» que un administrador considere serias.
 - **Ventana de recencia** para los hallazgos que actúan (solo lo de los últimos N días), y avisar a los administradores de un caso nuevo (hoy solo se ve en la sección).
+
+---
+
+## 22. Dispositivos en lugar de nombres: los homónimos ya no son una señal (2026-11-05)
+
+**Por qué.** Las señales D (cuentas de una misma persona) y F (autocompra) vinculaban cuentas por **nombre completo idéntico** (§17-§18). Dos personas distintas pueden llamarse igual —«José Pérez»—, y la señal F arrancaba en confianza **alta** (suspensión de 24 h) cuando un comprador le compraba a un vendedor «que se llama exactamente igual». Medido antes del cambio, en la base de desarrollo: 6 nombres compartidos entre cuentas, y la autocompra `25→24` calificada «alta» **solo por el nombre**. El nombre era la evidencia más débil del modelo con el peso más fuerte. §22 lo reemplaza por algo que una persona con varias cuentas sí comparte y que dos homónimos no: **el dispositivo desde el que entran**.
+
+### Qué es un «dispositivo»
+
+Un navegador no tiene un identificador de equipo que un sitio pueda leer (y leerlo sería invasivo), así que la tienda le pone uno. `frontend/src/utils/dispositivo.js` genera un valor **aleatorio** (UUID) la primera vez, lo guarda en `localStorage` y lo manda **solo al registrarse y al iniciar sesión** (cabecera `X-Dispositivo`; en cualquier otra petición no viaja, y una cabecera propia en una lectura obligaría al navegador a un pre-vuelo CORS por cada dirección). Junto con él viaja el **perfil**: rasgos gruesos del equipo —sistema, idioma, zona horaria, pantalla, núcleos, puntos táctiles— (`X-Dispositivo-Perfil`); al perfil el servidor le suma la familia del navegador (Chrome, Windows…, **sin versiones**) que lee del `User-Agent`. No hay canvas, audio, fuentes ni nada que identifique a alguien fuera de esta tienda.
+
+| Qué | Dónde queda | Cómo |
+|---|---|---|
+| Identificador del dispositivo | MySQL `dispositivo_usuario.dispositivo_hash` y nodo `Dispositivo {hash}` | **SHA-256** con un prefijo propio; el valor en claro no se guarda ni se reenvía |
+| Perfil (equipo «parecido») | `dispositivo_usuario.perfil_hash` y nodo `Perfil {hash}` | SHA-256 de los rasgos + familia del navegador |
+| Etiqueta legible | `dispositivo_usuario.etiqueta` y `Dispositivo.etiqueta` | «Chrome · Windows», para que una persona reconozca el dispositivo en el panel |
+| IP, `User-Agent` completo | — | no se guardan |
+
+### Modelo vigente
+
+- **MySQL** (fuente durable): `dispositivo_usuario` — una fila por `(cuenta, dispositivo)`, con `inicios`, `primera_vez`, `ultima_vez`; único `(id_usuario, dispositivo_hash)`, índices por `dispositivo_hash` y `perfil_hash`. Migración `20261105000000_dispositivo_usuario`. Es lo que permite reconstruir el grafo: antes un grafo vaciado no podía recuperar nada de esto porque no se guardaba.
+- **Neo4j** (copia derivada): `(:Usuario)-[:USO_DISPOSITIVO {primera_vez, ultima_vez, inicios}]->(:Dispositivo {hash, etiqueta})-[:TIENE_PERFIL]->(:Perfil {hash})`. Los nodos son **compartidos**, igual que `Correo` para el buzón. Con restricciones de unicidad (`dispositivo_hash_unico`, `perfil_hash_unico`, creadas por `neo4j.asegurarEsquema()` en la primera escritura): dos inicios de sesión simultáneos desde un dispositivo nuevo ejecutan el `MERGE` a la vez, y sin ellas pueden crear dos nodos y partir el grupo en dos.
+- Se **elimina** `Nombre` / `SE_LLAMA`: ya no se escriben, y `npm run fraude:backfill` borra los que dejó el diseño anterior. `Usuario.nombre` sigue en el grafo, solo para mostrar.
+- Cada escritura que crea un `Usuario` le agrega su `USA_CORREO` (la de dispositivos también): todo `Usuario` del grafo tiene su buzón.
+
+### Cuándo se registra
+
+`authService.login` y `authService.registrar` llaman a `dispositivoService.registrarInicioSeguro`. En el login se anota **con la contraseña ya comprobada y antes de la suspensión**: una cuenta suspendida que intenta entrar desde un dispositivo nuevo es justo la pista que sirve para vincularla con otras; y como solo llega quien sabe la contraseña, nadie puede ensuciar el historial de una cuenta ajena. El upsert de MySQL se espera (un choque con el índice único —dos pestañas— se resuelve sumando el inicio); el reenvío a Neo4j **no se espera**, con el mismo criterio de mejor esfuerzo del resto del grafo. Una falla se registra y **no impide entrar**. Una petición sin cabecera (un script, un cliente viejo) no anota nada: nunca se inventa un dispositivo a partir de datos más débiles.
+
+### Las reglas
+
+| Vínculo entre las cuentas | Señal D (varias cuentas que compran) | Señal F (una le compra a la otra) |
+|---|---|---|
+| **Mismo buzón** (sin cambios) | **alta** por sí solo | **alta** por sí solo |
+| **Mismo dispositivo** | «posible»; sube a «alta» con **otra razón**: más de un dispositivo en común, misma fecha de nacimiento, una autocompra entre ellas, reseñas coordinadas o conducta anómala de alguna | «posible»; sube a «alta» con razones **independientes**: más de un dispositivo en común, misma fecha de nacimiento, o que cualquiera de las dos aparezca en otra señal (reseñas coordinadas, reventa, gasto/categoría/ráfaga). La señal D de las mismas cuentas **no cuenta**: sería el mismo dispositivo dos veces |
+| **Perfil parecido** (mismo perfil, otro identificador) | no forma grupos | «posible» (más débil); solo cuenta porque las dos cuentas además **se compran entre sí**, y un perfil compartido por **más de 4 cuentas** se ignora (una configuración corriente) |
+| **Mismo nombre** | **ya no cuenta** | **ya no cuenta** |
+
+Por qué el dispositivo parte en «posible» y no en «alta»: una familia, una oficina o un cibercafé comparten computador, y el identificador lo manda el cliente (se puede borrar o falsificar). Es evidencia moderada. Por qué el perfil es más débil todavía: miles de teléfonos iguales comparten sistema, idioma, zona horaria y pantalla. El perfil existe para el que borra los datos del sitio o usa incógnito en cada cuenta —se presenta con un identificador nuevo, pero el equipo es el mismo—, y por eso solo se mira donde ya hay una compra entre las dos cuentas.
+
+**El caso que motivó el cambio.** Dos cuentas llamadas «Fraude Homonimo», con dispositivos y fechas de nacimiento distintos, ya **no forman grupo** (antes: «posible»). Un comprador y un vendedor que se llaman igual, desde dispositivos distintos, ya **no son una autocompra** (antes: confianza «alta», una suspensión). Ambos son controles negativos de `npm run verificar:fraude`.
+
+### Panel `/admin/fraude`
+
+Los vínculos se dibujan como nodos `Dispositivo` compartidos (etiqueta y referencia de 8 caracteres; el hash completo nunca llega al navegador, igual que el del buzón), el diagrama de la autocompra gana «Mismo dispositivo» y «Equipo parecido», y la ficha de cada cuenta lista sus dispositivos (`etiqueta · referencia · inicios · último`): dos cuentas con la **misma referencia** entraron desde el mismo lugar. `enriquecerUsuarios` lee `dispositivo_usuario` y, si esa tabla falla (migración sin aplicar), solo deja la ficha sin esa línea. Términos de Servicio **v1.3**: explican qué se guarda del dispositivo, que solo se guarda una huella irreversible, y que llamarse igual que otra persona no es motivo de revisión.
+
+### Migración
+
+1. `npm run prisma:deploy` (crea `dispositivo_usuario`) y `npx prisma generate` (el `predev` ya lo hace).
+2. `npm run fraude:backfill` — borra `Nombre`/`SE_LLAMA`, reenvía productos, compras y reseñas con el modelo nuevo, y reconstruye los dispositivos desde MySQL (al principio, ninguno).
+3. Los dispositivos **existen solo desde que el frontend nuevo empezó a mandarlos**: no hay historia que recuperar. Mientras las cuentas no vuelvan a entrar, las señales D y F por dispositivo no encuentran nada; las de buzón no cambian.
+
+### Verificación
+
+- `npm run test:dispositivos` — **16 pruebas aisladas**: las cabeceras que se aceptan y las que se descartan, la familia del navegador (Edge y Opera no se confunden con Chrome, ni el iPhone con macOS), el hash sin el identificador, el perfil estable entre versiones, el registro con MySQL y Neo4j de mentira (el identificador en claro nunca llega a ninguno; el choque `P2002` de dos pestañas; Neo4j apagado no estorba; una falla de MySQL no impide entrar), la ficha del panel y lo que genera el navegador (identificador persistido, almacenamiento bloqueado, solo ASCII imprimible, y que las cabeceras viajan **únicamente** en login y registro).
+- `npm run verificar:fraude` (reescrita; contra MySQL, Mongo, Neo4j, Redis y los servicios reales): dispositivo + misma fecha de nacimiento → alta; dispositivo solo → posible sin corroboradores; dos dispositivos → alta; **homónimos → sin grupo**; anillo por buzón → alta; dispositivo + buzón → alta sin corroboradores; cadena de tres cuentas unida (A–B por dispositivo, B–C por buzón); en F: dispositivo compartido → posible, buzón → alta, equipo parecido → posible, dos dispositivos → alta, autoventa anterior a la regla → posible, **homónimos que se compran → sin señal**, perfil de 5 cuentas → ignorado; y sobre el grafo: sin `Nombre`, `Dispositivo`/`Perfil` solo con hashes, **el identificador en claro no está en ningún nodo ni en MySQL**, las restricciones de unicidad existen y **cuatro inicios simultáneos desde el mismo dispositivo nuevo dejan un solo nodo y dos aristas**.
+- **Probado en el navegador:** el registro y el inicio de sesión mandan `X-Dispositivo` y `X-Dispositivo-Perfil` (pre-vuelo CORS incluido), el identificador queda en `localStorage`, y dos cuentas creadas desde el mismo navegador aparecen en MySQL y en Neo4j con el **mismo** dispositivo (y los hash, no el valor); `/admin/fraude` muestra los vínculos, las razones y los dispositivos de cada ficha. El barrido en marcha suspendió o limitó solo cuentas sintéticas `fraude.*`.
+
+### Límites honestos
+
+- **El identificador lo manda el cliente.** Quien lo conoce puede falsificarlo o rotarlo (borrar los datos del sitio, una ventana de incógnito por cuenta). El perfil cubre al que lo hace sin saber que lo miran; al que lo hace con método, no. Se detecta al descuidado, no al determinado.
+- **Falsos positivos por computadores compartidos.** Una familia o un cibercafé quedan vinculados. Por eso el dispositivo solo es «posible» y sube con corroboración, y por eso un caso cerrado por una persona no se reabre por el mismo hallazgo.
+- **Sin historia.** No hay dispositivos de antes del cambio; hasta que las cuentas vuelvan a entrar, la señal es ciega para ellas.
+- **El perfil es una pista débil** y puede coincidir por casualidad entre dos equipos iguales (el tope de 4 cuentas lo acota, no lo elimina).
+- **Un inicio de sesión no es una compra.** Dos cuentas que entraron desde el mismo navegador una sola vez cuentan igual que dos que lo comparten a diario; no se pondera la frecuencia (`inicios` se guarda, pero no decide nada).
+- **Efecto en el desarrollo.** Dos cuentas que se usan **desde el mismo navegador** y se compran entre sí —el comprador y el vendedor de una demostración— quedan vinculadas por dispositivo: la autocompra es «posible» (límites suaves) y, si las dos además tienen compras, la señal D sube a «alta» por esa misma autocompra y el barrido suspende a ambas 24 h. Es el comportamiento previsto para una persona con dos cuentas; para una demostración conviene usar **perfiles de navegador distintos** (o ventanas de incógnito: otro identificador, aunque el perfil parecido lo deja en «posible») o `FRAUDE_BLOQUEO_ENABLED=false`.
