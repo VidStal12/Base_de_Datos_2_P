@@ -147,10 +147,14 @@ async function listar({ categoriaId, subcategoriaId, q, vendedorId, atributos, p
   }
 
   let consulta = Producto.find(filtro).populate({ path: 'subcategoria_id', populate: { path: 'categoria_id' } });
-  // Mismo criterio que la búsqueda (rankingBusqueda.js): entre iguales gana el más reciente — el _id de Mongo
-  // lleva la hora de alta, así que ordenar por _id descendente es «el más nuevo primero».
+  // «Más vendidos» ordena SOLO por total_vendido, a propósito: es exactamente lo que cubre el índice compuesto
+  // {subcategoria_id, total_vendido} (igualdad en el primero + orden por el segundo, ver Producto.js), así que
+  // Mongo entrega el orden desde el índice sin una etapa SORT en memoria. Un desempate extra (p. ej. por _id)
+  // obligaría a ese SORT y dejaría el índice sin su patrón de consulta. El desempate por «el más reciente, luego el
+  // que más se abre» vive en la búsqueda (rankingBusqueda.js), que es la que ordena la portada.
+  // «Más recientes»: el _id de Mongo lleva la hora de alta, así que _id descendente es «el más nuevo primero».
   if (ordenarPor === 'masVendidos') {
-    consulta = consulta.sort({ total_vendido: -1, _id: -1 });
+    consulta = consulta.sort({ total_vendido: -1 });
   } else if (ordenarPor === 'masRecientes') {
     consulta = consulta.sort({ _id: -1 });
   }
@@ -508,10 +512,13 @@ async function historialCompleto(productoId) {
 // Consulta de agregación (requerimiento técnico de Entrega 1, ver PRD §5 y
 // ADR-003 §3.4): qué productos acumulan más ediciones (opcionalmente desde una
 // fecha) — mapea al patrón "actividad de catálogo" que usaría un panel de
-// vendedor/administrador para priorizar revisión. Corre sobre producto_eventos,
-// la misma colección que ya tiene el índice compuesto {producto_id, fecha}
-// (ver models/mongo/ProductoEvento.js), que es justamente lo que hace rápido
-// el $match por fecha de acá.
+// vendedor/administrador para priorizar revisión. Corre sobre producto_eventos.
+// OJO: el $match por fecha NO usa el índice compuesto {producto_id, fecha} (la
+// fecha no es el prefijo de ese índice: medido con explain, es un recorrido de
+// toda la colección). Ese índice es del patrón de reconstrucción por fecha, que
+// siempre filtra por producto_id. Para una consulta administrativa y poco
+// frecuente, recorrer el historial completo es aceptable; si el historial
+// creciera mucho, un índice {fecha: 1} lo resolvería.
 async function estadisticasEdiciones({ desde } = {}) {
   await conectar();
   const pipeline = [];

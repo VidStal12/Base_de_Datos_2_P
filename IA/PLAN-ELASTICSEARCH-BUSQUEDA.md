@@ -241,7 +241,7 @@ puntaje = relevancia del texto (BM25)  ×  ( 1 + 0,5·log10(1 + ventas) + 0,25·
 | `masRecientes` (nuevo) | `publicado_en ↓`, luego ventas, luego clics, luego `producto_id` |
 | `precioAsc` / `precioDesc` | sin cambios, estrictos |
 
-El respaldo con Mongo (Elasticsearch apagado, `facetasBusqueda.desdeLista`) usa los mismos comparadores en JavaScript y el mismo multiplicador, sin la relevancia de texto (solo existe en el motor). `productoService.listar` (`GET /api/productos`) ordena `masVendidos` por `total_vendido` y luego `_id` descendente (el más nuevo).
+El respaldo con Mongo (Elasticsearch apagado, `facetasBusqueda.desdeLista`) usa los mismos comparadores en JavaScript y el mismo multiplicador, sin la relevancia de texto (solo existe en el motor). `productoService.listar` (`GET /api/productos`, el catálogo directo de Mongo) ordena `masVendidos` **solo** por `total_vendido`, a propósito: es el patrón que cubre el índice compuesto `{subcategoria_id, total_vendido}` (Mongo entrega el orden desde el índice, sin etapa `SORT` en memoria; un desempate por `_id` lo obligaría), y `masRecientes` por `_id` descendente (el más nuevo). El desempate por reciente y por clics vive en la búsqueda.
 
 ### De dónde salen los números
 

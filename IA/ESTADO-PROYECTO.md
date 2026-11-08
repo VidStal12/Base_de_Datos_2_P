@@ -307,6 +307,15 @@ Agregada a pedido, complementaria a §3.8 (no la reemplaza) — plan completo en
 - **Verificación:** `tests/busquedaRanking.test.js` (la fórmula, el pedido al motor, los comparadores de JavaScript y el servicio de clics con Mongo y Elasticsearch de mentira); contra el Elasticsearch real: «camiseta» pasó a la más vendida primera, el texto específico sigue ganando por relevancia, y un índice aparte con el caso «iPhone» (40/40 ventas → gana el más reciente). Los clics, probados de punta a punta con la ruta real (8 visitas → 3 clics; no cuentan recargas, dueño ni administrador).
 - **Límites aceptados:** no distingue un teléfono de un accesorio (una funda muy vendida puede ganar con una marca sola; la barra lateral por subcategoría lo resuelve); un producto nuevo sin ventas queda abajo; los clics son una señal débil, acumulada y deduplicada solo en memoria de un proceso.
 
+### 3.22 Panel de fraude en dos ventanas, con filtros (`AdminFraudePage.jsx`, `fraudeCasos.js`, `FiltrosFraude.jsx`)
+
+**Implementada, 2026-11-07.** Pedido: filtrar `/admin/fraude` por usuario, probabilidad y relación, y partir la pantalla en dos ventanas (la lista de siempre a la izquierda; a la derecha, los datos del caso elegido: quién, cuándo y los factores). Detalle, reglas y evidencia en [PLAN-NEO4J-DETECCION-FRAUDE.md §23](PLAN-NEO4J-DETECCION-FRAUDE.md).
+
+- **Qué cambió (solo el frontend):** filtros por cuenta (nombre, correo o `#id`), probabilidad (alta, posible, sin nivel), relación (tipo de hallazgo) y vínculo (dispositivo, buzón, equipo parecido, misma cuenta), cada opción con su conteo con los demás filtros puestos; la tarjeta abre el caso en un panel fijo a la derecha (cuentas, cuándo, datos clave, por qué se marcó, relaciones y otros casos de las mismas cuentas). Filtros y caso elegido viven en la URL; en el celular las ventanas se turnan.
+- **Corrección de paso:** la tarjeta de autocompra afirmaba «alta por sí sola» también para un vínculo solo por dispositivo o equipo parecido (que arrancan en «posible»); ahora la nota sale solo con el buzón compartido.
+- **Verificación:** `npm run test:fraudePanel` (41 pruebas, 31/31 mutaciones detectadas); lint y build; probado en navegador (escritorio y celular) **con una API desechable** — MySQL no era alcanzable desde el anfitrión ese día (puerto 3306 reservado por Windows), así que falta una pasada con la API completa.
+- **Límites aceptados:** filtrado del lado del cliente; «sin nivel» solo para las reseñas coordinadas.
+
 ## 4. Problemas reales encontrados y resueltos
 
 Esta lista importa porque casi todos se descubrieron construyendo (no leyendo el diagrama), y cada uno se corrigió en el momento en vez de quedar como deuda:

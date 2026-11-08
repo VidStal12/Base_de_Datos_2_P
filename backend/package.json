@@ -42,6 +42,7 @@
     "busqueda:backfill": "node scripts/backfillBusqueda.js",
     "test:ventas": "node --test tests/ventas*.test.js",
     "test:busqueda": "node --test tests/busqueda*.test.js",
+    "test:fraudePanel": "node --test tests/fraudePanel*.test.js",
     "test:similares": "node --test tests/similares*.test.js",
     "test:resiliencia": "node --test tests/resiliencia*.test.js",
     "test:acceso": "node --test tests/acceso*.test.js",

@@ -372,7 +372,10 @@ const ESCENARIOS = {
       });
       const antes = await leerEstado(ctx);
       imprimirEstado('ANTES (con 1 producto en el carrito)', antes);
-      const redis = redisConfig.conectar('admin');
+      // La falla se inyecta en el cliente de la cuenta con la que el carrito entra a Redis: desde la separación
+      // de permisos cada cuenta tiene su propio cliente, y parchear el de 'admin' (que solo usa esta demo para
+      // leer) no alcanzaba a cartService, así que la invalidación nunca fallaba y el escenario daba FALLO.
+      const redis = redisConfig.conectar('carrito');
       const { valor, error, registros } = await capturandoLogs(() => comprar(ctx, { alRodear: (fn) => conFalla(redis, 'invalidarCarrito', 'connect ECONNREFUSED 127.0.0.1:16379 (falla simulada)', fn) }));
       titulo('RESULTADO');
       dato('checkout()', error ? `LANZÓ: ${error.message}` : `NO lanzó — compra #${valor.compra.id}, pago ${valor.pago.estado}`);
