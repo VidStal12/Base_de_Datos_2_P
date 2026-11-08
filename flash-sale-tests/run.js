@@ -344,7 +344,8 @@ async function main() {
   const dotenv = require(path.join(projectRoot, 'backend', 'node_modules', 'dotenv'));
   dotenv.config({ path: path.join(projectRoot, 'backend', '.env'), quiet: true });
   const prisma = require(path.join(projectRoot, 'backend', 'src', 'config', 'prisma'));
-  const { conectar: conectarRedis } = require(path.join(projectRoot, 'backend', 'src', 'config', 'redis'));
+  const { conectar: conectarRedis, cerrar: cerrarRedis } = require(path.join(projectRoot, 'backend', 'src', 'config', 'redis'));
+  const exencionesFlash = require(path.join(projectRoot, 'backend', 'src', 'services', 'fraudeExencionesFlashService'));
 
   const runStartedAt = new Date();
   let redis;
@@ -354,6 +355,13 @@ async function main() {
 
     const health = await httpJson(baseUrl, '/health', { timeoutMs: scenario.requestTimeoutMs });
     requireHttp(health, 'El backend no está disponible', [200]);
+
+    if (exencionesFlash.correosExentos().length > 0) {
+      const suspension = require(path.join(projectRoot, 'backend', 'src', 'services', 'suspensionService'));
+      const restriccion = require(path.join(projectRoot, 'backend', 'src', 'services', 'restriccionService'));
+      const exencion = await exencionesFlash.liberarExistentes({ prisma, suspension, restriccion });
+      console.log(`Exención local de fraude flash: ${exencion.cuentas} cuentas; ${exencion.casosLiberados} casos liberados.`);
+    }
 
     const buyerRefs = new Set(scenario.attempts.map((attempt) => attempt.userRef));
     const selectedBuyers = accounts.buyers.filter((buyer) => buyerRefs.has(buyer.ref));
@@ -613,8 +621,8 @@ async function main() {
 
     if (!summary.passed) process.exitCode = 1;
   } finally {
-    await prisma.$disconnect();
-    if (redis) redis.disconnect();
+    try { await prisma.$disconnect(); }
+    finally { cerrarRedis(); }
   }
 }
 

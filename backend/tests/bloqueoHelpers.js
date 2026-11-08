@@ -137,7 +137,7 @@ function prismaBloqueos(usuarios) {
     },
     usuarios: {
       async findMany({ where }) {
-        return usuarios.filter((u) => where.id_usuario.in.includes(u.id_usuario));
+        return usuarios.filter((u) => coincide(u, where));
       },
     },
     async $transaction(operaciones) {
@@ -169,7 +169,7 @@ function escenario({ usuarios, hallazgos = {}, entorno = {} }) {
         fichas: new Map(ids.map((id) => [id, { id, nombre: `Cuenta${id} Prueba`, correo: `c${id}@example.com`, rol: usuarios.find((u) => u.id_usuario === id)?.rol.tipo_rol ?? 'comprador' }])),
       }),
     },
-  });
+  }, entorno);
   return { redis, prisma, suspension, restriccion, servicio, poner: (nuevos) => { datos = nuevos; } };
 }
 

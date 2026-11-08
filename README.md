@@ -444,6 +444,8 @@ Además de la verificación interna anterior, `flash-sale-tests/` prueba el endp
 
 **Requisitos:** Node.js 20 o posterior, backend en `http://localhost:3000`, MySQL/MongoDB/Redis normales del proyecto levantados, migraciones aplicadas y la cuenta vendedora `luis.ramirez@example.com` creada por el seed.
 
+**Excepción local de fraude para la carga sintética:** configurar `FRAUDE_EXENTOS_FLASH_ENABLED=true` en `backend/.env` y reiniciar el backend. Solo exime al vendedor y a los 100 compradores exactos de `flash-sale-tests/users.example.json` de las suspensiones y restricciones por fraude; el detector sigue mostrando sus hallazgos y las demás cuentas conservan sus controles. Antes del login, `prepare.js` y `run.js` cierran los casos activos de esas cuentas con una nota y quitan sus candados; el barrido también las libera y omite nuevos casos mientras la opción esté activa. No cambia la autenticación, los roles ni el tope general de pedidos por hora. Está apagada por defecto y no tiene efecto con `NODE_ENV=production`. Al desactivarla, nuevos hallazgos pueden volver a abrir casos; los casos ya liberados conservan su historial.
+
 La preparación y la ejecución están separadas. Desde la raíz del repositorio, primero se crean o verifican los usuarios y el producto sintético, se restaura el inventario a 100 y se reinicia el cupo de 20 unidades:
 
 ```powershell

@@ -206,6 +206,7 @@ async function registrarCompra({
   fecha,
   monto,
 }) {
+  await neo4j.asegurarEsquema();
   const [categoriaId, correoHash, vendedorCorreoHash] = await Promise.all([
     resolverCategoriaId(subcategoriaId),
     hashCorreoDe(usuarioId),
@@ -256,6 +257,7 @@ async function registrarResena({
   calificacion,
   fecha,
 }) {
+  await neo4j.asegurarEsquema();
   const [categoriaId, correoHash, vendedorCorreoHash] = await Promise.all([
     resolverCategoriaId(subcategoriaId),
     hashCorreoDe(usuarioId),
@@ -291,6 +293,7 @@ async function registrarResena({
 const MERGE_PRODUCTO = MERGE_PRODUCTO_Y_VENDEDOR;
 
 async function registrarProducto({ productoId, productoNombre, productoDescripcion, subcategoriaId, vendedorId, vendedorNombre }) {
+  await neo4j.asegurarEsquema();
   const [categoriaId, vendedorCorreoHash] = await Promise.all([resolverCategoriaId(subcategoriaId), hashCorreoDe(vendedorId)]);
   await neo4j.escribir(MERGE_PRODUCTO, {
     vendedorId,

@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const suspension = require('./suspensionService');
 const restriccion = require('./restriccionService');
+const exencionesFlash = require('./fraudeExencionesFlashService');
 const { consultarFraude, enriquecerUsuarios } = require('./fraudeService');
 const { registrarFallo } = require('../utils/resiliencia');
 
@@ -268,6 +269,12 @@ function abrirCaso(datos) {
 //   3. un candado en Redis sin ningún caso activo (se liberó pero Redis falló, o lo
 //      escribió alguien a mano) se quita.
 async function reconciliarAhora(ahora = new Date()) {
+  try {
+    await exencionesFlash.liberarExistentes({ prisma, suspension, restriccion }, process.env);
+  } catch (err) {
+    // Una limpieza de pruebas fallida no debe detener el antifraude de las demás cuentas.
+    registrarFallo('No se pudo liberar la excepción local de oferta flash', err);
+  }
   const { count: vencidos } = await prisma.bloqueo_cuenta.updateMany({
     where: { estado: 'activo', expira_en: { lte: ahora } },
     data: { estado: 'expirado' },
@@ -331,6 +338,7 @@ async function evaluarAhora({ duracionMs, ahora = new Date() } = {}) {
     cuentas: [],
     restringidas: [],
     omitidosAdministrador: 0,
+    omitidosPruebaFlash: 0,
     yaConocidos: 0,
     advertencias: [...(datos.advertencias ?? []), ...advertenciasLocales],
   };
@@ -340,7 +348,7 @@ async function evaluarAhora({ duracionMs, ahora = new Date() } = {}) {
   const [usuarios, existentes] = await Promise.all([
     prisma.usuarios.findMany({
       where: { id_usuario: { in: ids } },
-      select: { id_usuario: true, nombres: true, apellidos: true, rol: { select: { tipo_rol: true } } },
+      select: { id_usuario: true, nombres: true, apellidos: true, correo: true, rol: { select: { tipo_rol: true } } },
     }),
     prisma.bloqueo_cuenta.findMany({ where: { id_usuario: { in: ids } }, select: { id_usuario: true, huella: true, tipo: true } }),
   ]);
@@ -356,6 +364,10 @@ async function evaluarAhora({ duracionMs, ahora = new Date() } = {}) {
     if (!usuario) continue; // la cuenta ya no existe
     if (suspension.ROLES_EXENTOS.has(usuario.rol.tipo_rol)) {
       resumen.omitidosAdministrador += 1;
+      continue;
+    }
+    if (exencionesFlash.esCorreoExento(usuario.correo, process.env)) {
+      resumen.omitidosPruebaFlash += 1;
       continue;
     }
     // «alta»: basta con que ya haya una SUSPENSIÓN para ese hallazgo. «posible»: no se
@@ -596,6 +608,8 @@ let arranque;
 function iniciar() {
   const cfg = configuracion();
   if (temporizador || !cfg.habilitado) return;
+  const exentasFlash = exencionesFlash.correosExentos();
+  if (exentasFlash.length > 0) console.log(`Exención local de fraude flash activa: ${exentasFlash.length} cuentas de prueba.`);
   const barrer = () => evaluar().catch((err) => registrarFallo('No se pudo evaluar el bloqueo de cuentas', err));
   // La primera pasada espera unos segundos a que el servidor esté arriba, y de
   // paso reconstruye en Redis lo que se haya perdido en un reinicio.

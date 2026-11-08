@@ -61,16 +61,19 @@ async function leer(consulta, parametros = {}) {
   });
 }
 
-// Restricciones de unicidad de los nodos compartidos que une el antifraude por dispositivo (ver
-// fraudeSyncService.registrarDispositivo): sin ellas, dos MERGE simultáneos del mismo hash pueden crear dos nodos.
+// Restricciones de unicidad de usuarios y de los nodos compartidos del antifraude:
+// sin ellas, dos MERGE simultáneos pueden crear dos nodos con la misma identidad.
 // `IF NOT EXISTS` las hace idempotentes; una restricción además crea el índice por la propiedad, así buscar un
-// dispositivo por su hash no recorre todos los nodos. Se aplican una vez por proceso, antes de la primera
+// usuario por su ID o dispositivo por su hash no recorre todos los nodos. Se aplican una vez por proceso, antes de la primera
 // escritura que las necesita (mismo criterio que config/cassandra.js y config/elasticsearch.js: el esquema se
 // aplica en el primer uso, no en un paso manual aparte que alguien se pueda olvidar de correr).
 let esquema;
 function asegurarEsquema() {
   if (!esquema) {
     esquema = (async () => {
+      // Si hay usuarios antiguos duplicados, repararlos primero con
+      // `node scripts/unificarUsuariosNeo4j.js --aplicar`. No se borra nada desde una petición.
+      await escribir('CREATE CONSTRAINT usuario_id_unico IF NOT EXISTS FOR (n:Usuario) REQUIRE n.id_usuario IS UNIQUE');
       await escribir('CREATE CONSTRAINT dispositivo_hash_unico IF NOT EXISTS FOR (n:Dispositivo) REQUIRE n.hash IS UNIQUE');
       await escribir('CREATE CONSTRAINT perfil_hash_unico IF NOT EXISTS FOR (n:Perfil) REQUIRE n.hash IS UNIQUE');
     })().catch((err) => {
